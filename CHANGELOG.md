@@ -2,6 +2,17 @@
 
 All notable changes to `donna` will be documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Generated project GitHub Actions now install QBE using Donna's maintained `install-qbe` script before running `donna format`, `donna check`, and `donna test`.
+- `donna check` now works for multi-module libraries without requiring a root `src/<name>.donna` file.
+
+### Enhancemets
+
+- `donna clean` now supports `--docs`, `--lock`, and `--all` for removing generated docs and lockfiles explicitly.
+
 ## [0.1.0] — 2026-05-10
 
 Initial release.

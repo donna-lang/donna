@@ -1,5 +1,5 @@
 //// `donna clean` command.
-//// Removes generated build and documentation outputs for a project.
+//// Removes generated build outputs and optional generated project files.
 
 import donna/files
 import donna/shell
@@ -15,16 +15,42 @@ pub fn run(args: List(#(String, String))) -> String:
     scanner.ScanErr(msg) ->
       colors.red("error") <> ": " <> msg
     scanner.ScanOk(project) ->
+      let clean_all = has_flag(args, "all")
+      let clean_docs = clean_all || has_flag(args, "docs")
+      let clean_lock = clean_all || has_flag(args, "lock")
       let build_dir = scanner.project_build_dir(project)
-      case files.exists(build_dir):
+      let docs_dir = files.join(dir, "docs")
+      let lock_path = files.join(dir, "donna.lock")
+      let t0 = time.now_us()
+      let removed_build = clean_path(build_dir)
+      let removed_docs = case clean_docs:
+        True -> clean_path(docs_dir)
+        False -> False
+      let removed_lock = case clean_lock:
+        True -> clean_path(lock_path)
+        False -> False
+      case removed_build || removed_docs || removed_lock:
         False ->
           colors.dim("nothing to clean")
         True ->
-          let t0 = time.now_us()
-          let _ = logger.cleaning(build_dir)
-          let _ = shell.exec("rm", ["-rf", build_dir])
           let _ = logger.clean_ok(time.now_us() - t0)
           ""
+
+fn clean_path(path: String) -> Bool:
+  case files.exists(path):
+    False -> False
+    True ->
+      let _ = logger.cleaning(path)
+      let _ = shell.exec("rm", ["-rf", path])
+      True
+
+fn has_flag(args: List(#(String, String)), key: String) -> Bool:
+  case args:
+    [] -> False
+    [#(k, _), ..rest] ->
+      case k == key:
+        True -> True
+        False -> has_flag(rest, key)
 
 fn first_positional(args: List(#(String, String))) -> String:
   case args:

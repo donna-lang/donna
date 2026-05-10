@@ -1,6 +1,6 @@
 //// `donna check` command.
-//// Parses and typechecks a project entry module without producing build
-//// artifacts, then reports errors and warnings with source context.
+//// Resolves dependencies and typechecks every project source module without
+//// linking an application binary.
 
 import donna/files
 import donna/list
@@ -28,14 +28,7 @@ pub fn run(args: List(#(String, String))) -> String:
     scanner.ScanErr(msg) ->
       colors.red("error") <> ": " <> msg
     scanner.ScanOk(project) ->
-      let name = scanner.project_name(project)
-      let src_dir = scanner.project_src_dir(project)
-      let entry = files.join(src_dir, name <> ".donna")
-      case files.exists(entry):
-        False ->
-          colors.red("error") <> ": entry point not found: " <> colors.dim(entry)
-        True ->
-          check_project(dir, project)
+      check_project(dir, project)
 
 fn check_project(dir: String, project: scanner.Project) -> String:
   let t0 = time.now_us()
@@ -52,7 +45,13 @@ fn check_project(dir: String, project: scanner.Project) -> String:
   case compile_deps(deps, build_dir, []):
     result.Error(e) -> colors.red("error") <> ": " <> e
     result.Ok(dep_ifaces) ->
-      case pipeline.compile_dir(scanner.project_src_dir(project), "", artifacts_dir, dep_ifaces, False):
+      case pipeline.compile_dir(
+        scanner.project_src_dir(project),
+        "",
+        artifacts_dir,
+        dep_ifaces,
+        False
+      ):
         result.Error(e) -> colors.red("error") <> ": " <> e
         result.Ok(_) ->
           let elapsed = time.now_us() - t0

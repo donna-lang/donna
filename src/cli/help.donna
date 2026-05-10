@@ -69,10 +69,13 @@ pub fn check_help() -> String:
 pub fn clean_help() -> String:
   command_help(
     "clean",
-    "Delete build artifacts",
-    "donna clean [DIR]",
+    "Delete generated files",
+    "donna clean [DIR] [--docs] [--lock] [--all]",
     [
       #("DIR", "Clean another project directory"),
+      #("--docs", "Also delete generated docs/"),
+      #("--lock", "Also delete donna.lock"),
+      #("--all", "Delete build/, docs/, and donna.lock"),
       #("-h, --help", "Show this help")
     ]
   )
