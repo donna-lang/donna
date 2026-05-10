@@ -1,0 +1,201 @@
+//// Pattern parser.
+//// Parses patterns used by `case` arms and destructuring lets, including
+//// constructor, tuple, list, literal, wildcard, and discard forms.
+
+import compiler/lexer/token
+import utilities/location
+import errors/error
+import compiler/parser/ast
+import compiler/parser/parse_result
+import donna/list
+import donna/option
+
+/// Parse a pattern used in a `case` arm or destructuring `let`.
+pub fn parse_pattern(
+  ps: List(#(token.Token, location.Span))
+) -> parse_result.ParseResult(ast.Pattern):
+  let ps1 = parse_result.skip_newlines(ps)
+  case ps1:
+    [] ->
+      parse_result.PErr(
+        error.ParseUnexpectedEof("pattern", location.zero("unknown"))
+      )
+    [#(token.TokDiscard(""), sp), ..rest] ->
+      parse_result.POk(ast.PWild(sp), rest)
+    [#(token.TokDiscard(name), sp), ..rest] ->
+      parse_result.POk(ast.PDiscard(name, sp), rest)
+    [#(token.TokInt(v), sp), ..rest] ->
+      parse_result.POk(ast.PInt(v, sp), rest)
+    [#(token.TokMinus, sp), #(token.TokInt(v), _), ..rest] ->
+      parse_result.POk(ast.PInt("-" <> v, sp), rest)
+    [#(token.TokFloat(v), sp), ..rest] ->
+      parse_result.POk(ast.PFloat(v, sp), rest)
+    [#(token.TokString(v), sp), ..rest] ->
+      parse_result.POk(ast.PString(v, sp), rest)
+    [#(token.TokBool(True), sp), ..rest] ->
+      parse_result.POk(ast.PBool(True, sp), rest)
+    [#(token.TokBool(False), sp), ..rest] ->
+      parse_result.POk(ast.PBool(False, sp), rest)
+    [#(token.TokUpperName(name), sp), ..rest] ->
+      case rest:
+        [#(token.TokLParen, _), ..rest2] ->
+          case parse_paren_patterns(rest2, []):
+            parse_result.PErr(e) -> parse_result.PErr(e)
+            parse_result.POk(args, ps2) ->
+              parse_result.POk(ast.PCons(option.None, name, args, sp), ps2)
+        _ ->
+          parse_result.POk(ast.PCons(option.None, name, [], sp), rest)
+    [#(token.TokName(name), sp), ..rest] ->
+      case rest:
+        [#(token.TokDot, _), #(token.TokUpperName(ctor), _), ..rest2] ->
+          case rest2:
+            [#(token.TokLParen, _), ..rest3] ->
+              case parse_paren_patterns(rest3, []):
+                parse_result.PErr(e) -> parse_result.PErr(e)
+                parse_result.POk(args, ps2) ->
+                  parse_result.POk(
+                    ast.PCons(option.Some(name), ctor, args, sp),
+                    ps2
+                  )
+            _ ->
+              parse_result.POk(
+                ast.PCons(option.Some(name), ctor, [], sp),
+                rest2
+              )
+        _ ->
+          parse_result.POk(ast.PVar(name, sp), rest)
+    [#(token.TokHash, sp), ..rest] ->
+      case rest:
+        [#(token.TokLParen, _), ..rest2] ->
+          case parse_paren_patterns(rest2, []):
+            parse_result.PErr(e) -> parse_result.PErr(e)
+            parse_result.POk(elems, ps2) ->
+              parse_result.POk(ast.PTuple(elems, sp), ps2)
+        [#(tok, sp2), .._] ->
+          parse_result.PErr(
+            error.ParseUnexpectedToken(token.to_string(tok), "(", sp2)
+          )
+        [] ->
+          parse_result.PErr(error.ParseUnexpectedEof("(", sp))
+    [#(token.TokLSquare, sp), ..rest] ->
+      parse_list_pattern(rest, sp)
+    [#(tok, sp), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "pattern", sp)
+      )
+
+fn parse_paren_patterns(
+  ps: List(#(token.Token, location.Span)),
+  acc: List(ast.Pattern)
+) -> parse_result.ParseResult(List(ast.Pattern)):
+  let ps1 = parse_result.skip_newlines(ps)
+  let ps2 = strip_pattern_label(ps1)
+  case ps2:
+    [#(token.TokRParen, _), ..rest] ->
+      parse_result.POk(list.reverse(acc), rest)
+    _ ->
+      case parse_pattern(ps2):
+        parse_result.PErr(e) -> parse_result.PErr(e)
+        parse_result.POk(p, ps3) ->
+          case ps3:
+            [#(token.TokComma, _), ..ps4] ->
+              parse_paren_patterns(parse_result.skip_newlines(ps4), [p, ..acc])
+            [#(token.TokRParen, _), ..rest] ->
+              parse_result.POk(list.reverse([p, ..acc]), rest)
+            [#(tok, sp), .._] ->
+              parse_result.PErr(
+                error.ParseUnexpectedToken(token.to_string(tok), ", or )", sp)
+              )
+            [] ->
+              parse_result.PErr(
+                error.ParseUnexpectedEof(")", location.zero("unknown"))
+              )
+
+fn strip_pattern_label(
+  ps: List(#(token.Token, location.Span))
+) -> List(#(token.Token, location.Span)):
+  case ps:
+    [#(token.TokName(_), _), #(token.TokColon, _), ..rest] -> rest
+    _ -> ps
+
+fn parse_list_pattern(
+  ps: List(#(token.Token, location.Span)),
+  sp: location.Span
+) -> parse_result.ParseResult(ast.Pattern):
+  let ps1 = parse_result.skip_newlines(ps)
+  case ps1:
+    [#(token.TokRSquare, _), ..rest] ->
+      parse_result.POk(ast.PList([], option.None, sp), rest)
+    _ ->
+      parse_list_elems(ps1, sp, [])
+
+fn parse_list_elems(
+  ps: List(#(token.Token, location.Span)),
+  sp: location.Span,
+  acc: List(ast.Pattern)
+) -> parse_result.ParseResult(ast.Pattern):
+  case parse_pattern(ps):
+    parse_result.PErr(e) -> parse_result.PErr(e)
+    parse_result.POk(p, ps2) ->
+      let acc1 = [p, ..acc]
+      case ps2:
+        [#(token.TokComma, _), #(token.TokDotDot, _), ..ps3] ->
+          parse_list_spread(ps3, sp, list.reverse(acc1))
+        [#(token.TokComma, _), ..ps3] ->
+          parse_list_elems(parse_result.skip_newlines(ps3), sp, acc1)
+        [#(token.TokRSquare, _), ..rest] ->
+          parse_result.POk(ast.PList(list.reverse(acc1), option.None, sp), rest)
+        [#(token.TokDotDot, _), ..ps3] ->
+          parse_list_spread(ps3, sp, list.reverse(acc1))
+        [#(tok, sp2), .._] ->
+          parse_result.PErr(
+            error.ParseUnexpectedToken(token.to_string(tok), ", ] or ..", sp2)
+          )
+        [] ->
+          parse_result.PErr(error.ParseUnexpectedEof("]", sp))
+
+fn parse_list_spread(
+  ps: List(#(token.Token, location.Span)),
+  sp: location.Span,
+  elems: List(ast.Pattern)
+) -> parse_result.ParseResult(ast.Pattern):
+  case ps:
+    [#(token.TokRSquare, _), ..rest] ->
+      parse_result.POk(ast.PList(elems, option.Some("_"), sp), rest)
+    [#(token.TokDiscard(""), _), ..rest] ->
+      case rest:
+        [#(token.TokRSquare, _), ..rest2] ->
+          parse_result.POk(ast.PList(elems, option.Some("_"), sp), rest2)
+        [#(tok, sp2), .._] ->
+          parse_result.PErr(
+            error.ParseUnexpectedToken(token.to_string(tok), "]", sp2)
+          )
+        [] ->
+          parse_result.PErr(error.ParseUnexpectedEof("]", sp))
+    [#(token.TokDiscard(n), _), ..rest] ->
+      let tail_name = "_" <> n
+      case rest:
+        [#(token.TokRSquare, _), ..rest2] ->
+          parse_result.POk(ast.PList(elems, option.Some(tail_name), sp), rest2)
+        [#(tok, sp2), .._] ->
+          parse_result.PErr(
+            error.ParseUnexpectedToken(token.to_string(tok), "]", sp2)
+          )
+        [] ->
+          parse_result.PErr(error.ParseUnexpectedEof("]", sp))
+    [#(token.TokName(name), _), ..rest] ->
+      case rest:
+        [#(token.TokRSquare, _), ..rest2] ->
+          parse_result.POk(ast.PList(elems, option.Some(name), sp), rest2)
+        [#(tok, sp2), .._] ->
+          parse_result.PErr(
+            error.ParseUnexpectedToken(token.to_string(tok), "]", sp2)
+          )
+        [] ->
+          parse_result.PErr(error.ParseUnexpectedEof("]", sp))
+    [#(tok, sp2), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "name or _", sp2)
+      )
+    [] ->
+      parse_result.PErr(error.ParseUnexpectedEof("spread variable", sp))

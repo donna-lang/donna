@@ -1,0 +1,267 @@
+//// Documentation extractor.
+//// Reads module and declaration doc comments from parsed source text and
+//// produces structured data for the HTML renderer.
+
+import compiler/lexer/lexer
+import compiler/parser/parser
+import compiler/parser/ast
+import tools/fmt/formatter
+import utilities/location
+import donna/string
+import donna/list
+import donna/option
+
+/// Documented constructor extracted from a type declaration.
+pub type DocCtor:
+  DocCtor(name: String, doc: String, fields: List(String))
+
+/// Documented top-level item extracted from source.
+pub type DocItem:
+  DocFn(name: String, is_pub: Bool, signature: String, doc: String)
+  DocExternalFn(name: String, is_pub: Bool, signature: String, doc: String)
+  DocType(name: String, is_pub: Bool, type_params: List(String), ctors: List(DocCtor), doc: String)
+  DocConst(name: String, is_pub: Bool, type_ann: String, doc: String)
+
+/// Documentation extracted for one Donna module.
+pub type DocModule:
+  DocModule(name: String, module_doc: String, types: List(DocItem), functions: List(DocItem), constants: List(DocItem), external_fns: List(DocItem))
+
+/// Extract module, type, constructor, and function docs from Donna source.
+pub fn extract(src: String, file: String, module_name: String) -> DocModule:
+  let comments = scan_doc_comments(src)
+  case lexer.lex(src, file):
+    lexer.LexErrors(_) -> empty_doc_module(module_name)
+    lexer.LexOk(toks) ->
+      case parser.parse(toks, file):
+        parser.ParseErrors(_) -> empty_doc_module(module_name)
+        parser.ParseOk(m) -> extract_from_ast(m, module_name, comments)
+
+fn empty_doc_module(name: String) -> DocModule:
+  DocModule(name, "", [], [], [], [])
+
+fn extract_from_ast(
+  m: ast.Module,
+  name: String,
+  comments: List(#(Int, String))
+) -> DocModule:
+  case m:
+    ast.Module(doc_lines, _, consts, type_defs, fns) ->
+      let module_doc = string.join(doc_lines, "\n")
+      DocModule(
+        name,
+        module_doc,
+        extract_types(type_defs, comments, []),
+        extract_regular_fns(fns, comments, []),
+        extract_consts(consts, comments, []),
+        extract_external_fns(fns, comments, [])
+      )
+
+fn extract_types(
+  tds: List(ast.TypeDef),
+  comments: List(#(Int, String)),
+  acc: List(DocItem)
+) -> List(DocItem):
+  case tds:
+    [] -> list.reverse(acc)
+    [td, ..rest] ->
+      case td:
+        ast.TypeDef(name, is_pub, is_opaque, type_params, ctors, span) ->
+          case is_pub:
+            False -> extract_types(rest, comments, acc)
+            True ->
+              let decl_line = span_line(span)
+              let doc = find_doc(comments, decl_line)
+              let ctor_list = case is_opaque:
+                True -> []
+                False -> extract_ctors(ctors, comments, [])
+              let item = DocType(name, is_pub, type_params, ctor_list, doc)
+              extract_types(rest, comments, [item, ..acc])
+
+fn extract_ctors(
+  ctors: List(ast.ConstructorDef),
+  comments: List(#(Int, String)),
+  acc: List(DocCtor)
+) -> List(DocCtor):
+  case ctors:
+    [] -> list.reverse(acc)
+    [ctor, ..rest] ->
+      case ctor:
+        ast.ConstructorDef(name, param_names, field_types, span) ->
+          let doc = find_doc(comments, span_line(span))
+          let fields = render_fields(param_names, field_types, [])
+          extract_ctors(rest, comments, [DocCtor(name, doc, fields), ..acc])
+
+fn extract_regular_fns(
+  fns: List(ast.Function),
+  comments: List(#(Int, String)),
+  acc: List(DocItem)
+) -> List(DocItem):
+  case fns:
+    [] -> list.reverse(acc)
+    [f, ..rest] ->
+      case f:
+        ast.Function(name, is_pub, params, ret_ann, _, span) ->
+          case is_pub:
+            False -> extract_regular_fns(rest, comments, acc)
+            True ->
+              let doc = find_doc(comments, span_line(span))
+              let sig = render_fn_sig(name, True, params, ret_ann)
+              extract_regular_fns(
+                rest,
+                comments,
+                [DocFn(name, True, sig, doc), ..acc]
+              )
+        ast.ExternalFn(_, _, _, _, _, _, _) ->
+          extract_regular_fns(rest, comments, acc)
+
+fn extract_external_fns(
+  fns: List(ast.Function),
+  comments: List(#(Int, String)),
+  acc: List(DocItem)
+) -> List(DocItem):
+  case fns:
+    [] -> list.reverse(acc)
+    [f, ..rest] ->
+      case f:
+        ast.Function(_, _, _, _, _, _) ->
+          extract_external_fns(rest, comments, acc)
+        ast.ExternalFn(name, is_pub, params, ret_ann, _, _, span) ->
+          case is_pub:
+            False -> extract_external_fns(rest, comments, acc)
+            True ->
+              let doc = find_doc(comments, span_line(span))
+              let sig = "@external " <> render_fn_sig(name, True, params, ret_ann)
+              extract_external_fns(
+                rest,
+                comments,
+                [DocExternalFn(name, True, sig, doc), ..acc]
+              )
+
+fn extract_consts(
+  consts: List(ast.Const),
+  comments: List(#(Int, String)),
+  acc: List(DocItem)
+) -> List(DocItem):
+  case consts:
+    [] -> list.reverse(acc)
+    [c, ..rest] ->
+      case c:
+        ast.Const(name, is_pub, type_ann, _, span) ->
+          case is_pub:
+            False -> extract_consts(rest, comments, acc)
+            True ->
+              let doc = find_doc(comments, span_line(span))
+              let ann_str = case type_ann:
+                option.None -> ""
+                option.Some(ann) -> formatter.format_type_ann(ann)
+              extract_consts(
+                rest,
+                comments,
+                [DocConst(name, True, ann_str, doc), ..acc]
+              )
+
+fn render_fn_sig(
+  name: String,
+  is_pub: Bool,
+  params: List(ast.Param),
+  ret_ann: option.Option(ast.TypeAnnotation)
+) -> String:
+  let pub_str = case is_pub:
+    True -> "pub "
+    False -> ""
+  let params_str = string.join(render_params(params, []), ", ")
+  let ret_str = case ret_ann:
+    option.None -> ""
+    option.Some(ann) -> " -> " <> formatter.format_type_ann(ann)
+  pub_str <> "fn " <> name <> "(" <> params_str <> ")" <> ret_str
+
+fn render_params(params: List(ast.Param), acc: List(String)) -> List(String):
+  case params:
+    [] -> list.reverse(acc)
+    [p, ..rest] ->
+      let s = case p:
+        ast.Param(pname, option.None, _) -> pname
+        ast.Param(pname, option.Some(ann), _) ->
+          pname <> ": " <> formatter.format_type_ann(ann)
+      render_params(rest, [s, ..acc])
+
+fn render_fields(
+  names: List(String),
+  types: List(ast.TypeAnnotation),
+  acc: List(String)
+) -> List(String):
+  case #(names, types):
+    #([], _) -> list.reverse(acc)
+    #(_, []) -> list.reverse(acc)
+    #([n, ..nrest], [t, ..trest]) ->
+      let s = case string.is_empty(n):
+        True -> formatter.format_type_ann(t)
+        False -> n <> ": " <> formatter.format_type_ann(t)
+      render_fields(nrest, trest, [s, ..acc])
+
+fn scan_doc_comments(src: String) -> List(#(Int, String)):
+  collect_blocks(string.split(src, "\n"), 1, [], [])
+
+fn collect_blocks(
+  lines: List(String),
+  line_num: Int,
+  current: List(String),
+  acc: List(#(Int, String))
+) -> List(#(Int, String)):
+  case lines:
+    [] ->
+      case current:
+        [] -> list.reverse(acc)
+        _ ->
+          let text = string.join(list.reverse(current), "\n")
+          list.reverse([#(line_num - 1, text), ..acc])
+    [line, ..rest] ->
+      case is_doc_line(line):
+        True ->
+          collect_blocks(
+            rest,
+            line_num + 1,
+            [strip_doc_prefix(line), ..current],
+            acc
+          )
+        False ->
+          case current:
+            [] -> collect_blocks(rest, line_num + 1, [], acc)
+            _ ->
+              let text = string.join(list.reverse(current), "\n")
+              collect_blocks(
+                rest,
+                line_num + 1,
+                [],
+                [#(line_num - 1, text), ..acc]
+              )
+
+fn is_doc_line(line: String) -> Bool:
+  let t = string.trim_start(line)
+  case string.starts_with(t, "///"):
+    False -> False
+    True ->
+      case string.length(t) >= 4:
+        False -> True
+        True ->
+          case string.char_str(t, 3):
+            "/" -> False
+            _ -> True
+
+fn strip_doc_prefix(line: String) -> String:
+  let t = string.trim_start(line)
+  let after = string.slice(t, 3, string.length(t) - 3)
+  case string.starts_with(after, " "):
+    True -> string.slice(after, 1, string.length(after) - 1)
+    False -> after
+
+fn find_doc(comments: List(#(Int, String)), decl_line: Int) -> String:
+  case comments:
+    [] -> ""
+    [#(last_line, text), ..rest] ->
+      case last_line == decl_line - 1:
+        True -> text
+        False -> find_doc(rest, decl_line)
+
+fn span_line(span: location.Span) -> Int:
+  location.pos_line(location.span_start(span))

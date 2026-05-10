@@ -1,0 +1,68 @@
+//// Constant declaration parser.
+//// Parses top-level `const` declarations, including public visibility and
+//// optional type annotations.
+
+import compiler/lexer/token
+import utilities/location
+import errors/error
+import compiler/parser/ast
+import compiler/parser/parse_result
+import compiler/parser/parse_types
+import compiler/parser/parse_exprs
+import donna/option
+
+/// Parse a top-level constant declaration.
+pub fn parse_const(
+  ps: List(#(token.Token, location.Span))
+) -> parse_result.ParseResult(ast.Const):
+  let #(is_pub, ps1) = parse_pub(ps)
+  case ps1:
+    [#(token.TokConst, sp), #(token.TokName(name), _), ..rest] ->
+      let #(ann, ps2) = parse_optional_annotation(rest)
+      case ps2:
+        [#(token.TokEqual, _), ..ps3] ->
+          case parse_exprs.parse_expr(ps3):
+            parse_result.PErr(e) -> parse_result.PErr(e)
+            parse_result.POk(value, ps4) ->
+              let ps5 = parse_result.skip_newlines(ps4)
+              parse_result.POk(ast.Const(name, is_pub, ann, value, sp), ps5)
+        [#(tok, sp2), .._] ->
+          parse_result.PErr(
+            error.ParseUnexpectedToken(token.to_string(tok), "=", sp2)
+          )
+        [] ->
+          parse_result.PErr(
+            error.ParseUnexpectedEof("=", location.zero("unknown"))
+          )
+    [#(token.TokConst, _), #(tok, sp2), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "constant name", sp2)
+      )
+    [#(token.TokConst, sp), .._] ->
+      parse_result.PErr(error.ParseUnexpectedEof("constant name", sp))
+    [#(tok, sp), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "const", sp)
+      )
+    [] ->
+      parse_result.PErr(
+        error.ParseUnexpectedEof("const", location.zero("unknown"))
+      )
+
+fn parse_pub(
+  ps: List(#(token.Token, location.Span))
+) -> #(Bool, List(#(token.Token, location.Span))):
+  case ps:
+    [#(token.TokPub, _), ..rest] -> #(True, rest)
+    _ -> #(False, ps)
+
+fn parse_optional_annotation(
+  ps: List(#(token.Token, location.Span))
+) -> #(option.Option(ast.TypeAnnotation), List(#(token.Token, location.Span))):
+  case ps:
+    [#(token.TokColon, _), ..rest] ->
+      case parse_types.parse_type(rest):
+        parse_result.PErr(_) -> #(option.None, ps)
+        parse_result.POk(ann, ps2) -> #(option.Some(ann), ps2)
+    _ ->
+      #(option.None, ps)

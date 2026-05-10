@@ -1,0 +1,177 @@
+//// Donna type model.
+//// Defines concrete types, type schemes, type errors, typed expressions, and
+//// helpers for comparing and displaying types.
+
+import compiler/parser/ast
+import donna/list
+import donna/string
+import donna/int
+import donna/option
+
+/// Typechecker representation of Donna types.
+pub type Type:
+  TInt
+  TFloat
+  TString
+  TBool
+  TNil
+  TListType(Type)
+  TTupleType(List(Type))
+  TFnType(List(Type), Type)
+  TNamedType(String, List(Type))
+  TTypeVar(Int)
+
+/// Monomorphic or polymorphic type binding.
+pub type TypeScheme:
+  Mono(Type)
+  Poly(List(Int), Type)
+
+/// Internal typechecking failure.
+pub type TypeError:
+  TypeMismatch(String, String, String)
+  UnboundVariable(String)
+  TypeCheckError(String)
+
+/// A typechecked statement.
+pub type TypedStatement:
+  TStmtLet(String, Type, TypedExpr)
+  TStmtLetPat(ast.Pattern, TypedExpr)
+  TStmtExpr(Type, TypedExpr)
+
+/// A typechecked `case` clause.
+pub type TypedClause:
+  TypedClause(ast.Pattern, option.Option(TypedExpr), TypedExpr, Type)
+
+/// A typechecked expression carrying its inferred type.
+pub type TypedExpr:
+  TEIntLit(String, Type)
+  TEFloatLit(String, Type)
+  TEStringLit(String, Type)
+  TEBoolLit(Bool, Type)
+  TEVar(String, Type)
+  TEFieldAccess(TypedExpr, String, String, Type)
+  TECall(TypedExpr, List(TypedExpr), Type)
+  TEBinOp(ast.BinOpKind, TypedExpr, TypedExpr, Type)
+  TEUnaryOp(ast.UnaryKind, TypedExpr, Type)
+  TECase(TypedExpr, List(TypedClause), Type)
+  TETuple(List(TypedExpr), Type)
+  TEList(List(TypedExpr), Type)
+  TEListSpread(List(TypedExpr), TypedExpr, Type)
+  TEBlock(List(TypedStatement), Type)
+  TEEcho(TypedExpr, Type)
+  TELambda(List(#(String, Type)), TypedExpr, Type)
+  TEPanic(TypedExpr, Type)
+  TETodo(Type)
+
+/// Render a typechecker error as a compact string.
+pub fn type_error_to_string(e: TypeError) -> String:
+  case e:
+    TypeMismatch(expected, found, ctx) ->
+      "type mismatch in " <> ctx <> ": expected " <> expected <> ", found " <> found
+    UnboundVariable(name) ->
+      "unbound variable `" <> name <> "`"
+    TypeCheckError(msg) ->
+      msg
+
+/// Return whether two types are compatible.
+pub fn types_equal(a: Type, b: Type) -> Bool:
+  case a:
+    TTypeVar(_) -> True
+    TInt ->
+      case b:
+        TInt -> True
+        _ -> False
+    TFloat ->
+      case b:
+        TFloat -> True
+        _ -> False
+    TString ->
+      case b:
+        TString -> True
+        _ -> False
+    TBool ->
+      case b:
+        TBool -> True
+        _ -> False
+    TNil ->
+      case b:
+        TNil -> True
+        _ -> False
+    TListType(ea) ->
+      case b:
+        TListType(eb) -> types_equal(ea, eb)
+        _ -> False
+    TTupleType(ea) ->
+      case b:
+        TTupleType(eb) -> types_equal_list(ea, eb)
+        _ -> False
+    TFnType(pa, ra) ->
+      case b:
+        TFnType(pb, rb) -> types_equal_list(pa, pb) && types_equal(ra, rb)
+        _ -> False
+    TNamedType(na, xa) ->
+      case b:
+        TNamedType(nb, xb) ->
+          case string.equal(na, nb):
+            False -> False
+            True ->
+              case list.is_empty(xa):
+                True -> True
+                False ->
+                  case list.is_empty(xb):
+                    True -> True
+                    False -> types_equal_list(xa, xb)
+        _ -> False
+
+fn types_equal_list(xs: List(Type), ys: List(Type)) -> Bool:
+  case xs:
+    [] ->
+      case ys:
+        [] -> True
+        _ -> False
+    [x, ..xr] ->
+      case ys:
+        [] -> False
+        [y, ..yr] -> types_equal(x, y) && types_equal_list(xr, yr)
+
+/// Render a type as Donna source-like text.
+pub fn type_to_string(t: Type) -> String:
+  case t:
+    TInt -> "Int"
+    TFloat -> "Float"
+    TString -> "String"
+    TBool -> "Bool"
+    TNil -> "Nil"
+    TListType(elem) -> "List(" <> type_to_string(elem) <> ")"
+    TTupleType(elems) ->
+      "#(" <> string.join(list.map(elems, type_to_string), ", ") <> ")"
+    TFnType(params, ret) ->
+      "fn(" <> string.join(list.map(params, type_to_string), ", ") <> ") -> " <> type_to_string(ret)
+    TNamedType(name, args) ->
+      case list.is_empty(args):
+        True -> name
+        False ->
+          name <> "(" <> string.join(list.map(args, type_to_string), ", ") <> ")"
+    TTypeVar(id) -> "a" <> int.to_string(id)
+
+/// Return the inferred type carried by a typed expression node.
+pub fn typed_expr_type(e: TypedExpr) -> Type:
+  case e:
+    TEIntLit(_, t) -> t
+    TEFloatLit(_, t) -> t
+    TEStringLit(_, t) -> t
+    TEBoolLit(_, t) -> t
+    TEVar(_, t) -> t
+    TEFieldAccess(_, _, _, t) -> t
+    TECall(_, _, t) -> t
+    TEBinOp(_, _, _, t) -> t
+    TEUnaryOp(_, _, t) -> t
+    TECase(_, _, t) -> t
+    TETuple(_, t) -> t
+    TEList(_, t) -> t
+    TEListSpread(_, _, t) -> t
+    TEBlock(_, t) -> t
+    TEEcho(_, t) -> t
+    TELambda(_, _, t) -> t
+    TEPanic(_, t) -> t
+    TETodo(t) -> t

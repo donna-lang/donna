@@ -1,0 +1,122 @@
+//// Type annotation parser.
+//// Parses named, tuple, function, parameterized, qualified, and multiline type
+//// annotations.
+
+import compiler/lexer/token
+import utilities/location
+import errors/error
+import compiler/parser/ast
+import compiler/parser/parse_result
+import donna/list
+
+/// Parse a type annotation.
+pub fn parse_type(
+  ps: List(#(token.Token, location.Span))
+) -> parse_result.ParseResult(ast.TypeAnnotation):
+  let ps1 = parse_result.skip_newlines(ps)
+  case ps1:
+    [#(token.TokUpperName(name), sp), ..rest] ->
+      case rest:
+        [#(token.TokLParen, _), ..rest2] ->
+          case parse_type_args(rest2, []):
+            parse_result.PErr(e) -> parse_result.PErr(e)
+            parse_result.POk(args, ps2) ->
+              parse_result.POk(ast.TyName(name, args, sp), ps2)
+        _ ->
+          parse_result.POk(ast.TyName(name, [], sp), rest)
+    [#(token.TokName(alias), sp), ..rest] ->
+      case rest:
+        [#(token.TokDot, _), #(token.TokUpperName(name), _), ..rest2] ->
+          case rest2:
+            [#(token.TokLParen, _), ..rest3] ->
+              case parse_type_args(rest3, []):
+                parse_result.PErr(e) -> parse_result.PErr(e)
+                parse_result.POk(args, ps2) ->
+                  parse_result.POk(
+                    ast.TyName(alias <> "." <> name, args, sp),
+                    ps2
+                  )
+            _ ->
+              parse_result.POk(ast.TyName(alias <> "." <> name, [], sp), rest2)
+        _ ->
+          parse_result.POk(ast.TyName(alias, [], sp), rest)
+    [#(token.TokHash, sp), ..rest] ->
+      case rest:
+        [#(token.TokLParen, _), ..rest2] ->
+          case parse_type_args(rest2, []):
+            parse_result.PErr(e) -> parse_result.PErr(e)
+            parse_result.POk(elems, ps2) ->
+              parse_result.POk(ast.TyTuple(elems, sp), ps2)
+        [#(tok, sp2), .._] ->
+          parse_result.PErr(
+            error.ParseUnexpectedToken(token.to_string(tok), "(", sp2)
+          )
+        [] ->
+          parse_result.PErr(
+            error.ParseUnexpectedEof("(", location.zero("unknown"))
+          )
+    [#(token.TokFn, sp), ..rest] ->
+      case rest:
+        [#(token.TokLParen, _), ..rest2] ->
+          case parse_type_args(rest2, []):
+            parse_result.PErr(e) -> parse_result.PErr(e)
+            parse_result.POk(params, ps2) ->
+              case ps2:
+                [#(token.TokArrow, _), ..ps3] ->
+                  case parse_type(ps3):
+                    parse_result.PErr(e) -> parse_result.PErr(e)
+                    parse_result.POk(ret, ps4) ->
+                      parse_result.POk(ast.TyFn(params, ret, sp), ps4)
+                [#(tok, sp2), .._] ->
+                  parse_result.PErr(
+                    error.ParseUnexpectedToken(token.to_string(tok), "->", sp2)
+                  )
+                [] ->
+                  parse_result.PErr(error.ParseUnexpectedEof("->", sp))
+        [#(tok, sp2), .._] ->
+          parse_result.PErr(
+            error.ParseUnexpectedToken(token.to_string(tok), "(", sp2)
+          )
+        [] ->
+          parse_result.PErr(error.ParseUnexpectedEof("(", sp))
+    [#(tok, sp), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "type", sp)
+      )
+    [] ->
+      parse_result.PErr(
+        error.ParseUnexpectedEof("type", location.zero("unknown"))
+      )
+
+/// Parse a comma-separated type list.
+pub fn parse_type_list(
+  ps: List(#(token.Token, location.Span)),
+  acc: List(ast.TypeAnnotation)
+) -> parse_result.ParseResult(List(ast.TypeAnnotation)):
+  parse_type_args(ps, acc)
+
+fn parse_type_args(
+  ps: List(#(token.Token, location.Span)),
+  acc: List(ast.TypeAnnotation)
+) -> parse_result.ParseResult(List(ast.TypeAnnotation)):
+  let ps1 = parse_result.skip_newlines(ps)
+  case ps1:
+    [#(token.TokRParen, _), ..rest] ->
+      parse_result.POk(list.reverse(acc), rest)
+    _ ->
+      case parse_type(ps1):
+        parse_result.PErr(e) -> parse_result.PErr(e)
+        parse_result.POk(ty, ps2) ->
+          case ps2:
+            [#(token.TokComma, _), ..ps3] ->
+              parse_type_args(parse_result.skip_newlines(ps3), [ty, ..acc])
+            [#(token.TokRParen, _), ..rest] ->
+              parse_result.POk(list.reverse([ty, ..acc]), rest)
+            [#(tok, sp), .._] ->
+              parse_result.PErr(
+                error.ParseUnexpectedToken(token.to_string(tok), ", or )", sp)
+              )
+            [] ->
+              parse_result.PErr(
+                error.ParseUnexpectedEof(")", location.zero("unknown"))
+              )

@@ -1,0 +1,173 @@
+//// Runs lightweight static analysis over parsed Donna modules and emits warnings for unused code and bindings.
+
+import compiler/parser/ast
+import compiler/analysis/scope
+import errors/error
+import utilities/location
+import donna/list
+import donna/option
+import donna/string
+
+/// Analyse a parsed module and return non-fatal compiler warnings.
+pub fn analyse(m: ast.Module) -> List(error.DonnaWarning):
+  case m:
+    ast.Module(_, imports, _, _, fns) ->
+      let import_ws = analyse_imports(imports, fns)
+      let unused_fns = analyse_unused_fns(fns)
+      let fn_ws = list.flat_map(fns, analyse_fn)
+      list.append(import_ws, list.append(unused_fns, fn_ws))
+
+fn analyse_unused_fns(fns: List(ast.Function)) -> List(error.DonnaWarning):
+  let all_refs = list.flat_map(fns, fn_refs)
+  check_unused_fns(fns, all_refs)
+
+fn check_unused_fns(
+  fns: List(ast.Function),
+  refs: List(String)
+) -> List(error.DonnaWarning):
+  case fns:
+    [] -> []
+    [f, ..rest] ->
+      let ws = check_unused_fns(rest, refs)
+      case f:
+        ast.ExternalFn(_, _, _, _, _, _, _) -> ws
+        ast.Function(name, is_pub, _, _, _, sp) ->
+          case is_pub:
+            True -> ws
+            False ->
+              case string.equal(name, "main"):
+                True -> ws
+                False ->
+                  case scope.contains_name(refs, name):
+                    True -> ws
+                    False -> [error.WarnUnusedFunction(name, sp), ..ws]
+
+fn analyse_imports(
+  imports: List(ast.Import),
+  fns: List(ast.Function)
+) -> List(error.DonnaWarning):
+  let all_refs = list.flat_map(fns, fn_refs)
+  check_imports(imports, all_refs)
+
+fn fn_refs(f: ast.Function) -> List(String):
+  case f:
+    ast.Function(_, _, _, _, body, _) -> scope.refs_in_expr(body)
+    ast.ExternalFn(_, _, _, _, _, _, _) -> []
+
+fn check_imports(
+  imports: List(ast.Import),
+  refs: List(String)
+) -> List(error.DonnaWarning):
+  case imports:
+    [] -> []
+    [imp, ..rest] ->
+      let ws = check_imports(rest, refs)
+      case imp:
+        ast.Import(_, alias, sp) ->
+          case scope.contains_name(refs, alias):
+            True -> ws
+            False -> [error.WarnUnusedImport(alias, sp), ..ws]
+
+fn analyse_fn(f: ast.Function) -> List(error.DonnaWarning):
+  case f:
+    ast.ExternalFn(_, _, _, _, _, _, _) -> []
+    ast.Function(name, _, params, _, body, _) ->
+      let body_refs = scope.refs_in_expr(body)
+      let param_ws = check_params(name, params, body_refs)
+      let body_ws = analyse_expr(body)
+      list.append(param_ws, body_ws)
+
+fn check_params(
+  fn_name: String,
+  params: List(ast.Param),
+  refs: List(String)
+) -> List(error.DonnaWarning):
+  case params:
+    [] -> []
+    [p, ..rest] ->
+      let rest_ws = check_params(fn_name, rest, refs)
+      case p:
+        ast.Param(name, _, sp) ->
+          case scope.is_discard(name):
+            True -> rest_ws
+            False ->
+              case scope.contains_name(refs, name):
+                True -> rest_ws
+                False -> [error.WarnUnusedParam(name, fn_name, sp), ..rest_ws]
+
+fn analyse_expr(e: ast.Expr) -> List(error.DonnaWarning):
+  case e:
+    ast.Block(stmts, _) -> analyse_block(stmts)
+    ast.Case(subj, clauses, _) ->
+      list.append(analyse_expr(subj), list.flat_map(clauses, analyse_clause))
+    ast.Lambda(_, body, _) -> analyse_expr(body)
+    ast.Call(f, args, _) ->
+      list.append(analyse_expr(f), list.flat_map(args, analyse_expr))
+    ast.BinOp(_, l, r, _) ->
+      list.append(analyse_expr(l), analyse_expr(r))
+    ast.Pipe(l, r, _) ->
+      list.append(analyse_expr(l), analyse_expr(r))
+    ast.Echo(inner, _) ->
+      analyse_expr(inner)
+    ast.Panic(inner, _) ->
+      analyse_expr(inner)
+    ast.Tuple(elems, _) ->
+      list.flat_map(elems, analyse_expr)
+    ast.EList(elems, _) ->
+      list.flat_map(elems, analyse_expr)
+    ast.ListSpread(elems, tail, _) ->
+      list.append(list.flat_map(elems, analyse_expr), analyse_expr(tail))
+    ast.UnaryOp(_, inner, _) ->
+      analyse_expr(inner)
+    ast.FieldAccess(obj, _, _) ->
+      analyse_expr(obj)
+    ast.Todo(sp) ->
+      [error.WarnTodo(sp)]
+    _ -> []
+
+fn analyse_clause(clause: ast.CaseClause) -> List(error.DonnaWarning):
+  case clause:
+    ast.CaseClause(_, guard_opt, body, _) ->
+      let guard_ws = case guard_opt:
+        option.None -> []
+        option.Some(g) -> analyse_expr(g)
+      list.append(guard_ws, analyse_expr(body))
+
+fn analyse_block(stmts: List(ast.Stmt)) -> List(error.DonnaWarning):
+  case stmts:
+    [] -> []
+    [stmt, ..rest] ->
+      let rest_ws = analyse_block(rest)
+      let rest_refs = scope.refs_in_stmts(rest)
+      case stmt:
+        ast.LetStmt(name, _, val, sp) ->
+          let val_ws = analyse_expr(val)
+          let unused_ws = case scope.is_discard(name):
+            True -> []
+            False ->
+              case scope.contains_name(rest_refs, name):
+                True -> []
+                False -> [error.WarnUnusedVariable(name, sp)]
+          list.append(val_ws, list.append(unused_ws, rest_ws))
+        ast.LetPatStmt(pat, val, _) ->
+          let val_ws = analyse_expr(val)
+          let bound = scope.bound_by_pattern(pat)
+          let binding_ws = check_unused_bindings(bound, rest_refs)
+          list.append(val_ws, list.append(binding_ws, rest_ws))
+        ast.ExprStmt(e, _) ->
+          list.append(analyse_expr(e), rest_ws)
+
+fn check_unused_bindings(
+  bindings: List(#(String, location.Span)),
+  refs: List(String)
+) -> List(error.DonnaWarning):
+  case bindings:
+    [] -> []
+    [#(name, sp), ..rest] ->
+      let rest_ws = check_unused_bindings(rest, refs)
+      case scope.is_discard(name):
+        True -> rest_ws
+        False ->
+          case scope.contains_name(refs, name):
+            True -> rest_ws
+            False -> [error.WarnUnusedVariable(name, sp), ..rest_ws]

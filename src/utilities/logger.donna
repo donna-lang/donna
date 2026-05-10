@@ -1,0 +1,116 @@
+//// CLI logger helpers.
+//// Provides consistent build, fetch, format, docs, warning, hint, and timing
+//// output for compiler commands.
+
+import utilities/colors
+import donna/int
+import donna/string
+
+/// Print a compile step line.
+pub fn step(module_name: String) -> Nil:
+  echo action("Compiling") <> module_name
+
+/// Print a dependency fetch line.
+pub fn fetch(name: String, url: String) -> Nil:
+  echo action("Fetching") <> name <> colors.dim("  " <> url)
+
+/// Print a compiler success line with a microsecond-resolution elapsed time.
+pub fn ok(module_name: String, elapsed_us: Int) -> Nil:
+  echo action("Compiled") <> "in " <> colors.dim(format_duration(elapsed_us))
+
+/// Print a formatting step line.
+pub fn formatting(name: String) -> Nil:
+  echo action("Formatting") <> name
+
+/// Print a formatter success line with a microsecond-resolution elapsed time.
+pub fn fmt_ok(elapsed_us: Int) -> Nil:
+  echo action("Formatted") <> "in " <> colors.dim(format_duration(elapsed_us))
+
+/// Print a documentation generation success line with elapsed time.
+pub fn docs_ok(elapsed_us: Int) -> Nil:
+  echo action("Generated") <> "in " <> colors.dim(format_duration(elapsed_us))
+
+/// Print a clean step line.
+pub fn cleaning(path: String) -> Nil:
+  echo action("Cleaning") <> colors.path(path)
+
+/// Print a clean success line with elapsed time.
+pub fn clean_ok(elapsed_us: Int) -> Nil:
+  echo action("Cleaned") <> "in " <> colors.dim(format_duration(elapsed_us))
+
+/// Print a check step line.
+pub fn checking(module_name: String) -> Nil:
+  echo action("Checking") <> module_name
+
+/// Print a check success line with elapsed time.
+pub fn check_ok(elapsed_us: Int) -> Nil:
+  echo action("Checked") <> "in " <> colors.dim(format_duration(elapsed_us))
+
+/// Print a generic successful output line with elapsed time.
+pub fn success(label: String, path: String, elapsed_us: Int) -> Nil:
+  echo action(label) <> "→ " <> colors.path(path) <> colors.dim("  " <> format_duration(elapsed_us))
+
+/// Print an error line.
+pub fn error(message: String) -> Nil:
+  echo colors.red("error") <> ": " <> message
+
+/// Print a warning line.
+pub fn warn(message: String) -> Nil:
+  echo colors.yellow("warning") <> ": " <> message
+
+/// Print an indented hint line.
+pub fn hint(message: String) -> Nil:
+  echo colors.dim("  hint: " <> message)
+
+/// Print an indented informational line.
+pub fn info(message: String) -> Nil:
+  echo colors.dim("  " <> message)
+
+/// Print an error and warning summary.
+pub fn summary(errors: Int, warnings: Int) -> Nil:
+  case errors == 0:
+    False ->
+      echo "Donna found " <> int.to_string(errors) <> " error(s) and " <> int.to_string(warnings) <> " warning(s)."
+    True ->
+      case warnings == 0:
+        True -> echo ""
+        False ->
+          echo "Donna found " <> int.to_string(errors) <> " error(s) and " <> int.to_string(warnings) <> " warning(s)."
+
+fn action(label: String) -> String:
+  colors.orange("  " <> pad_left(label, 10) <> " ")
+
+fn pad_left(s: String, width: Int) -> String:
+  let len = string.length(s)
+  case len >= width:
+    True -> s
+    False -> repeat_spaces(width - len) <> s
+
+fn repeat_spaces(n: Int) -> String:
+  case n <= 0:
+    True -> ""
+    False -> " " <> repeat_spaces(n - 1)
+
+fn format_duration(us: Int) -> String:
+  case us < 1000:
+    True -> int.to_string(us) <> "us"
+    False ->
+      case us < 1000000:
+        True -> format_ms(us)
+        False -> format_seconds(us)
+
+fn format_ms(us: Int) -> String:
+  let ms = us / 1000
+  let hundredths = us % 1000 / 10
+  let frac = case hundredths < 10:
+    True -> "0" <> int.to_string(hundredths)
+    False -> int.to_string(hundredths)
+  int.to_string(ms) <> "." <> frac <> "ms"
+
+fn format_seconds(us: Int) -> String:
+  let secs = us / 1000000
+  let hundredths = us % 1000000 / 10000
+  let frac = case hundredths < 10:
+    True -> "0" <> int.to_string(hundredths)
+    False -> int.to_string(hundredths)
+  int.to_string(secs) <> "." <> frac <> "s"

@@ -1,0 +1,159 @@
+//// Semantic-version constraint checks.
+//// Dependency resolution uses this module to decide whether a package version
+//// satisfies a version requirement from `donna.toml`.
+
+import donna/string
+import donna/list
+import donna/int
+import donna/option
+
+/// A parsed semantic version.
+pub type Version:
+  Version(major: Int, minor: Int, patch: Int)
+
+/// A single semantic-version bound.
+pub type Constraint:
+  Gte(Version)
+  Gt(Version)
+  Lte(Version)
+  Lt(Version)
+
+/// Parse a semantic version string such as `1.2.3` or `v1.2.3`.
+pub fn parse(s: String) -> option.Option(Version):
+  let clean = case string.starts_with(s, "v"):
+    True -> string.slice(s, 1, string.length(s) - 1)
+    False -> s
+  case string.split(clean, "."):
+    [maj_s, min_s, pat_s] ->
+      option.Some(Version(parse_nat(maj_s), parse_nat(min_s), parse_nat(pat_s)))
+    _ -> option.None
+
+/// Parse an `and`-joined set of version constraints.
+///
+/// Supported operators are `>`, `>=`, `<`, and `<=`.
+pub fn parse_constraints(s: String) -> List(Constraint):
+  collect_constraints(split_and(s), [])
+
+/// Compare two versions, returning `-1`, `0`, or `1`.
+pub fn compare(a: Version, b: Version) -> Int:
+  let amaj = vmajor(a)
+  let bmaj = vmajor(b)
+  case amaj == bmaj:
+    False ->
+      case amaj > bmaj:
+        True -> 1
+        False -> -1
+    True ->
+      let amin = vminor(a)
+      let bmin = vminor(b)
+      case amin == bmin:
+        False ->
+          case amin > bmin:
+            True -> 1
+            False -> -1
+        True ->
+          let ap = vpatch(a)
+          let bp = vpatch(b)
+          case ap == bp:
+            True -> 0
+            False ->
+              case ap > bp:
+                  True -> 1
+                  False -> -1
+
+/// Return whether a version satisfies every constraint in the list.
+pub fn satisfies(v: Version, cs: List(Constraint)) -> Bool:
+  case cs:
+    [] -> True
+    [c, ..rest] ->
+      case satisfies_one(v, c):
+        False -> False
+        True -> satisfies(v, rest)
+
+/// Render a semantic version as `major.minor.patch`.
+pub fn to_string(v: Version) -> String:
+  int.to_string(vmajor(v)) <> "." <> int.to_string(vminor(v)) <> "." <> int.to_string(vpatch(v))
+
+fn satisfies_one(v: Version, c: Constraint) -> Bool:
+  case c:
+    Gte(b) -> compare(v, b) >= 0
+    Gt(b) -> compare(v, b) > 0
+    Lte(b) -> compare(v, b) <= 0
+    Lt(b) -> compare(v, b) < 0
+
+fn split_and(s: String) -> List(String):
+  let idx = string.index_of(s, " and ")
+  case idx == -1:
+    True -> [string.trim(s)]
+    False ->
+      let left = string.trim(string.slice(s, 0, idx))
+      let right = string.trim(string.slice(s, idx + 5, string.length(s) - idx - 5))
+      [left, ..split_and(right)]
+
+fn collect_constraints(
+  parts: List(String),
+  acc: List(Constraint)
+) -> List(Constraint):
+  case parts:
+    [] -> list.reverse(acc)
+    [s, ..rest] ->
+      case parse_one(s):
+        option.None -> collect_constraints(rest, acc)
+        option.Some(c) -> collect_constraints(rest, [c, ..acc])
+
+fn parse_one(s: String) -> option.Option(Constraint):
+  case string.starts_with(s, ">="):
+    True ->
+      let ver_s = string.trim(string.slice(s, 2, string.length(s) - 2))
+      case parse(ver_s):
+        option.None -> option.None
+        option.Some(v) -> option.Some(Gte(v))
+    False ->
+      case string.starts_with(s, ">"):
+        True ->
+          let ver_s = string.trim(string.slice(s, 1, string.length(s) - 1))
+          case parse(ver_s):
+            option.None -> option.None
+            option.Some(v) -> option.Some(Gt(v))
+        False ->
+          case string.starts_with(s, "<="):
+            True ->
+              let ver_s = string.trim(string.slice(s, 2, string.length(s) - 2))
+              case parse(ver_s):
+                option.None -> option.None
+                option.Some(v) -> option.Some(Lte(v))
+            False ->
+              case string.starts_with(s, "<"):
+                True ->
+                  let ver_s = string.trim(string.slice(s, 1, string.length(s) - 1))
+                  case parse(ver_s):
+                    option.None -> option.None
+                    option.Some(v) -> option.Some(Lt(v))
+                False ->
+                  case parse(string.trim(s)):
+                    option.None -> option.None
+                    option.Some(v) -> option.Some(Gte(v))
+
+fn vmajor(v: Version) -> Int:
+  case v:
+    Version(n, _, _) -> n
+
+fn vminor(v: Version) -> Int:
+  case v:
+    Version(_, n, _) -> n
+
+fn vpatch(v: Version) -> Int:
+  case v:
+    Version(_, _, n) -> n
+
+fn parse_nat(s: String) -> Int:
+  parse_nat_loop(s, 0, string.length(s), 0)
+
+fn parse_nat_loop(s: String, pos: Int, len: Int, acc: Int) -> Int:
+  case pos >= len:
+    True -> acc
+    False ->
+      let c = string.char_at(s, pos)
+      case c >= 48 && c <= 57:
+        True -> parse_nat_loop(s, pos + 1, len, acc * 10 + c - 48)
+        False -> acc

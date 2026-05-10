@@ -1,0 +1,208 @@
+//// Maps compiler diagnostics to user-facing titles, labels, and repair hints.
+
+import errors/error
+import donna/int
+
+/// Convert an error into a title, source label, and repair hint.
+pub fn error_message(e: error.DonnaError) -> #(String, String, String):
+  case e:
+    error.LexUnexpectedChar(ch, _) ->
+      #(
+        "unexpected character",
+        "unexpected `" <> ch <> "` here",
+        "remove this character or check for a typo"
+      )
+    error.LexUnterminatedString(_) ->
+      #(
+        "unterminated string",
+        "string opened here is never closed",
+        "add a closing `\"` to end the string"
+      )
+    error.LexInvalidEscape(ch, _) ->
+      #(
+        "invalid escape sequence",
+        "unknown escape `\\" <> ch <> "`",
+        "valid escapes are \\n \\t \\r \\a \\b \\f \\v \\e \\\\ \\\" \\xNN \\u{NNNN}"
+      )
+    error.LexInvalidHexEscape(_) ->
+      #(
+        "invalid hex escape",
+        "expected two hex digits after `\\x`",
+        "example: `\\x41` for `A`"
+      )
+    error.LexInvalidUnicodeEscape(_) ->
+      #(
+        "invalid unicode escape",
+        "expected hex digits in `\\u{...}`",
+        "example: `\\u{1F600}` for an emoji"
+      )
+    error.LexEmptyNumberLiteral(prefix, _) ->
+      #(
+        "empty number literal",
+        "expected digits after `" <> prefix <> "`",
+        "add at least one digit, e.g. `" <> prefix <> "1`"
+      )
+    error.ParseUnexpectedToken(got, expected, _) ->
+      #(
+        "unexpected token",
+        "found `" <> got <> "`, expected " <> expected,
+        hint_for_unexpected(expected)
+      )
+    error.ParseUnexpectedEof(expected, _) ->
+      #(
+        "unexpected end of file",
+        "expected " <> expected <> " before end of file",
+        "check for a missing closing delimiter or incomplete expression"
+      )
+    error.ParseInvalidIndent(_) ->
+      #(
+        "invalid indentation",
+        "indentation does not match any outer block",
+        "Donna uses 2-space indentation — check for mixed tabs and spaces"
+      )
+    error.ParseMissingColon(_) ->
+      #(
+        "missing colon",
+        "expected `:` to open a block here",
+        "add `:` at the end of this line"
+      )
+    error.ParseMissingArrow(_) ->
+      #(
+        "missing arrow",
+        "expected `->` to begin the arm result",
+        "add `->` after the pattern: `Pattern -> expr`"
+      )
+    error.ParseUppercaseFnName(name, _) ->
+      #(
+        "invalid function name",
+        "`" <> name <> "` starts with an uppercase letter",
+        "function names must start with a lowercase letter"
+      )
+    error.ParseLowercaseTypeName(name, _) ->
+      #(
+        "invalid type name",
+        "`" <> name <> "` starts with a lowercase letter",
+        "type names must start with an uppercase letter"
+      )
+    error.TypeMismatch(expected, found, _) ->
+      #(
+        "type mismatch",
+        "expected `" <> expected <> "`, found `" <> found <> "`",
+        "check that the types match or update the annotation"
+      )
+    error.TypeUndefinedVar(name, _) ->
+      #(
+        "undefined variable",
+        "`" <> name <> "` is not defined in this scope",
+        "check the spelling or add a `let` binding above"
+      )
+    error.TypeUndefinedModule(name, _) ->
+      #(
+        "undefined module",
+        "`" <> name <> "` has not been imported",
+        "add the missing import at the top of the file"
+      )
+    error.TypeWrongArgCount(expected, found, _) ->
+      #(
+        "wrong number of arguments",
+        "expected " <> int.to_string(expected) <> " argument(s), found " <> int.to_string(found),
+        "check the function signature and adjust the number of arguments"
+      )
+    error.TypeNotAFunction(ty, _) ->
+      #(
+        "not a function",
+        "`" <> ty <> "` is not a function and cannot be called",
+        "check that you are calling the right name"
+      )
+    error.TypeDuplicateFunction(name, _) ->
+      #(
+        "duplicate function",
+        "`" <> name <> "` is already defined in this module",
+        "rename one of the two definitions"
+      )
+    error.TypeInvalidReturn(expected, found, _) ->
+      #(
+        "invalid return type",
+        "function returns `" <> found <> "`, declared as `" <> expected <> "`",
+        "change the return type annotation to `" <> found <> "` or fix the function body"
+      )
+
+fn hint_for_unexpected(expected: String) -> String:
+  case expected:
+    "function name" -> "function names must start with a lowercase letter"
+    "constant name" -> "constant names must start with a lowercase letter"
+    "parameter name" -> "parameter names must start with a lowercase letter"
+    "constructor name" ->
+      "constructor names must start with an uppercase letter"
+    "constructor" -> "constructor names must start with an uppercase letter"
+    "type name" -> "type names must start with an uppercase letter"
+    "type" -> "type names must start with an uppercase letter"
+    "module name" ->
+      "module path segments must be lowercase, e.g. `import donna/string`"
+    "name or _" -> "use a name to bind the value or `_` to discard it"
+    "spread variable" -> "use `..rest` to bind the tail, or `..` to discard it"
+    ":" -> "add `:` at the end of the line to open a block"
+    "= or :" -> "use `=` to assign a value or `:` to open a block"
+    "=" -> "use `=` to bind a value"
+    "->" -> "use `->` to separate a pattern from its result"
+    "(" -> "expected an opening `(` here"
+    ", or )" -> "check for a missing `)` or extra token in the list"
+    ", ] or .." ->
+      "close the list with `]`, add `,` before the next element, or use `..` for a spread"
+    "]" -> "close the list with `]`"
+    "indented block" -> "indent the block body 2 spaces deeper than this line"
+    "indented constructor block" ->
+      "indent each constructor 2 spaces below the `type` header"
+    "fn" -> "use `fn name(params) -> RetType:` to start a function"
+    "import" -> "use `import module/path` to import a module"
+    "import, const, type, fn, or @external" ->
+      "only imports, constants, type definitions, and functions are allowed at the top level"
+    "case arm pattern" ->
+      "each `case` arm must start with a pattern followed by `->` and its result"
+    "pattern" ->
+      "valid patterns are: names, literals, tuples `#(a, b)`, lists `[a, ..rest]`, and constructors"
+    "@" ->
+      "external declarations have the form `@external(\"lang\", \"symbol\")`"
+    "external" ->
+      "external declarations have the form `@external(\"lang\", \"symbol\")`"
+    _ -> ""
+
+/// Convert a warning into a title, source label, and repair hint.
+pub fn warning_message(w: error.DonnaWarning) -> #(String, String, String):
+  case w:
+    error.WarnUnusedVariable(name, _) ->
+      #(
+        "unused variable",
+        "`" <> name <> "` is assigned but never used",
+        "prefix with `_` to suppress this warning: `_" <> name <> "`"
+      )
+    error.WarnUnusedParam(name, fn_name, _) ->
+      #(
+        "unused parameter",
+        "`" <> name <> "` in `" <> fn_name <> "` is never used",
+        "prefix with `_` to suppress this warning: `_" <> name <> "`"
+      )
+    error.WarnUnusedFunction(name, _) ->
+      #(
+        "unused function",
+        "`" <> name <> "` is defined but never called",
+        "remove the function or make it `pub` if it is part of the module's public API"
+      )
+    error.WarnUnusedImport(name, _) ->
+      #(
+        "unused import",
+        "`" <> name <> "` is imported but never used",
+        "remove the import or use something from it"
+      )
+    error.WarnUnreachableCode(_) ->
+      #(
+        "unreachable code",
+        "this code can never be reached",
+        "remove the unreachable code or fix the logic above it"
+      )
+    error.WarnTodo(_) ->
+      #(
+        "unimplemented placeholder",
+        "`todo` will abort at runtime",
+        "replace `todo` with a real implementation before shipping"
+      )

@@ -1,0 +1,1224 @@
+// Tests for the Donna stage2 parser.
+//
+// Tests parse complete source snippets via the lexer → parser pipeline.
+// Every language construct gets at least one success case; error paths get
+// explicit failure tests so regressions in error messages are caught early.
+//
+// Pattern: each test calls `parse_src` and pattern-matches on the result.
+// "" means pass; a non-empty string is the failure message.
+
+import compiler/lexer/lexer
+import compiler/parser/parser
+import compiler/parser/parse_result
+import compiler/parser/ast
+import utilities/location
+import errors/error
+import donna/list
+import donna/option
+import donna/string
+import donna/int
+import unittest/should
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Lex then parse a source snippet.
+// Converts ParseOutput to single-error ParseResult for existing tests.
+fn parse_src(src: String) -> parse_result.ParseResult(ast.Module):
+  case lexer.lex(src, "test"):
+    lexer.LexErrors(_) ->
+      parse_result.PErr(error.ParseUnexpectedToken("lex error", "source", location.zero("test")))
+    lexer.LexOk(toks) ->
+      case parser.parse(toks):
+        parser.ParseOk(m) -> parse_result.POk(m, [])
+        parser.ParseErrors(errs) ->
+          case errs:
+            [e, ..] -> parse_result.PErr(e)
+            [] -> parse_result.PErr(error.ParseUnexpectedToken("unknown", "source", location.zero("test")))
+
+// Lex then parse, returning the full ParseOutput for multi-error tests.
+fn parse_multi(src: String) -> parser.ParseOutput(ast.Module):
+  case lexer.lex(src, "test"):
+    lexer.LexErrors(_) ->
+      parser.ParseErrors([error.ParseUnexpectedToken("lex error", "source", location.zero("test"))])
+    lexer.LexOk(toks) ->
+      parser.parse(toks)
+
+fn module_imports(m: ast.Module) -> List(ast.Import):
+  case m:
+    ast.Module(_, imps, _, _, _) -> imps
+
+fn module_consts(m: ast.Module) -> List(ast.Const):
+  case m:
+    ast.Module(_, _, cs, _, _) -> cs
+
+fn module_type_defs(m: ast.Module) -> List(ast.TypeDef):
+  case m:
+    ast.Module(_, _, _, tds, _) -> tds
+
+fn module_fns(m: ast.Module) -> List(ast.Function):
+  case m:
+    ast.Module(_, _, _, _, fs) -> fs
+
+fn import_alias(imp: ast.Import) -> String:
+  case imp:
+    ast.Import(_, alias, _) -> alias
+
+fn fn_name(f: ast.Function) -> String:
+  case f:
+    ast.Function(name, _, _, _, _, _) -> name
+    ast.ExternalFn(name, _, _, _, _, _, _) -> name
+
+// ── Empty module ──────────────────────────────────────────────────────────────
+
+pub fn parse_empty_module_test() -> String:
+  case parse_src(""):
+    parse_result.PErr(_) -> should.fail("empty source should parse to empty module")
+    parse_result.POk(_, _) -> ""
+
+pub fn parse_whitespace_only_test() -> String:
+  case parse_src("   \n\n   "):
+    parse_result.PErr(_) -> should.fail("whitespace-only source should parse ok")
+    parse_result.POk(_, _) -> ""
+
+// ── Import declarations ───────────────────────────────────────────────────────
+
+pub fn parse_simple_import_test() -> String:
+  case parse_src("import donna/string"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_imports(m):
+        [ast.Import(["donna", "string"], "string", _)] -> ""
+        _ -> should.fail("expected Import([donna, string], string)")
+
+pub fn parse_import_alias_test() -> String:
+  case parse_src("import donna/string as str"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_imports(m):
+        [ast.Import(["donna", "string"], "str", _)] -> ""
+        _ -> should.fail("expected alias 'str'")
+
+pub fn parse_multi_segment_import_test() -> String:
+  case parse_src("import a/b/c/d"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_imports(m):
+        [ast.Import(["a", "b", "c", "d"], "d", _)] -> ""
+        _ -> should.fail("expected 4-segment import with alias 'd'")
+
+pub fn parse_multiple_imports_test() -> String:
+  let src = "import donna/string\nimport donna/list\nimport donna/int"
+  case parse_src(src):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      module_imports(m) |> should.length_list(3)
+
+pub fn parse_import_aliases_with_list_assertions_test() -> String:
+  let src = "import donna/string as str\nimport donna/list\nimport compiler/parser/ast"
+  case parse_src(src):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      let aliases = list.map(module_imports(m), import_alias)
+      should.because(
+        should.all([
+          should.length_list(aliases, 3),
+          should.contains_string_value(aliases, "str"),
+          should.contains_string_value(aliases, "list"),
+          should.contains_string_value(aliases, "ast")
+        ]),
+        "import aliases should preserve explicit aliases and derive default aliases from the final path segment"
+      )
+
+// ── Constant declarations ─────────────────────────────────────────────────────
+
+pub fn parse_const_int_test() -> String:
+  case parse_src("const x = 42"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const("x", False, option.None, ast.IntLit("42", _), _)] -> ""
+        _ -> should.fail("expected Const(x, false, None, IntLit(42))")
+
+pub fn parse_pub_const_test() -> String:
+  case parse_src("pub const pi = 3.14"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const("pi", True, option.None, ast.FloatLit("3.14", _), _)] -> ""
+        _ -> should.fail("expected pub const pi = 3.14")
+
+pub fn parse_const_with_annotation_test() -> String:
+  case parse_src("const msg: String = \"hello\""):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const("msg", False, option.Some(ast.TyName("String", [], _)), ast.StringLit("hello", _), _)] -> ""
+        _ -> should.fail("expected annotated const")
+
+pub fn parse_const_bool_true_test() -> String:
+  case parse_src("const flag = True"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const("flag", False, option.None, ast.BoolLit(True, _), _)] -> ""
+        _ -> should.fail("expected BoolLit(True)")
+
+pub fn parse_const_bool_false_test() -> String:
+  case parse_src("const flag = False"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const("flag", False, option.None, ast.BoolLit(False, _), _)] -> ""
+        _ -> should.fail("expected BoolLit(False)")
+
+// ── Type definitions ──────────────────────────────────────────────────────────
+
+pub fn parse_nullary_type_test() -> String:
+  case parse_src("type Color:\n  Red\n  Green\n  Blue"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_type_defs(m):
+        [ast.TypeDef("Color", False, False, [], ctors, _)] ->
+          case list.length(ctors):
+            3 -> ""
+            n -> should.fail("expected 3 constructors, got " <> int.to_string(n))
+        _ -> should.fail("expected TypeDef Color")
+
+pub fn parse_pub_type_test() -> String:
+  case parse_src("pub type Foo:\n  Bar"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_type_defs(m):
+        [ast.TypeDef("Foo", True, False, [], _, _)] -> ""
+        _ -> should.fail("expected pub TypeDef")
+
+pub fn parse_opaque_type_test() -> String:
+  case parse_src("pub opaque type Token:\n  Token(kind: String)"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_type_defs(m):
+        [ast.TypeDef("Token", True, True, [], _, _)] -> ""
+        _ -> should.fail("expected opaque TypeDef")
+
+pub fn parse_parameterised_type_test() -> String:
+  case parse_src("pub type Option(a):\n  None\n  Some(a)"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_type_defs(m):
+        [ast.TypeDef("Option", True, False, ["a"], ctors, _)] ->
+          case list.length(ctors):
+            2 -> ""
+            n -> should.fail("expected 2 constructors, got " <> int.to_string(n))
+        _ -> should.fail("expected Option(a) with 2 constructors")
+
+pub fn parse_type_with_named_fields_test() -> String:
+  case parse_src("pub type Point:\n  Point(x: Int, y: Int)"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_type_defs(m):
+        [ast.TypeDef("Point", True, False, [], [ast.ConstructorDef("Point", ["x", "y"], _, _)], _)] -> ""
+        _ -> should.fail("expected TypeDef Point with named fields [x, y]")
+
+pub fn parse_two_param_type_test() -> String:
+  case parse_src("pub type Result(a, e):\n  Ok(a)\n  Error(e)"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_type_defs(m):
+        [ast.TypeDef("Result", True, False, ["a", "e"], ctors, _)] ->
+          case list.length(ctors):
+            2 -> ""
+            n -> should.fail("expected 2 constructors, got " <> int.to_string(n))
+        _ -> should.fail("expected Result(a, e)")
+
+// ── Function declarations ─────────────────────────────────────────────────────
+
+pub fn parse_simple_fn_test() -> String:
+  case parse_src("fn double(x: Int) -> Int:\n  x * 2"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function("double", False, [ast.Param("x", _, _)], option.Some(_), _, _)] -> ""
+        _ -> should.fail("expected fn double(x: Int) -> Int")
+
+pub fn parse_pub_fn_test() -> String:
+  case parse_src("pub fn greet(name: String) -> String:\n  \"Hello\""):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function("greet", True, _, _, _, _)] -> ""
+        _ -> should.fail("expected pub fn")
+
+pub fn parse_fn_no_params_test() -> String:
+  case parse_src("fn answer() -> Int:\n  42"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function("answer", False, [], option.Some(_), _, _)] -> ""
+        _ -> should.fail("expected fn answer() -> Int with no params")
+
+pub fn parse_fn_no_return_type_test() -> String:
+  case parse_src("fn side(x: Int):\n  x"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function("side", False, _, option.None, _, _)] -> ""
+        _ -> should.fail("expected fn without return type")
+
+pub fn parse_fn_multiple_params_test() -> String:
+  case parse_src("fn add(x: Int, y: Int) -> Int:\n  x + y"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function("add", False, params, _, _, _)] ->
+          params |> should.length_list(2)
+        _ -> should.fail("expected fn add")
+
+pub fn parse_fn_multiline_params_test() -> String:
+  case parse_src("fn foo(\n  x: Int,\n  y: Int\n) -> Int:\n  x + y"):
+    parse_result.PErr(_) -> should.fail("parse failed — multiline params should work")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function("foo", False, params, _, _, _)] ->
+          params |> should.length_list(2)
+        _ -> should.fail("expected fn foo")
+
+pub fn parse_function_names_with_list_assertions_test() -> String:
+  let src = "@external(\"c\", \"puts\")\npub fn puts(s: String) -> Int\nfn local() -> Int:\n  1"
+  case parse_src(src):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      let names = list.map(module_fns(m), fn_name)
+      should.all([
+        should.not_empty_list(names),
+        should.length_list(names, 2),
+        should.contains_string_value(names, "puts"),
+        should.contains_string_value(names, "local")
+      ])
+
+pub fn parse_external_fn_test() -> String:
+  case parse_src("@external(\"c\", \"puts\")\npub fn puts(s: String) -> Int"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.ExternalFn("puts", True, _, _, "c", "puts", _)] -> ""
+        _ -> should.fail("expected ExternalFn(puts, True, c, puts)")
+
+pub fn parse_external_fn_private_test() -> String:
+  case parse_src("@external(\"c\", \"sqrt\")\nfn c_sqrt(x: Float) -> Float"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.ExternalFn("c_sqrt", False, _, _, "c", "sqrt", _)] -> ""
+        _ -> should.fail("expected private ExternalFn")
+
+// ── Expression parsing: literals ──────────────────────────────────────────────
+
+pub fn parse_int_literal_test() -> String:
+  case parse_src("const x = 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.IntLit("0", _), _)] -> ""
+        _ -> should.fail("expected IntLit(0)")
+
+pub fn parse_negative_int_test() -> String:
+  case parse_src("const x = -99"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.UnaryOp(ast.UNeg, ast.IntLit("99", _), _), _)] -> ""
+        _ -> should.fail("expected UnaryOp(UNeg, IntLit(99))")
+
+pub fn parse_float_literal_test() -> String:
+  case parse_src("const pi = 3.14"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.FloatLit("3.14", _), _)] -> ""
+        _ -> should.fail("expected FloatLit(3.14)")
+
+pub fn parse_string_literal_test() -> String:
+  case parse_src("const s = \"hello\""):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.StringLit("hello", _), _)] -> ""
+        _ -> should.fail("expected StringLit(hello)")
+
+pub fn parse_true_literal_test() -> String:
+  case parse_src("const t = True"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.BoolLit(True, _), _)] -> ""
+        _ -> should.fail("expected BoolLit(True)")
+
+pub fn parse_false_literal_test() -> String:
+  case parse_src("const f = False"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.BoolLit(False, _), _)] -> ""
+        _ -> should.fail("expected BoolLit(False)")
+
+// ── Expression parsing: arithmetic ───────────────────────────────────────────
+
+pub fn parse_addition_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  x + 1"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BAdd, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BAdd)")
+
+pub fn parse_subtraction_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  x - 1"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BSub, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BSub)")
+
+pub fn parse_multiplication_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  x * 2"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BMul, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BMul)")
+
+pub fn parse_division_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  x / 2"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BDiv, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BDiv)")
+
+pub fn parse_modulo_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  x % 3"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BMod, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BMod)")
+
+pub fn parse_float_addition_test() -> String:
+  case parse_src("fn f(x: Float) -> Float:\n  x +. 1.0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BAddDot, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BAddDot)")
+
+// ── Expression parsing: comparison ───────────────────────────────────────────
+
+pub fn parse_eq_test() -> String:
+  case parse_src("fn f(x: Int) -> Bool:\n  x == 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BEq, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BEq)")
+
+pub fn parse_neq_test() -> String:
+  case parse_src("fn f(x: Int) -> Bool:\n  x != 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BNotEq, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BNotEq)")
+
+pub fn parse_lt_test() -> String:
+  case parse_src("fn f(x: Int) -> Bool:\n  x < 10"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BLt, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BLt)")
+
+pub fn parse_gt_test() -> String:
+  case parse_src("fn f(x: Int) -> Bool:\n  x > 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BGt, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BGt)")
+
+pub fn parse_lteq_test() -> String:
+  case parse_src("fn f(x: Int) -> Bool:\n  x <= 5"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BLtEq, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BLtEq)")
+
+pub fn parse_gteq_test() -> String:
+  case parse_src("fn f(x: Int) -> Bool:\n  x >= 5"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BGtEq, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BGtEq)")
+
+// ── Expression parsing: boolean / string ─────────────────────────────────────
+
+pub fn parse_and_test() -> String:
+  case parse_src("fn f(a: Bool, b: Bool) -> Bool:\n  a && b"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BAnd, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BAnd)")
+
+pub fn parse_or_test() -> String:
+  case parse_src("fn f(a: Bool, b: Bool) -> Bool:\n  a || b"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BOr, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BOr)")
+
+pub fn parse_not_test() -> String:
+  case parse_src("fn f(b: Bool) -> Bool:\n  !b"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.UnaryOp(ast.UNot, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected UnaryOp(UNot)")
+
+pub fn parse_concat_test() -> String:
+  case parse_src("fn f(a: String, b: String) -> String:\n  a <> b"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.BinOp(ast.BConcat, _, _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected BinOp(BConcat)")
+
+// ── Expression parsing: precedence ───────────────────────────────────────────
+
+pub fn parse_precedence_mul_before_add_test() -> String:
+  // 1 + 2 * 3  should parse as  1 + (2 * 3)
+  case parse_src("const x = 1 + 2 * 3"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.BinOp(ast.BAdd, ast.IntLit("1", _), ast.BinOp(ast.BMul, _, _, _), _), _)] -> ""
+        _ -> should.fail("expected Add(1, Mul(2,3)) — mul binds tighter")
+
+pub fn parse_precedence_parens_test() -> String:
+  // (1 + 2) * 3 — parens override precedence
+  case parse_src("const x = (1 + 2) * 3"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.BinOp(ast.BMul, ast.BinOp(ast.BAdd, _, _, _), _, _), _)] -> ""
+        _ -> should.fail("expected Mul(Add(1,2), 3)")
+
+pub fn parse_precedence_compare_after_add_test() -> String:
+  // 1 + 2 == 3 parses as (1 + 2) == 3
+  case parse_src("const x = 1 + 2 == 3"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.BinOp(ast.BEq, ast.BinOp(ast.BAdd, _, _, _), _, _), _)] -> ""
+        _ -> should.fail("expected Eq(Add(1,2), 3)")
+
+// ── Expression parsing: function calls ───────────────────────────────────────
+
+pub fn parse_call_no_args_test() -> String:
+  case parse_src("fn main():\n  foo()"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Call(ast.Var("foo", _), [], _), _)], _), _)] -> ""
+        _ -> should.fail("expected Call(foo, [])")
+
+pub fn parse_call_one_arg_test() -> String:
+  case parse_src("fn main():\n  foo(1)"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Call(ast.Var("foo", _), [ast.IntLit("1", _)], _), _)], _), _)] -> ""
+        _ -> should.fail("expected Call(foo, [1])")
+
+pub fn parse_call_two_args_test() -> String:
+  case parse_src("fn main():\n  add(1, 2)"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Call(_, args, _), _)], _), _)] ->
+          case list.length(args):
+            2 -> ""
+            n -> should.fail("expected 2 call args, got " <> int.to_string(n))
+        _ -> should.fail("expected Call with 2 args")
+
+pub fn parse_call_multiline_args_test() -> String:
+  case parse_src("fn main():\n  add(\n    1,\n    2\n  )"):
+    parse_result.PErr(_) -> should.fail("parse failed — multiline call args should work")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Call(_, args, _), _)], _), _)] ->
+          case list.length(args):
+            2 -> ""
+            n -> should.fail("expected 2 multiline args, got " <> int.to_string(n))
+        _ -> should.fail("expected multiline call")
+
+pub fn parse_call_named_args_stripped_test() -> String:
+  case parse_src("fn main():\n  add(x: 1, y: 2)"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Call(_, args, _), _)], _), _)] ->
+          case list.length(args):
+            2 -> ""
+            n -> should.fail("expected 2 named args (labels stripped), got " <> int.to_string(n))
+        _ -> should.fail("expected call with named args")
+
+pub fn parse_chained_call_test() -> String:
+  case parse_src("fn main():\n  f(g(1))"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Call(ast.Var("f", _), [ast.Call(ast.Var("g", _), _, _)], _), _)], _), _)] -> ""
+        _ -> should.fail("expected f(g(1))")
+
+// ── Expression parsing: field access ─────────────────────────────────────────
+
+pub fn parse_field_access_lower_test() -> String:
+  case parse_src("fn main():\n  obj.field"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.FieldAccess(ast.Var("obj", _), "field", _), _)], _), _)] -> ""
+        _ -> should.fail("expected FieldAccess(obj, field)")
+
+pub fn parse_field_access_upper_test() -> String:
+  case parse_src("fn main():\n  option.None"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.FieldAccess(ast.Var("option", _), "None", _), _)], _), _)] -> ""
+        _ -> should.fail("expected FieldAccess(option, None)")
+
+pub fn parse_chained_field_access_test() -> String:
+  case parse_src("fn main():\n  a.b.c"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.FieldAccess(ast.FieldAccess(_, _, _), "c", _), _)], _), _)] -> ""
+        _ -> should.fail("expected FieldAccess(FieldAccess(a,b), c)")
+
+// ── Expression parsing: tuple ─────────────────────────────────────────────────
+
+pub fn parse_empty_tuple_test() -> String:
+  case parse_src("const t = #()"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.Tuple([], _), _)] -> ""
+        _ -> should.fail("expected Tuple([])")
+
+pub fn parse_pair_tuple_test() -> String:
+  case parse_src("const t = #(1, 2)"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.Tuple([ast.IntLit("1", _), ast.IntLit("2", _)], _), _)] -> ""
+        _ -> should.fail("expected Tuple([1, 2])")
+
+pub fn parse_triple_tuple_test() -> String:
+  case parse_src("const t = #(1, \"a\", True)"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.Tuple(elems, _), _)] ->
+          case list.length(elems):
+            3 -> ""
+            n -> should.fail("expected 3-tuple, got " <> int.to_string(n))
+        _ -> should.fail("expected Tuple(3 elements)")
+
+pub fn parse_multiline_tuple_test() -> String:
+  case parse_src("const t = #(\n  1,\n  2\n)"):
+    parse_result.PErr(_) -> should.fail("parse failed — multiline tuple should work")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.Tuple(elems, _), _)] ->
+          case list.length(elems):
+            2 -> ""
+            n -> should.fail("expected 2-tuple from multiline, got " <> int.to_string(n))
+        _ -> should.fail("expected multiline Tuple")
+
+// ── Expression parsing: list ──────────────────────────────────────────────────
+
+pub fn parse_empty_list_test() -> String:
+  case parse_src("const xs = []"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.EList([], _), _)] -> ""
+        _ -> should.fail("expected EList([])")
+
+pub fn parse_singleton_list_test() -> String:
+  case parse_src("const xs = [1]"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.EList([ast.IntLit("1", _)], _), _)] -> ""
+        _ -> should.fail("expected EList([1])")
+
+pub fn parse_list_three_elems_test() -> String:
+  case parse_src("const xs = [1, 2, 3]"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.EList(elems, _), _)] ->
+          case list.length(elems):
+            3 -> ""
+            n -> should.fail("expected 3-elem list, got " <> int.to_string(n))
+        _ -> should.fail("expected EList(3 elements)")
+
+pub fn parse_list_spread_test() -> String:
+  case parse_src("fn f(xs: List(Int)) -> List(Int):\n  [1, ..xs]"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.ListSpread([ast.IntLit("1", _)], ast.Var("xs", _), _), _)], _), _)] -> ""
+        _ -> should.fail("expected ListSpread([1], xs)")
+
+pub fn parse_multiline_list_test() -> String:
+  case parse_src("const xs = [\n  1,\n  2,\n  3\n]"):
+    parse_result.PErr(_) -> should.fail("parse failed — multiline list should work")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.EList(elems, _), _)] ->
+          case list.length(elems):
+            3 -> ""
+            n -> should.fail("expected 3 from multiline list, got " <> int.to_string(n))
+        _ -> should.fail("expected multiline EList")
+
+// ── Expression parsing: pipe ─────────────────────────────────────────────────
+
+pub fn parse_pipe_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  x |> double"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Pipe(ast.Var("x", _), ast.Var("double", _), _), _)], _), _)] -> ""
+        _ -> should.fail("expected Pipe(x, double)")
+
+pub fn parse_pipe_chain_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  x |> double |> negate"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Pipe(ast.Pipe(_, _, _), _, _), _)], _), _)] -> ""
+        _ -> should.fail("expected Pipe(Pipe(x, double), negate)")
+
+// ── Expression parsing: lambda ────────────────────────────────────────────────
+
+pub fn parse_lambda_no_params_test() -> String:
+  case parse_src("const f = fn() -> 42"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.Lambda([], ast.IntLit("42", _), _), _)] -> ""
+        _ -> should.fail("expected Lambda([], 42)")
+
+pub fn parse_lambda_one_param_test() -> String:
+  case parse_src("const double = fn(x: Int) -> x * 2"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.Lambda([ast.Param("x", _, _)], _, _), _)] -> ""
+        _ -> should.fail("expected Lambda([x], body)")
+
+pub fn parse_lambda_two_params_test() -> String:
+  case parse_src("const add = fn(x: Int, y: Int) -> x + y"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.Lambda(params, _, _), _)] ->
+          case list.length(params):
+            2 -> ""
+            n -> should.fail("expected 2 lambda params, got " <> int.to_string(n))
+        _ -> should.fail("expected Lambda(2 params)")
+
+// ── Expression parsing: case ─────────────────────────────────────────────────
+
+pub fn parse_case_simple_test() -> String:
+  case parse_src("fn f(x: Bool) -> Int:\n  case x:\n    True -> 1\n    False -> 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(ast.Var("x", _), arms, _), _)], _), _)] ->
+          case list.length(arms):
+            2 -> ""
+            n -> should.fail("expected 2 case arms, got " <> int.to_string(n))
+        _ -> should.fail("expected Case expression")
+
+pub fn parse_case_with_guard_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  case x:\n    n if n > 0 -> n\n    _ -> 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, arms, _), _)], _), _)] ->
+          case arms:
+            [ast.CaseClause(_, option.Some(_), _, _), ast.CaseClause(_, option.None, _, _)] -> ""
+            _ -> should.fail("expected guard in first arm, no guard in second")
+        _ -> should.fail("expected Case with guard")
+
+pub fn parse_inline_case_test() -> String:
+  case parse_src("fn f(b: Bool) -> Int:\n  case b: True -> 1  False -> 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, arms, _), _)], _), _)] ->
+          case list.length(arms):
+            2 -> ""
+            n -> should.fail("expected 2 inline arms, got " <> int.to_string(n))
+        _ -> should.fail("expected inline case")
+
+// ── Expression parsing: echo / panic / todo ───────────────────────────────────
+
+pub fn parse_echo_test() -> String:
+  case parse_src("fn main():\n  echo 42"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Echo(ast.IntLit("42", _), _), _)], _), _)] -> ""
+        _ -> should.fail("expected Echo(IntLit(42))")
+
+pub fn parse_echo_string_test() -> String:
+  case parse_src("fn main():\n  echo \"hello\""):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Echo(ast.StringLit("hello", _), _), _)], _), _)] -> ""
+        _ -> should.fail("expected Echo(StringLit(hello))")
+
+pub fn parse_panic_test() -> String:
+  case parse_src("fn crash():\n  panic \"unreachable\""):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Panic(ast.StringLit("unreachable", _), _), _)], _), _)] -> ""
+        _ -> should.fail("expected Panic(StringLit)")
+
+pub fn parse_todo_test() -> String:
+  case parse_src("fn stub():\n  todo"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Todo(_), _)], _), _)] -> ""
+        _ -> should.fail("expected Todo")
+
+// ── Statement parsing ─────────────────────────────────────────────────────────
+
+pub fn parse_let_binding_test() -> String:
+  case parse_src("fn f():\n  let x = 1\n  x"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.LetStmt("x", option.None, ast.IntLit("1", _), _), ast.ExprStmt(ast.Var("x", _), _)], _), _)] -> ""
+        _ -> should.fail("expected LetStmt(x, None, 1) then Var(x)")
+
+pub fn parse_let_annotated_test() -> String:
+  case parse_src("fn f():\n  let x: Int = 1\n  x"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.LetStmt("x", option.Some(ast.TyName("Int", [], _)), _, _), _], _), _)] -> ""
+        _ -> should.fail("expected annotated LetStmt")
+
+pub fn parse_let_discard_test() -> String:
+  case parse_src("fn f():\n  let _ = 0\n  42"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.LetStmt("_", _, _, _), _], _), _)] -> ""
+        _ -> should.fail("expected LetStmt(_)")
+
+pub fn parse_let_named_discard_test() -> String:
+  case parse_src("fn f():\n  let _result = 0\n  42"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.LetStmt("_result", _, _, _), _], _), _)] -> ""
+        _ -> should.fail("expected LetStmt(_result)")
+
+pub fn parse_let_pattern_tuple_test() -> String:
+  case parse_src("fn f():\n  let #(a, b) = #(1, 2)\n  a"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.LetPatStmt(ast.PTuple(_, _), _, _), _], _), _)] -> ""
+        _ -> should.fail("expected LetPatStmt(PTuple)")
+
+// ── Pattern parsing ───────────────────────────────────────────────────────────
+
+pub fn parse_pattern_wildcard_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  case x:\n    _ -> 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, [ast.CaseClause(ast.PWild(_), _, _, _)], _), _)], _), _)] -> ""
+        _ -> should.fail("expected PWild pattern")
+
+pub fn parse_pattern_discard_named_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  case x:\n    _n -> 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, [ast.CaseClause(ast.PDiscard("n", _), _, _, _)], _), _)], _), _)] -> ""
+        _ -> should.fail("expected PDiscard(n)")
+
+pub fn parse_pattern_int_literal_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  case x:\n    0 -> 1\n    _ -> x"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, [ast.CaseClause(ast.PInt("0", _), _, _, _), _], _), _)], _), _)] -> ""
+        _ -> should.fail("expected PInt(0) as first arm")
+
+pub fn parse_pattern_negative_int_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  case x:\n    -1 -> 0\n    _ -> x"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, [ast.CaseClause(ast.PInt("-1", _), _, _, _), _], _), _)], _), _)] -> ""
+        _ -> should.fail("expected PInt(-1)")
+
+pub fn parse_pattern_string_test() -> String:
+  case parse_src("fn f(x: String) -> Int:\n  case x:\n    \"ok\" -> 1\n    _ -> 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, [ast.CaseClause(ast.PString("ok", _), _, _, _), _], _), _)], _), _)] -> ""
+        _ -> should.fail("expected PString(ok)")
+
+pub fn parse_pattern_bool_test() -> String:
+  case parse_src("fn f(b: Bool) -> Int:\n  case b:\n    True -> 1\n    False -> 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, [ast.CaseClause(ast.PBool(True, _), _, _, _), ast.CaseClause(ast.PBool(False, _), _, _, _)], _), _)], _), _)] -> ""
+        _ -> should.fail("expected PBool(True) then PBool(False)")
+
+pub fn parse_pattern_tuple_test() -> String:
+  case parse_src("fn f(t: #(Int, Int)) -> Int:\n  case t:\n    #(a, b) -> a + b"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, [ast.CaseClause(ast.PTuple([ast.PVar("a", _), ast.PVar("b", _)], _), _, _, _)], _), _)], _), _)] -> ""
+        _ -> should.fail("expected PTuple([a, b])")
+
+pub fn parse_pattern_empty_list_test() -> String:
+  case parse_src("fn f(xs: List(Int)) -> Bool:\n  case xs:\n    [] -> True\n    _ -> False"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, [ast.CaseClause(ast.PList([], option.None, _), _, _, _), _], _), _)], _), _)] -> ""
+        _ -> should.fail("expected PList([], None)")
+
+pub fn parse_pattern_list_cons_test() -> String:
+  case parse_src("fn f(xs: List(Int)) -> Int:\n  case xs:\n    [h, ..t] -> h\n    _ -> 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, [ast.CaseClause(ast.PList([ast.PVar("h", _)], option.Some("t"), _), _, _, _), _], _), _)], _), _)] -> ""
+        _ -> should.fail("expected PList([h], Some(t))")
+
+pub fn parse_pattern_list_wildcard_tail_test() -> String:
+  case parse_src("fn f(xs: List(Int)) -> Int:\n  case xs:\n    [h, .._] -> h\n    _ -> 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, [ast.CaseClause(ast.PList([_], option.Some("_"), _), _, _, _), _], _), _)], _), _)] -> ""
+        _ -> should.fail("expected PList([h], Some(_))")
+
+pub fn parse_pattern_nullary_ctor_test() -> String:
+  case parse_src("fn f(x: Option(Int)) -> Int:\n  case x:\n    None -> 0\n    Some(v) -> v"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block([ast.ExprStmt(ast.Case(_, [ast.CaseClause(ast.PCons(option.None, "None", [], _), _, _, _), ast.CaseClause(ast.PCons(option.None, "Some", [ast.PVar("v", _)], _), _, _, _)], _), _)], _), _)] -> ""
+        _ -> should.fail("expected PCons(None, None, []) and PCons(None, Some, [v])")
+
+pub fn parse_pattern_qualified_ctor_test() -> String:
+  case parse_src("fn f(x: option.Option(Int)) -> Int:\n  case x:\n    option.None -> 0\n    option.Some(v) -> v"):
+    parse_result.PErr(_) -> should.fail("parse failed — qualified ctors should parse ok")
+    parse_result.POk(_, _) -> ""
+
+// ── Type annotation parsing ───────────────────────────────────────────────────
+
+pub fn parse_type_simple_test() -> String:
+  case parse_src("const x: Int = 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, option.Some(ast.TyName("Int", [], _)), _, _)] -> ""
+        _ -> should.fail("expected TyName(Int, [])")
+
+pub fn parse_type_parameterised_test() -> String:
+  case parse_src("const xs: List(Int) = []"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, option.Some(ast.TyName("List", [ast.TyName("Int", [], _)], _)), _, _)] -> ""
+        _ -> should.fail("expected TyName(List, [Int])")
+
+pub fn parse_type_tuple_annotation_test() -> String:
+  case parse_src("const t: #(Int, String) = #(1, \"a\")"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, option.Some(ast.TyTuple([ast.TyName("Int", [], _), ast.TyName("String", [], _)], _)), _, _)] -> ""
+        _ -> should.fail("expected TyTuple([Int, String])")
+
+pub fn parse_type_fn_annotation_test() -> String:
+  case parse_src("const f: fn(Int) -> Bool = fn(x: Int) -> x == 0"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, option.Some(ast.TyFn([ast.TyName("Int", [], _)], ast.TyName("Bool", [], _), _)), _, _)] -> ""
+        _ -> should.fail("expected TyFn([Int], Bool)")
+
+pub fn parse_type_qualified_test() -> String:
+  case parse_src("const x: option.Option(Int) = option.None"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, option.Some(ast.TyName("option.Option", [ast.TyName("Int", [], _)], _)), _, _)] -> ""
+        _ -> should.fail("expected TyName(option.Option, [Int])")
+
+pub fn parse_type_multiline_args_test() -> String:
+  case parse_src("const x: Result(\n  Int,\n  String\n) = 0"):
+    parse_result.PErr(_) -> should.fail("parse failed — multiline type args should work")
+    parse_result.POk(_, _) -> ""
+
+// ── Error cases ───────────────────────────────────────────────────────────────
+
+pub fn parse_err_missing_colon_in_fn_test() -> String:
+  case parse_src("fn foo(x: Int) -> Int\n  x"):
+    parse_result.PErr(_) -> ""
+    parse_result.POk(_, _) -> should.fail("should fail: no `:` after fn signature")
+
+pub fn parse_err_missing_arrow_in_lambda_test() -> String:
+  case parse_src("const f = fn(x: Int) x"):
+    parse_result.PErr(_) -> ""
+    parse_result.POk(_, _) -> should.fail("should fail: no `->` in lambda")
+
+pub fn parse_err_unexpected_token_in_expr_test() -> String:
+  case parse_src("const x = :"):
+    parse_result.PErr(_) -> ""
+    parse_result.POk(_, _) -> should.fail("`:` is not a valid expression start")
+
+pub fn parse_err_unclosed_paren_test() -> String:
+  case parse_src("const x = (1 + 2"):
+    parse_result.PErr(_) -> ""
+    parse_result.POk(_, _) -> should.fail("unclosed paren should fail")
+
+pub fn parse_err_unclosed_list_test() -> String:
+  case parse_src("const xs = [1, 2"):
+    parse_result.PErr(_) -> ""
+    parse_result.POk(_, _) -> should.fail("unclosed list should fail")
+
+pub fn parse_err_external_wrong_syntax_test() -> String:
+  case parse_src("@external(not_a_string)\nfn foo() -> Int"):
+    parse_result.PErr(_) -> ""
+    parse_result.POk(_, _) -> should.fail("malformed @external should fail")
+
+pub fn parse_err_unexpected_top_level_token_test() -> String:
+  case parse_src("123"):
+    parse_result.PErr(_) -> ""
+    parse_result.POk(_, _) -> should.fail("bare integer at top level should fail")
+
+// ── Mixed declarations ────────────────────────────────────────────────────────
+
+pub fn parse_mixed_declarations_test() -> String:
+  let src = string.join([
+    "import donna/string",
+    "pub const greeting = \"hello\"",
+    "pub type Color:",
+    "  Red",
+    "  Green",
+    "pub fn main() -> Int:",
+    "  42"
+  ], "\n")
+  case parse_src(src):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      let ok = list.length(module_imports(m)) == 1 && list.length(module_consts(m)) == 1 && list.length(module_type_defs(m)) == 1 && list.length(module_fns(m)) == 1
+      case ok:
+        True -> ""
+        False -> should.fail("expected 1 import, 1 const, 1 type, 1 fn")
+
+pub fn parse_multiple_functions_test() -> String:
+  let src = string.join([
+    "fn double(x: Int) -> Int:",
+    "  x * 2",
+    "fn triple(x: Int) -> Int:",
+    "  x * 3"
+  ], "\n")
+  case parse_src(src):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case list.length(module_fns(m)):
+        2 -> ""
+        n -> should.fail("expected 2 functions, got " <> int.to_string(n))
+
+pub fn parse_multi_stmt_block_test() -> String:
+  case parse_src("fn f() -> Int:\n  let x = 1\n  let y = 2\n  x + y"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_fns(m):
+        [ast.Function(_, _, _, _, ast.Block(stmts, _), _)] ->
+          case list.length(stmts):
+            3 -> ""
+            n -> should.fail("expected 3 stmts, got " <> int.to_string(n))
+        _ -> should.fail("expected block with 3 stmts")
+
+pub fn parse_nested_case_test() -> String:
+  let src = string.join([
+    "fn f(x: Bool, y: Bool) -> Int:",
+    "  case x:",
+    "    True ->",
+    "      case y:",
+    "        True -> 1",
+    "        False -> 0",
+    "    False -> -1"
+  ], "\n")
+  case parse_src(src):
+    parse_result.PErr(_) -> should.fail("nested case should parse ok")
+    parse_result.POk(_, _) -> ""
+
+pub fn parse_err_missing_colon_fn_test() -> String:
+  case parse_src("fn foo() -> Int\n  42"):
+    parse_result.POk(_, _) -> should.fail("should have failed")
+    parse_result.PErr(e) ->
+      case e:
+        error.ParseMissingColon(_) -> ""
+        _ -> should.fail("expected ParseMissingColon")
+
+pub fn parse_err_missing_colon_type_test() -> String:
+  case parse_src("type Color\n  Red\n  Blue"):
+    parse_result.POk(_, _) -> should.fail("should have failed")
+    parse_result.PErr(e) ->
+      case e:
+        error.ParseMissingColon(_) -> ""
+        _ -> should.fail("expected ParseMissingColon")
+
+pub fn parse_err_missing_colon_case_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  case x\n    1 -> 1"):
+    parse_result.POk(_, _) -> should.fail("should have failed")
+    parse_result.PErr(e) ->
+      case e:
+        error.ParseMissingColon(_) -> ""
+        _ -> should.fail("expected ParseMissingColon")
+
+pub fn parse_err_missing_arrow_case_arm_test() -> String:
+  case parse_src("fn f(x: Int) -> Int:\n  case x:\n    1 99"):
+    parse_result.POk(_, _) -> should.fail("should have failed")
+    parse_result.PErr(e) ->
+      case e:
+        error.ParseMissingArrow(_) -> ""
+        _ -> should.fail("expected ParseMissingArrow")
+
+pub fn parse_err_missing_arrow_lambda_test() -> String:
+  case parse_src("fn f() -> Int:\n  let g = fn(x: Int) x + 1\n  g(2)"):
+    parse_result.POk(_, _) -> should.fail("should have failed")
+    parse_result.PErr(e) ->
+      case e:
+        error.ParseMissingArrow(_) -> ""
+        _ -> should.fail("expected ParseMissingArrow")
+
+pub fn parse_err_uppercase_fn_name_test() -> String:
+  case parse_src("fn Foo() -> Int:\n  1"):
+    parse_result.POk(_, _) -> should.fail("should have failed")
+    parse_result.PErr(e) ->
+      case e:
+        error.ParseUppercaseFnName("Foo", _) -> ""
+        _ -> should.fail("expected ParseUppercaseFnName(\"Foo\")")
+
+pub fn parse_err_lowercase_type_name_test() -> String:
+  case parse_src("type color:\n  Red\n  Blue"):
+    parse_result.POk(_, _) -> should.fail("should have failed")
+    parse_result.PErr(e) ->
+      case e:
+        error.ParseLowercaseTypeName("color", _) -> ""
+        _ -> should.fail("expected ParseLowercaseTypeName(\"color\")")
+
+// ── Multiple error accumulation ───────────────────────────────────────────────
+
+pub fn parse_multi_error_two_bad_fns_test() -> String:
+  let src = string.join([
+    "fn 123() -> Int:",
+    "  42",
+    "fn Uppercase() -> Int:",
+    "  1"
+  ], "\n")
+  case parse_multi(src):
+    parser.ParseOk(_) -> should.fail("expected parse errors")
+    parser.ParseErrors(errs) ->
+      case list.length(errs):
+        2 -> ""
+        n -> should.fail("expected 2 errors, got " <> int.to_string(n))
+
+pub fn parse_multi_error_bad_fn_then_valid_test() -> String:
+  let src = string.join([
+    "fn 123() -> Int:",
+    "  42",
+    "fn valid() -> Int:",
+    "  1"
+  ], "\n")
+  case parse_multi(src):
+    parser.ParseOk(_) -> should.fail("expected parse errors")
+    parser.ParseErrors(errs) ->
+      case list.length(errs):
+        1 -> ""
+        n -> should.fail("expected 1 error, got " <> int.to_string(n))
+
+pub fn parse_multi_error_valid_then_bad_then_valid_test() -> String:
+  let src = string.join([
+    "fn first() -> Int:",
+    "  1",
+    "fn 999() -> Int:",
+    "  2",
+    "fn last() -> Int:",
+    "  3"
+  ], "\n")
+  case parse_multi(src):
+    parser.ParseOk(_) -> should.fail("expected parse errors")
+    parser.ParseErrors(errs) ->
+      case list.length(errs):
+        1 -> ""
+        n -> should.fail("expected 1 error, got " <> int.to_string(n))
+
+pub fn parse_multi_error_bad_type_and_bad_fn_test() -> String:
+  let src = string.join([
+    "type lowercase:",
+    "  A",
+    "fn Uppercase() -> Int:",
+    "  1"
+  ], "\n")
+  case parse_multi(src):
+    parser.ParseOk(_) -> should.fail("expected parse errors")
+    parser.ParseErrors(errs) ->
+      case list.length(errs):
+        2 -> ""
+        n -> should.fail("expected 2 errors, got " <> int.to_string(n))
+
+pub fn parse_multi_error_all_valid_test() -> String:
+  let src = string.join([
+    "fn foo() -> Int:",
+    "  1",
+    "fn bar() -> Int:",
+    "  2"
+  ], "\n")
+  case parse_multi(src):
+    parser.ParseErrors(_) -> should.fail("should have succeeded")
+    parser.ParseOk(m) ->
+      case list.length(module_fns(m)):
+        2 -> ""
+        n -> should.fail("expected 2 functions, got " <> int.to_string(n))

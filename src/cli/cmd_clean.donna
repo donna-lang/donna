@@ -1,0 +1,33 @@
+//// `donna clean` command.
+//// Removes generated build and documentation outputs for a project.
+
+import donna/files
+import donna/shell
+import utilities/colors
+import utilities/logger
+import builder/scanner
+import donna/time
+
+/// Run `donna clean` for a project directory and return CLI output.
+pub fn run(args: List(#(String, String))) -> String:
+  let dir = first_positional(args)
+  case scanner.scan(dir):
+    scanner.ScanErr(msg) ->
+      colors.red("error") <> ": " <> msg
+    scanner.ScanOk(project) ->
+      let build_dir = scanner.project_build_dir(project)
+      case files.exists(build_dir):
+        False ->
+          colors.dim("nothing to clean")
+        True ->
+          let t0 = time.now_us()
+          let _ = logger.cleaning(build_dir)
+          let _ = shell.exec("rm", ["-rf", build_dir])
+          let _ = logger.clean_ok(time.now_us() - t0)
+          ""
+
+fn first_positional(args: List(#(String, String))) -> String:
+  case args:
+    [] -> "."
+    [#("", v), .._] -> v
+    [_, ..rest] -> first_positional(rest)

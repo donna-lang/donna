@@ -1,0 +1,437 @@
+// Tests for compiler/codegen/il — QBE intermediate language display functions.
+
+import compiler/codegen/il
+import donna/option
+import donna/list
+import unittest/should
+
+// ── display_value ─────────────────────────────────────────────────────────────
+
+pub fn display_temporary_test() -> String:
+  should.equal_string(il.display_value(il.Temporary("x")), "%x")
+
+pub fn display_global_test() -> String:
+  should.equal_string(il.display_value(il.Global("main")), "$main")
+
+pub fn display_const_test() -> String:
+  should.equal_string(il.display_value(il.Const(42)), "42")
+
+pub fn display_const_zero_test() -> String:
+  should.equal_string(il.display_value(il.Const(0)), "0")
+
+pub fn display_const_bits_test() -> String:
+  should.equal_string(il.display_value(il.ConstBits(1234)), "1234")
+
+// ── display_type ──────────────────────────────────────────────────────────────
+
+pub fn display_type_word_test() -> String:
+  should.equal_string(il.display_type(il.Word), "w")
+
+pub fn display_type_long_test() -> String:
+  should.equal_string(il.display_type(il.Long), "l")
+
+pub fn display_type_single_test() -> String:
+  should.equal_string(il.display_type(il.Single), "s")
+
+pub fn display_type_double_test() -> String:
+  should.equal_string(il.display_type(il.Double), "d")
+
+pub fn display_type_zero_test() -> String:
+  should.equal_string(il.display_type(il.Zero), "z")
+
+pub fn display_type_byte_test() -> String:
+  should.equal_string(il.display_type(il.Byte), "b")
+
+// ── into_abi ──────────────────────────────────────────────────────────────────
+
+pub fn abi_word_test() -> String:
+  should.equal_string(il.into_abi(il.Word), "w")
+
+pub fn abi_long_test() -> String:
+  should.equal_string(il.into_abi(il.Long), "l")
+
+pub fn abi_single_test() -> String:
+  should.equal_string(il.into_abi(il.Single), "s")
+
+pub fn abi_double_test() -> String:
+  should.equal_string(il.into_abi(il.Double), "d")
+
+pub fn abi_zero_promoted_to_word_test() -> String:
+  should.equal_string(il.into_abi(il.Zero), "w")
+
+pub fn abi_byte_promoted_to_word_test() -> String:
+  should.equal_string(il.into_abi(il.Byte), "w")
+
+// ── display_comp ──────────────────────────────────────────────────────────────
+
+pub fn comp_ceql_test() -> String:
+  should.equal_string(il.display_comp(il.Ceql), "ceql")
+
+pub fn comp_ceqw_test() -> String:
+  should.equal_string(il.display_comp(il.Ceqw), "ceqw")
+
+pub fn comp_sltl_test() -> String:
+  should.equal_string(il.display_comp(il.Sltl), "csltl")
+
+pub fn comp_sgtw_test() -> String:
+  should.equal_string(il.display_comp(il.Sgtw), "csgtw")
+
+pub fn comp_cned_test() -> String:
+  should.equal_string(il.display_comp(il.Cned), "cned")
+
+pub fn comp_cges_test() -> String:
+  should.equal_string(il.display_comp(il.Cges), "cges")
+
+// ── display_linkage ───────────────────────────────────────────────────────────
+
+pub fn linkage_public_test() -> String:
+  should.equal_string(il.display_linkage(il.Public), "export ")
+
+pub fn linkage_private_test() -> String:
+  should.equal_string(il.display_linkage(il.Private), "")
+
+pub fn linkage_public_section_test() -> String:
+  should.equal_string(il.display_linkage(il.PublicSection(".text")), "section \".text\" export ")
+
+pub fn linkage_private_section_test() -> String:
+  should.equal_string(il.display_linkage(il.PrivateSection(".data")), "section \".data\" ")
+
+// ── display_inst — arithmetic ─────────────────────────────────────────────────
+
+pub fn inst_add_test() -> String:
+  should.equal_string(il.display_inst(il.Add(il.Temporary("a"), il.Temporary("b"))), "add %a, %b")
+
+pub fn inst_sub_test() -> String:
+  should.equal_string(il.display_inst(il.Sub(il.Temporary("x"), il.Const(1))), "sub %x, 1")
+
+pub fn inst_mul_test() -> String:
+  should.equal_string(il.display_inst(il.Mul(il.Temporary("a"), il.Const(4))), "mul %a, 4")
+
+pub fn inst_div_test() -> String:
+  should.equal_string(il.display_inst(il.Div(il.Temporary("n"), il.Temporary("d"))), "div %n, %d")
+
+pub fn inst_rem_test() -> String:
+  should.equal_string(il.display_inst(il.Rem(il.Temporary("n"), il.Const(2))), "rem %n, 2")
+
+pub fn inst_neg_test() -> String:
+  should.equal_string(il.display_inst(il.Neg(il.Temporary("x"))), "neg %x")
+
+pub fn inst_and_test() -> String:
+  should.equal_string(il.display_inst(il.And(il.Temporary("a"), il.Temporary("b"))), "and %a, %b")
+
+pub fn inst_or_test() -> String:
+  should.equal_string(il.display_inst(il.Or(il.Temporary("a"), il.Temporary("b"))), "or %a, %b")
+
+pub fn inst_xor_test() -> String:
+  should.equal_string(il.display_inst(il.Xor(il.Temporary("a"), il.Const(0))), "xor %a, 0")
+
+// ── display_inst — comparison ─────────────────────────────────────────────────
+
+pub fn inst_cmp_long_test() -> String:
+  should.equal_string(il.display_inst(il.Cmp(il.Long, il.Ceql, il.Temporary("a"), il.Const(0))), "ceql %a, 0")
+
+pub fn inst_cmp_word_lt_test() -> String:
+  should.equal_string(il.display_inst(il.Cmp(il.Word, il.Sltw, il.Temporary("i"), il.Temporary("n"))), "csltw %i, %n")
+
+// ── display_inst — memory ─────────────────────────────────────────────────────
+
+pub fn inst_storew_test() -> String:
+  should.equal_string(il.display_inst(il.Storew(il.Temporary("v"), il.Temporary("ptr"))), "storew %v, %ptr")
+
+pub fn inst_storel_test() -> String:
+  should.equal_string(il.display_inst(il.Storel(il.Const(0), il.Temporary("p"))), "storel 0, %p")
+
+pub fn inst_storeb_test() -> String:
+  should.equal_string(il.display_inst(il.Storeb(il.Const(10), il.Temporary("p"))), "storeb 10, %p")
+
+pub fn inst_loadl_test() -> String:
+  should.equal_string(il.display_inst(il.Loadl(il.Temporary("ptr"))), "loadl %ptr")
+
+pub fn inst_loadw_test() -> String:
+  should.equal_string(il.display_inst(il.Loadw(il.Temporary("p"))), "loadw %p")
+
+pub fn inst_loadsb_test() -> String:
+  should.equal_string(il.display_inst(il.Loadsb(il.Global("str"))), "loadsb $str")
+
+pub fn inst_loadub_test() -> String:
+  should.equal_string(il.display_inst(il.Loadub(il.Temporary("p"))), "loadub %p")
+
+// ── display_inst — allocation ─────────────────────────────────────────────────
+
+pub fn inst_alloc4_test() -> String:
+  should.equal_string(il.display_inst(il.Alloc4(il.Const(8))), "alloc4 8")
+
+pub fn inst_alloc8_test() -> String:
+  should.equal_string(il.display_inst(il.Alloc8(il.Const(24))), "alloc8 24")
+
+pub fn inst_alloc16_test() -> String:
+  should.equal_string(il.display_inst(il.Alloc16(il.Const(16))), "alloc16 16")
+
+// ── display_inst — conversion ─────────────────────────────────────────────────
+
+pub fn inst_extsw_test() -> String:
+  should.equal_string(il.display_inst(il.Extsw(il.Temporary("x"))), "extsw %x")
+
+pub fn inst_copy_test() -> String:
+  should.equal_string(il.display_inst(il.Copy(il.Const(0))), "copy 0")
+
+pub fn inst_cast_test() -> String:
+  should.equal_string(il.display_inst(il.Cast(il.Temporary("f"))), "cast %f")
+
+// ── display_inst — control flow ───────────────────────────────────────────────
+
+pub fn inst_ret_none_test() -> String:
+  should.equal_string(il.display_inst(il.Ret(option.None)), "ret")
+
+pub fn inst_ret_value_test() -> String:
+  should.equal_string(il.display_inst(il.Ret(option.Some(il.Temporary("x")))), "ret %x")
+
+pub fn inst_ret_const_test() -> String:
+  should.equal_string(il.display_inst(il.Ret(option.Some(il.Const(0)))), "ret 0")
+
+pub fn inst_jmp_test() -> String:
+  should.equal_string(il.display_inst(il.Jmp("end")), "jmp @end")
+
+pub fn inst_jnz_test() -> String:
+  should.equal_string(il.display_inst(il.Jnz(il.Temporary("cond"), "then", "else")), "jnz %cond, @then, @else")
+
+// ── display_inst — call ───────────────────────────────────────────────────────
+
+pub fn inst_call_no_args_test() -> String:
+  should.equal_string(il.display_inst(il.Call(il.Global("foo"), [])), "call $foo()")
+
+pub fn inst_call_one_arg_test() -> String:
+  should.equal_string(il.display_inst(il.Call(il.Global("puts"), [#(il.Long, il.Temporary("s"))])), "call $puts(l %s)")
+
+pub fn inst_call_two_args_test() -> String:
+  should.equal_string(il.display_inst(il.Call(il.Global("printf"), [#(il.Long, il.Global("fmt")), #(il.Long, il.Temporary("s"))])), "call $printf(l $fmt, l %s)")
+
+pub fn inst_call_word_arg_test() -> String:
+  should.equal_string(il.display_inst(il.Call(il.Global("add"), [#(il.Word, il.Const(1)), #(il.Word, il.Const(2))])), "call $add(w 1, w 2)")
+
+// ── display_inst — phi ────────────────────────────────────────────────────────
+
+pub fn inst_phi_test() -> String:
+  should.equal_string(il.display_inst(il.Phi([#("start", il.Const(0)), #("loop", il.Temporary("i"))])), "phi @start 0, @loop %i")
+
+pub fn inst_phi_single_test() -> String:
+  should.equal_string(il.display_inst(il.Phi([#("entry", il.Temporary("x"))])), "phi @entry %x")
+
+// ── display_statement ─────────────────────────────────────────────────────────
+
+pub fn statement_assign_test() -> String:
+  let stmt = il.Assign(il.Temporary("x"), il.Long, il.Add(il.Const(1), il.Const(2)))
+  should.equal_string(il.display_statement(stmt), "%x =l add 1, 2")
+
+pub fn statement_assign_word_test() -> String:
+  let stmt = il.Assign(il.Temporary("r"), il.Word, il.Copy(il.Const(0)))
+  should.equal_string(il.display_statement(stmt), "%r =w copy 0")
+
+pub fn statement_volatile_test() -> String:
+  let stmt = il.Volatile(il.Call(il.Global("exit"), [#(il.Word, il.Const(0))]))
+  should.equal_string(il.display_statement(stmt), "call $exit(w 0)")
+
+pub fn statement_volatile_ret_test() -> String:
+  let stmt = il.Volatile(il.Ret(option.None))
+  should.equal_string(il.display_statement(stmt), "ret")
+
+// ── display_block ─────────────────────────────────────────────────────────────
+
+pub fn block_empty_test() -> String:
+  let b = il.new_block("start")
+  should.equal_string(il.display_block(b), "@start\n")
+
+pub fn block_single_stmt_test() -> String:
+  let b = il.new_block("entry")
+  let b1 = il.volatile_inst(b, il.Ret(option.Some(il.Const(0))))
+  should.equal_string(il.display_block(b1), "@entry\n\tret 0\n")
+
+pub fn block_two_stmts_test() -> String:
+  let b = il.new_block("body")
+  let b1 = il.assign_inst(b, il.Temporary("x"), il.Long, il.Copy(il.Const(1)))
+  let b2 = il.volatile_inst(b1, il.Ret(option.Some(il.Temporary("x"))))
+  let text = il.display_block(b2)
+  should.all([
+    should.starts_with(text, "@body\n"),
+    should.contains_string(text, "%x =l copy 1"),
+    should.ends_with(text, "\tret %x\n")
+  ])
+
+pub fn block_label_test() -> String:
+  let b = il.new_block("loop_body")
+  should.equal_string(il.display_block(b), "@loop_body\n")
+
+// ── Block helpers ─────────────────────────────────────────────────────────────
+
+pub fn new_block_empty_stmts_test() -> String:
+  let b = il.new_block("x")
+  case b:
+    il.Block(_, stmts) -> should.is_empty_list(stmts)
+
+pub fn add_stmt_increases_count_test() -> String:
+  let b = il.new_block("x")
+  let b1 = il.add_stmt(b, il.Volatile(il.Ret(option.None)))
+  case b1:
+    il.Block(_, stmts) ->
+      should.all([
+        should.not_empty_list(stmts),
+        should.length_list(stmts, 1)
+      ])
+
+pub fn assign_inst_adds_assign_test() -> String:
+  let b = il.new_block("x")
+  let b1 = il.assign_inst(b, il.Temporary("r"), il.Word, il.Copy(il.Const(42)))
+  case b1:
+    il.Block(_, stmts) ->
+      case stmts:
+        [il.Assign(il.Temporary(name), il.Word, _), ..] ->
+          should.all([
+            should.equal_string(name, "r"),
+            should.length_list(stmts, 1)
+          ])
+        _ -> should.equal_string("wrong", "assign")
+
+// ── display_data_item ─────────────────────────────────────────────────────────
+
+pub fn data_item_symbol_no_offset_test() -> String:
+  should.equal_string(il.display_data_item(il.Symbol("foo", option.None)), "$foo")
+
+pub fn data_item_symbol_with_offset_test() -> String:
+  should.equal_string(il.display_data_item(il.Symbol("arr", option.Some(8))), "$arr +8")
+
+pub fn data_item_str_test() -> String:
+  should.equal_string(il.display_data_item(il.Str("hello")), "\"hello\"")
+
+pub fn data_item_constant_test() -> String:
+  should.equal_string(il.display_data_item(il.Constant(0)), "0")
+
+pub fn data_item_constant_nonzero_test() -> String:
+  should.equal_string(il.display_data_item(il.Constant(255)), "255")
+
+// ── display_data_def ──────────────────────────────────────────────────────────
+
+pub fn data_def_string_test() -> String:
+  let d = il.DataDef(il.Private, "greeting", option.None, [#(il.Byte, il.Str("hi")), #(il.Byte, il.Constant(0))])
+  should.equal_string(il.display_data_def(d), "data $greeting = { b \"hi\", b 0 }\n")
+
+pub fn data_def_export_test() -> String:
+  let d = il.DataDef(il.Public, "pi", option.None, [#(il.Long, il.Constant(3))])
+  should.equal_string(il.display_data_def(d), "export data $pi = { l 3 }\n")
+
+pub fn data_def_with_align_test() -> String:
+  let d = il.DataDef(il.Private, "buf", option.Some(8), [#(il.Long, il.Constant(0))])
+  should.equal_string(il.display_data_def(d), "data $buf = align 8 { l 0 }\n")
+
+pub fn data_def_symbol_ref_test() -> String:
+  let d = il.DataDef(il.Private, "ptr", option.None, [#(il.Long, il.Symbol("other", option.None))])
+  should.equal_string(il.display_data_def(d), "data $ptr = { l $other }\n")
+
+// ── display_function ──────────────────────────────────────────────────────────
+
+pub fn function_no_args_returns_void_test() -> String:
+  let b = il.new_block("start")
+  let b1 = il.volatile_inst(b, il.Ret(option.None))
+  let f = il.Function(il.Private, "nothing", [], option.None, [b1])
+  should.equal_string(il.display_function(f), "function $nothing() {\n@start\n\tret\n}\n")
+
+pub fn function_exported_returns_word_test() -> String:
+  let b = il.new_block("start")
+  let b1 = il.volatile_inst(b, il.Ret(option.Some(il.Const(0))))
+  let f = il.Function(il.Public, "main", [], option.Some(il.Word), [b1])
+  should.equal_string(il.display_function(f), "export function w $main() {\n@start\n\tret 0\n}\n")
+
+pub fn function_one_param_test() -> String:
+  let b = il.new_block("start")
+  let b1 = il.volatile_inst(b, il.Ret(option.Some(il.Temporary("x"))))
+  let f = il.Function(il.Private, "id", [#(il.Long, il.Temporary("x"))], option.Some(il.Long), [b1])
+  should.equal_string(il.display_function(f), "function l $id(l %x) {\n@start\n\tret %x\n}\n")
+
+pub fn function_two_params_test() -> String:
+  let b = il.new_block("start")
+  let b1 = il.assign_inst(b, il.Temporary("r"), il.Word, il.Add(il.Temporary("a"), il.Temporary("b")))
+  let b2 = il.volatile_inst(b1, il.Ret(option.Some(il.Temporary("r"))))
+  let params = [#(il.Word, il.Temporary("a")), #(il.Word, il.Temporary("b"))]
+  let f = il.Function(il.Public, "add", params, option.Some(il.Word), [b2])
+  should.equal_string(il.display_function(f), "export function w $add(w %a, w %b) {\n@start\n\t%r =w add %a, %b\n\tret %r\n}\n")
+
+pub fn function_two_blocks_test() -> String:
+  let b1 = il.new_block("start")
+  let b1a = il.volatile_inst(b1, il.Jmp("end"))
+  let b2 = il.new_block("end")
+  let b2a = il.volatile_inst(b2, il.Ret(option.Some(il.Const(1))))
+  let f = il.Function(il.Private, "skip", [], option.Some(il.Word), [b1a, b2a])
+  let text = il.display_function(f)
+  should.because(
+    should.all([
+      should.starts_with(text, "function w $skip() {"),
+      should.contains_string(text, "@start\n\tjmp @end\n"),
+      should.contains_string(text, "@end\n\tret 1\n"),
+      should.not_contains_string(text, "export function")
+    ]),
+    "function display should preserve block order and private linkage"
+  )
+
+// ── display_module ────────────────────────────────────────────────────────────
+
+pub fn module_empty_test() -> String:
+  let m = il.new_module()
+  should.equal_string(il.display_module(m), "")
+
+pub fn module_data_only_test() -> String:
+  let d = il.DataDef(il.Private, "x", option.None, [#(il.Long, il.Constant(0))])
+  let m = il.add_data_def(il.new_module(), d)
+  should.equal_string(il.display_module(m), "data $x = { l 0 }\n")
+
+pub fn module_function_only_test() -> String:
+  let b = il.new_block("s")
+  let b1 = il.volatile_inst(b, il.Ret(option.None))
+  let f = il.Function(il.Private, "noop", [], option.None, [b1])
+  let m = il.add_function(il.new_module(), f)
+  should.equal_string(il.display_module(m), "function $noop() {\n@s\n\tret\n}\n")
+
+pub fn module_data_before_functions_test() -> String:
+  let d = il.DataDef(il.Private, "msg", option.None, [#(il.Byte, il.Str("hi")), #(il.Byte, il.Constant(0))])
+  let b = il.new_block("start")
+  let b1 = il.volatile_inst(b, il.Ret(option.Some(il.Const(0))))
+  let f = il.Function(il.Public, "main", [], option.Some(il.Word), [b1])
+  let m = il.add_function(il.add_data_def(il.new_module(), d), f)
+  let text = il.display_module(m)
+  should.all([
+    should.starts_with(text, "data $msg = { b \"hi\", b 0 }\n"),
+    should.contains_string(text, "export function w $main()"),
+    should.ends_with(text, "\tret 0\n}\n")
+  ])
+
+// ── Module helpers ────────────────────────────────────────────────────────────
+
+pub fn new_module_has_no_functions_test() -> String:
+  let m = il.new_module()
+  case m:
+    il.ILModule(fns, _) -> should.is_empty_list(fns)
+
+pub fn new_module_has_no_data_test() -> String:
+  let m = il.new_module()
+  case m:
+    il.ILModule(_, datas) -> should.is_empty_list(datas)
+
+pub fn add_function_increments_count_test() -> String:
+  let b = il.new_block("s")
+  let b1 = il.volatile_inst(b, il.Ret(option.None))
+  let f = il.Function(il.Private, "f", [], option.None, [b1])
+  let m = il.add_function(il.new_module(), f)
+  case m:
+    il.ILModule(fns, _) ->
+      should.all([
+        should.not_empty_list(fns),
+        should.length_list(fns, 1)
+      ])
+
+pub fn add_data_def_increments_count_test() -> String:
+  let d = il.DataDef(il.Private, "d", option.None, [#(il.Long, il.Constant(0))])
+  let m = il.add_data_def(il.new_module(), d)
+  case m:
+    il.ILModule(_, datas) ->
+      should.all([
+        should.not_empty_list(datas),
+        should.length_list(datas, 1)
+      ])

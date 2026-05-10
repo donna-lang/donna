@@ -1,0 +1,40 @@
+//// `donna run` command.
+//// Builds an application project and executes the generated binary. Library
+//// projects are rejected with a clear missing-main message.
+
+import donna/files
+import donna/shell
+import donna/string
+import utilities/colors
+import builder/scanner
+import cli/cmd_build
+
+/// Run `donna run`, building first and then executing the produced binary.
+pub fn run(args: List(#(String, String))) -> String:
+  let dir = first_positional(args)
+  case scanner.scan(dir):
+    scanner.ScanErr(msg) ->
+      colors.red("error") <> ": " <> msg
+    scanner.ScanOk(project) ->
+      case cmd_build.build_project(dir, project):
+        cmd_build.BuildFailed(msg) -> msg
+        cmd_build.BuildOk(has_main) ->
+          let name = scanner.project_name(project)
+          let bin_path = files.join(scanner.project_bin_dir(project), name)
+          case has_main:
+            False ->
+              colors.red("error") <> ": cannot run library project" <> "\n" <> colors.dim("  hint: add pub fn main() to create an application entry point")
+            True ->
+              case files.exists(bin_path):
+                False ->
+                  colors.red("error") <> ": executable was not produced at " <> colors.path(bin_path)
+                True ->
+                  let _ = shell.flush()
+                  let _ = shell.exec(bin_path, [])
+                  ""
+
+fn first_positional(args: List(#(String, String))) -> String:
+  case args:
+    [] -> "."
+    [#("", v), .._] -> v
+    [_, ..rest] -> first_positional(rest)

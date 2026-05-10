@@ -1,0 +1,1663 @@
+//// Donna lexer.
+//// Turns source text into tokens with spans, including indentation tokens,
+//// doc comments, string escapes, numeric literals, and operator variants.
+
+import donna/string
+import donna/list
+import donna/int
+import compiler/lexer/token
+import utilities/location
+import errors/error
+
+/// Result of lexing source text.
+pub type LexResult:
+  LexOk(List(#(token.Token, location.Span)))
+  LexErrors(List(error.DonnaError))
+
+/// Lex Donna source text into tokens with source spans.
+pub fn lex(src: String, file: String) -> LexResult:
+  case lex_loop(src, 0, 1, 1, file, [0], [], [], 0):
+    LexErrors(errs) -> LexErrors(errs)
+    LexOk(toks) -> LexOk(list.reverse(toks))
+
+fn lex_loop(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  case pos >= string.length(src):
+    True -> lex_eof(file, line, col, pos, stack, acc, errs)
+    False ->
+      case string.char_str(src, pos):
+        "\r" -> lex_loop(src, pos + 1, line, col, file, stack, acc, errs, depth)
+        "\n" -> lex_newline(src, pos, line, col, file, stack, acc, errs, depth)
+        " " ->
+          lex_loop(src, pos + 1, line, col + 1, file, stack, acc, errs, depth)
+        "\t" ->
+          lex_loop(src, pos + 1, line, col + 1, file, stack, acc, errs, depth)
+        "/" -> lex_slash(src, pos, line, col, file, stack, acc, errs, depth)
+        ch -> lex_token(src, pos, line, col, file, stack, acc, ch, errs, depth)
+
+fn lex_eof(
+  file: String,
+  line: Int,
+  col: Int,
+  pos: Int,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  errs: List(error.DonnaError)
+) -> LexResult:
+  let sp = span(file, line, col, pos)
+  let toks = [#(token.TokEof, sp), ..close_all(stack, sp, acc)]
+  case list.is_empty(errs):
+    True -> LexOk(toks)
+    False -> LexErrors(list.reverse(errs))
+
+fn lex_slash(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  case safe_char_str(src, pos + 1):
+    "." ->
+      push2(
+        src,
+        pos,
+        line,
+        col,
+        file,
+        stack,
+        acc,
+        token.TokSlashDot,
+        errs,
+        depth
+      )
+    "/" ->
+      case safe_char_str(src, pos + 2) == "/" && safe_char_str(src, pos + 3) == "/":
+        True ->
+          let sp = span(file, line, col, pos)
+          let #(end_pos, text) = scan_line(src, pos + 4)
+          let tok = token.TokModuleDoc(string.trim_start(text))
+          lex_after_newline(
+            src,
+            end_pos + 1,
+            line + 1,
+            file,
+            stack,
+            [#(tok, sp), ..acc],
+            sp,
+            errs,
+            depth
+          )
+        False ->
+          skip_comment(
+            src,
+            pos + 2,
+            line,
+            col + 2,
+            file,
+            stack,
+            acc,
+            errs,
+            depth
+          )
+    _ ->
+      push1(src, pos, line, col, file, stack, acc, token.TokSlash, errs, depth)
+
+fn skip_comment(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  case pos >= string.length(src):
+    True -> lex_eof(file, line, col, pos, stack, acc, errs)
+    False ->
+      case string.char_str(src, pos):
+        "\n" ->
+          let sp = span(file, line, col, pos)
+          lex_after_newline(
+            src,
+            pos + 1,
+            line + 1,
+            file,
+            stack,
+            acc,
+            sp,
+            errs,
+            depth
+          )
+        _ ->
+          skip_comment(
+            src,
+            pos + 1,
+            line,
+            col + 1,
+            file,
+            stack,
+            acc,
+            errs,
+            depth
+          )
+
+fn scan_line(src: String, pos: Int) -> #(Int, String):
+  scan_line_acc(src, pos, "")
+
+fn scan_line_acc(src: String, pos: Int, acc: String) -> #(Int, String):
+  case pos >= string.length(src):
+    True -> #(pos, acc)
+    False ->
+      case string.char_str(src, pos):
+        "\n" -> #(pos, acc)
+        ch -> scan_line_acc(src, pos + 1, acc <> ch)
+
+fn lex_newline(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  let sp = span(file, line, col, pos)
+  lex_after_newline(src, pos + 1, line + 1, file, stack, acc, sp, errs, depth)
+
+fn lex_after_newline(
+  src: String,
+  pos: Int,
+  line: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  nl_sp: location.Span,
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  case pos >= string.length(src):
+    True -> lex_eof(file, line, 1, pos, stack, acc, errs)
+    False ->
+      let indent = count_indent(src, pos)
+      let np = pos + indent
+      case np >= string.length(src):
+        True -> lex_eof(file, line, indent + 1, np, stack, acc, errs)
+        False ->
+          case string.char_str(src, np):
+            "\n" ->
+              lex_after_newline(
+                src,
+                np + 1,
+                line + 1,
+                file,
+                stack,
+                acc,
+                nl_sp,
+                errs,
+                depth
+              )
+            "\r" ->
+              lex_after_newline(
+                src,
+                np + 1,
+                line,
+                file,
+                stack,
+                acc,
+                nl_sp,
+                errs,
+                depth
+              )
+            _ ->
+              case depth > 0:
+                True ->
+                  lex_loop(
+                    src,
+                    np,
+                    line,
+                    indent + 1,
+                    file,
+                    stack,
+                    acc,
+                    errs,
+                    depth
+                  )
+                False ->
+                  case is_comment_start(src, np):
+                    True ->
+                      case safe_char_str(src, np + 2) == "/" && safe_char_str(src, np + 3) == "/":
+                        True ->
+                          let sp = span(file, line, 1, np)
+                          let #(end_pos, text) = scan_line(src, np + 4)
+                          let tok = token.TokModuleDoc(string.trim_start(text))
+                          lex_after_newline(
+                            src,
+                            end_pos + 1,
+                            line + 1,
+                            file,
+                            stack,
+                            [#(tok, sp), ..acc],
+                            sp,
+                            errs,
+                            depth
+                          )
+                        False ->
+                          let eol = find_eol(src, np + 2)
+                          lex_after_newline(
+                            src,
+                            eol,
+                            line + 1,
+                            file,
+                            stack,
+                            acc,
+                            nl_sp,
+                            errs,
+                            depth
+                          )
+                    False ->
+                      case is_continuation(src, np):
+                        True ->
+                          lex_loop(
+                            src,
+                            np,
+                            line,
+                            indent + 1,
+                            file,
+                            stack,
+                            acc,
+                            errs,
+                            depth
+                          )
+                        False ->
+                          process_indent(
+                            src,
+                            np,
+                            line,
+                            indent,
+                            file,
+                            stack,
+                            acc,
+                            nl_sp,
+                            errs,
+                            depth
+                          )
+
+fn process_indent(
+  src: String,
+  np: Int,
+  line: Int,
+  indent: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  nl_sp: location.Span,
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  let current = list_head(stack, 0)
+  let non_empty = list.is_empty(acc) == False
+  case indent > current:
+    True ->
+      let acc1 = case non_empty:
+        True -> [#(token.TokIndent, nl_sp), #(token.TokNewline, nl_sp), ..acc]
+        False -> [#(token.TokIndent, nl_sp), ..acc]
+      lex_loop(
+        src,
+        np,
+        line,
+        indent + 1,
+        file,
+        [indent, ..stack],
+        acc1,
+        errs,
+        depth
+      )
+    False ->
+      case indent < current:
+        True ->
+          let acc1 = case non_empty:
+            True -> [#(token.TokNewline, nl_sp), ..acc]
+            False -> acc
+          let #(new_stack, acc2) = pop_to(stack, indent, nl_sp, acc1)
+          lex_loop(
+            src,
+            np,
+            line,
+            indent + 1,
+            file,
+            new_stack,
+            acc2,
+            errs,
+            depth
+          )
+        False ->
+          case non_empty:
+            True ->
+              lex_loop(
+                src,
+                np,
+                line,
+                indent + 1,
+                file,
+                stack,
+                [#(token.TokNewline, nl_sp), ..acc],
+                errs,
+                depth
+              )
+            False ->
+              lex_loop(src, np, line, indent + 1, file, stack, acc, errs, depth)
+
+fn count_indent(src: String, pos: Int) -> Int:
+  case pos >= string.length(src):
+    True -> 0
+    False ->
+      case string.char_str(src, pos):
+        " " -> 1 + count_indent(src, pos + 1)
+        "\t" -> 1 + count_indent(src, pos + 1)
+        _ -> 0
+
+fn find_eol(src: String, pos: Int) -> Int:
+  case pos >= string.length(src):
+    True -> pos
+    False ->
+      case string.char_str(src, pos):
+        "\n" -> pos + 1
+        _ -> find_eol(src, pos + 1)
+
+fn is_comment_start(src: String, pos: Int) -> Bool:
+  safe_char_str(src, pos) == "/" && safe_char_str(src, pos + 1) == "/"
+
+fn is_continuation(src: String, pos: Int) -> Bool:
+  let c0 = string.char_str(src, pos)
+  let c1 = safe_char_str(src, pos + 1)
+  case c0 == "|":
+    True -> c1 == ">"
+    False -> c0 == "<" && c1 == ">"
+
+fn pop_to(
+  stack: List(Int),
+  target: Int,
+  sp: location.Span,
+  acc: List(#(token.Token, location.Span))
+) -> #(List(Int), List(#(token.Token, location.Span))):
+  case stack:
+    [] -> #([], acc)
+    [top, ..rest] ->
+      case top > target:
+        True -> pop_to(rest, target, sp, [#(token.TokDedent, sp), ..acc])
+        False -> #(stack, acc)
+
+fn close_all(
+  stack: List(Int),
+  sp: location.Span,
+  acc: List(#(token.Token, location.Span))
+) -> List(#(token.Token, location.Span)):
+  case stack:
+    [] -> acc
+    [_] -> acc
+    [_, ..rest] -> close_all(rest, sp, [#(token.TokDedent, sp), ..acc])
+
+fn lex_token(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  ch: String,
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  case ch:
+    "@" ->
+      push1(src, pos, line, col, file, stack, acc, token.TokAt, errs, depth)
+    ":" ->
+      push1(src, pos, line, col, file, stack, acc, token.TokColon, errs, depth)
+    "," ->
+      push1(src, pos, line, col, file, stack, acc, token.TokComma, errs, depth)
+    "#" ->
+      push1(src, pos, line, col, file, stack, acc, token.TokHash, errs, depth)
+    "(" ->
+      lex_loop(
+        src,
+        pos + 1,
+        line,
+        col + 1,
+        file,
+        stack,
+        [#(token.TokLParen, span(file, line, col, pos)), ..acc],
+        errs,
+        depth + 1
+      )
+    ")" ->
+      lex_loop(
+        src,
+        pos + 1,
+        line,
+        col + 1,
+        file,
+        stack,
+        [#(token.TokRParen, span(file, line, col, pos)), ..acc],
+        errs,
+        depth - 1
+      )
+    "[" ->
+      lex_loop(
+        src,
+        pos + 1,
+        line,
+        col + 1,
+        file,
+        stack,
+        [#(token.TokLSquare, span(file, line, col, pos)), ..acc],
+        errs,
+        depth + 1
+      )
+    "]" ->
+      lex_loop(
+        src,
+        pos + 1,
+        line,
+        col + 1,
+        file,
+        stack,
+        [#(token.TokRSquare, span(file, line, col, pos)), ..acc],
+        errs,
+        depth - 1
+      )
+    "{" ->
+      push1(src, pos, line, col, file, stack, acc, token.TokLBrace, errs, depth)
+    "}" ->
+      push1(src, pos, line, col, file, stack, acc, token.TokRBrace, errs, depth)
+    "%" ->
+      push1(
+        src,
+        pos,
+        line,
+        col,
+        file,
+        stack,
+        acc,
+        token.TokPercent,
+        errs,
+        depth
+      )
+    "!" ->
+      case safe_char_str(src, pos + 1):
+        "=" ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokNotEq,
+            errs,
+            depth
+          )
+        _ ->
+          push1(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokBang,
+            errs,
+            depth
+          )
+    "=" ->
+      case safe_char_str(src, pos + 1):
+        "=" ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokEqEq,
+            errs,
+            depth
+          )
+        _ ->
+          push1(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokEqual,
+            errs,
+            depth
+          )
+    "+" ->
+      case safe_char_str(src, pos + 1):
+        "." ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokPlusDot,
+            errs,
+            depth
+          )
+        _ ->
+          push1(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokPlus,
+            errs,
+            depth
+          )
+    "-" ->
+      case safe_char_str(src, pos + 1):
+        ">" ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokArrow,
+            errs,
+            depth
+          )
+        "." ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokMinusDot,
+            errs,
+            depth
+          )
+        _ ->
+          push1(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokMinus,
+            errs,
+            depth
+          )
+    "*" ->
+      case safe_char_str(src, pos + 1):
+        "." ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokStarDot,
+            errs,
+            depth
+          )
+        _ ->
+          push1(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokStar,
+            errs,
+            depth
+          )
+    "." ->
+      case safe_char_str(src, pos + 1):
+        "." ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokDotDot,
+            errs,
+            depth
+          )
+        _ ->
+          push1(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokDot,
+            errs,
+            depth
+          )
+    "<" ->
+      case safe_char_str(src, pos + 1):
+        ">" ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokLtGt,
+            errs,
+            depth
+          )
+        "=" ->
+          case safe_char_str(src, pos + 2):
+            "." ->
+              push3(
+                src,
+                pos,
+                line,
+                col,
+                file,
+                stack,
+                acc,
+                token.TokLtEqDot,
+                errs,
+                depth
+              )
+            _ ->
+              push2(
+                src,
+                pos,
+                line,
+                col,
+                file,
+                stack,
+                acc,
+                token.TokLtEq,
+                errs,
+                depth
+              )
+        "." ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokLtDot,
+            errs,
+            depth
+          )
+        _ ->
+          push1(src, pos, line, col, file, stack, acc, token.TokLt, errs, depth)
+    ">" ->
+      case safe_char_str(src, pos + 1):
+        "=" ->
+          case safe_char_str(src, pos + 2):
+            "." ->
+              push3(
+                src,
+                pos,
+                line,
+                col,
+                file,
+                stack,
+                acc,
+                token.TokGtEqDot,
+                errs,
+                depth
+              )
+            _ ->
+              push2(
+                src,
+                pos,
+                line,
+                col,
+                file,
+                stack,
+                acc,
+                token.TokGtEq,
+                errs,
+                depth
+              )
+        "." ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokGtDot,
+            errs,
+            depth
+          )
+        _ ->
+          push1(src, pos, line, col, file, stack, acc, token.TokGt, errs, depth)
+    "|" ->
+      case safe_char_str(src, pos + 1):
+        ">" ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokPipe,
+            errs,
+            depth
+          )
+        "|" ->
+          push2(src, pos, line, col, file, stack, acc, token.TokOr, errs, depth)
+        _ ->
+          push1(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokVBar,
+            errs,
+            depth
+          )
+    "&" ->
+      case safe_char_str(src, pos + 1):
+        "&" ->
+          push2(
+            src,
+            pos,
+            line,
+            col,
+            file,
+            stack,
+            acc,
+            token.TokAnd,
+            errs,
+            depth
+          )
+        _ ->
+          lex_loop(
+            src,
+            pos + 1,
+            line,
+            col + 1,
+            file,
+            stack,
+            acc,
+            [error.LexUnexpectedChar("&", span(file, line, col, pos)), ..errs],
+            depth
+          )
+    "\"" ->
+      lex_string(
+        src,
+        pos + 1,
+        line,
+        col,
+        file,
+        stack,
+        acc,
+        span(file, line, col, pos),
+        "",
+        errs,
+        depth
+      )
+    _ ->
+      case is_digit_code(string.char_at(ch, 0)):
+        True -> lex_number(src, pos, line, col, file, stack, acc, errs, depth)
+        False ->
+          case is_ident_start_code(string.char_at(ch, 0)):
+            True ->
+              lex_ident(src, pos, line, col, file, stack, acc, errs, depth)
+            False ->
+              lex_loop(
+                src,
+                pos + 1,
+                line,
+                col + 1,
+                file,
+                stack,
+                acc,
+                [
+                  error.LexUnexpectedChar(ch, span(file, line, col, pos)),
+                  ..errs
+                ],
+                depth
+              )
+
+fn lex_string(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  sp: location.Span,
+  buf: String,
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  case pos >= string.length(src):
+    True -> LexErrors(list.reverse([error.LexUnterminatedString(sp), ..errs]))
+    False ->
+      case string.char_str(src, pos):
+        "\"" ->
+          lex_loop(
+            src,
+            pos + 1,
+            line,
+            col + 1,
+            file,
+            stack,
+            [#(token.TokString(buf), sp), ..acc],
+            errs,
+            depth
+          )
+        "\\" ->
+          case pos + 1 >= string.length(src):
+            True ->
+              LexErrors(list.reverse([error.LexUnterminatedString(sp), ..errs]))
+            False ->
+              case safe_char_str(src, pos + 1):
+                "n" ->
+                  lex_string(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf <> "\n",
+                    errs,
+                    depth
+                  )
+                "t" ->
+                  lex_string(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf <> "\t",
+                    errs,
+                    depth
+                  )
+                "\\" ->
+                  lex_string(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf <> "\\",
+                    errs,
+                    depth
+                  )
+                "\"" ->
+                  lex_string(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf <> "\"",
+                    errs,
+                    depth
+                  )
+                "r" ->
+                  lex_string(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf <> "\r",
+                    errs,
+                    depth
+                  )
+                "a" ->
+                  lex_string(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf <> string.char_from_code(7),
+                    errs,
+                    depth
+                  )
+                "b" ->
+                  lex_string(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf <> string.char_from_code(8),
+                    errs,
+                    depth
+                  )
+                "f" ->
+                  lex_string(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf <> string.char_from_code(12),
+                    errs,
+                    depth
+                  )
+                "v" ->
+                  lex_string(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf <> string.char_from_code(11),
+                    errs,
+                    depth
+                  )
+                "e" ->
+                  lex_string(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf <> string.char_from_code(27),
+                    errs,
+                    depth
+                  )
+                "x" ->
+                  let hi_c = safe_char_at(src, pos + 2)
+                  let lo_c = safe_char_at(src, pos + 3)
+                  case is_hex_digit_code(hi_c) && is_hex_digit_code(lo_c):
+                    False ->
+                      lex_string(
+                        src,
+                        pos + 4,
+                        line,
+                        col + 4,
+                        file,
+                        stack,
+                        acc,
+                        sp,
+                        buf,
+                        [
+                          error.LexInvalidHexEscape(span(file, line, col, pos)),
+                          ..errs
+                        ],
+                        depth
+                      )
+                    True ->
+                      let ch = string.char_from_code(hex_val(hi_c) * 16 + hex_val(lo_c))
+                      lex_string(
+                        src,
+                        pos + 4,
+                        line,
+                        col + 4,
+                        file,
+                        stack,
+                        acc,
+                        sp,
+                        buf <> ch,
+                        errs,
+                        depth
+                      )
+                "u" ->
+                  lex_unicode_escape(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf,
+                    errs,
+                    depth
+                  )
+                ec ->
+                  lex_string(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    sp,
+                    buf,
+                    [
+                      error.LexInvalidEscape(ec, span(file, line, col, pos)),
+                      ..errs
+                    ],
+                    depth
+                  )
+        "\n" ->
+          lex_string(
+            src,
+            pos + 1,
+            line + 1,
+            1,
+            file,
+            stack,
+            acc,
+            sp,
+            buf <> "\n",
+            errs,
+            depth
+          )
+        ch ->
+          lex_string(
+            src,
+            pos + 1,
+            line,
+            col + 1,
+            file,
+            stack,
+            acc,
+            sp,
+            buf <> ch,
+            errs,
+            depth
+          )
+
+fn lex_unicode_escape(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  sp: location.Span,
+  buf: String,
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  let err_sp = span(file, line, col - 2, pos - 2)
+  case string.char_str(src, pos) == "{":
+    False ->
+      let d0 = safe_char_at(src, pos)
+      let d1 = safe_char_at(src, pos + 1)
+      let d2 = safe_char_at(src, pos + 2)
+      let d3 = safe_char_at(src, pos + 3)
+      case is_hex_digit_code(d0) && is_hex_digit_code(d1) && is_hex_digit_code(d2) && is_hex_digit_code(d3):
+        False ->
+          lex_string(
+            src,
+            pos + 4,
+            line,
+            col + 4,
+            file,
+            stack,
+            acc,
+            sp,
+            buf,
+            [error.LexInvalidUnicodeEscape(err_sp), ..errs],
+            depth
+          )
+        True ->
+          let ch = string.char_from_code(
+            hex_val(d0) * 4096 + hex_val(d1) * 256 + hex_val(d2) * 16 + hex_val(d3)
+          )
+          lex_string(
+            src,
+            pos + 4,
+            line,
+            col + 4,
+            file,
+            stack,
+            acc,
+            sp,
+            buf <> ch,
+            errs,
+            depth
+          )
+    True ->
+      let end = scan_to_rbrace(src, pos + 1)
+      let raw = string.slice(src, pos + 1, end - pos - 1)
+      let closed = end < string.length(src)
+      case closed && string.length(raw) > 0 && all_hex_digits(raw, 0):
+        False ->
+          lex_string(
+            src,
+            end + 1,
+            line,
+            col + (end - pos + 1),
+            file,
+            stack,
+            acc,
+            sp,
+            buf,
+            [error.LexInvalidUnicodeEscape(err_sp), ..errs],
+            depth
+          )
+        True ->
+          let ch = string.char_from_code(parse_hex_str(raw))
+          lex_string(
+            src,
+            end + 1,
+            line,
+            col + (end - pos + 1),
+            file,
+            stack,
+            acc,
+            sp,
+            buf <> ch,
+            errs,
+            depth
+          )
+
+fn scan_to_rbrace(src: String, pos: Int) -> Int:
+  case pos >= string.length(src):
+    True -> pos
+    False ->
+      case string.char_str(src, pos) == "}":
+        True -> pos
+        False -> scan_to_rbrace(src, pos + 1)
+
+fn lex_number(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  let sp = span(file, line, col, pos)
+  let c0 = string.char_str(src, pos)
+  let c1 = safe_char_str(src, pos + 1)
+  case c0 == "0" && c1 == "x":
+    True ->
+      let end = scan_hex_digits(src, pos + 2)
+      case end == pos + 2:
+        True ->
+          lex_loop(
+            src,
+            pos + 2,
+            line,
+            col + 2,
+            file,
+            stack,
+            acc,
+            [error.LexEmptyNumberLiteral("0x", sp), ..errs],
+            depth
+          )
+        False ->
+          let raw = string.slice(src, pos + 2, end - pos - 2)
+          push_at(
+            src,
+            end,
+            line,
+            col + (end - pos),
+            file,
+            stack,
+            acc,
+            token.TokInt(int.to_string(parse_hex_str(raw))),
+            sp,
+            errs,
+            depth
+          )
+    False ->
+      case c0 == "0" && c1 == "b":
+        True ->
+          let end = scan_binary_digits(src, pos + 2)
+          case end == pos + 2:
+            True ->
+              lex_loop(
+                src,
+                pos + 2,
+                line,
+                col + 2,
+                file,
+                stack,
+                acc,
+                [error.LexEmptyNumberLiteral("0b", sp), ..errs],
+                depth
+              )
+            False ->
+              let raw = string.slice(src, pos + 2, end - pos - 2)
+              push_at(
+                src,
+                end,
+                line,
+                col + (end - pos),
+                file,
+                stack,
+                acc,
+                token.TokInt(int.to_string(parse_binary_str(raw))),
+                sp,
+                errs,
+                depth
+              )
+        False ->
+          let #(end, is_float) = scan_decimal(src, pos, False)
+          let content = strip_underscores(string.slice(src, pos, end - pos))
+          let tok = case is_float:
+            True -> token.TokFloat(content)
+            False -> token.TokInt(content)
+          push_at(
+            src,
+            end,
+            line,
+            col + (end - pos),
+            file,
+            stack,
+            acc,
+            tok,
+            sp,
+            errs,
+            depth
+          )
+
+fn scan_decimal(src: String, pos: Int, seen_dot: Bool) -> #(Int, Bool):
+  case pos >= string.length(src):
+    True -> #(pos, seen_dot)
+    False ->
+      case string.char_str(src, pos):
+        "_" -> scan_decimal(src, pos + 1, seen_dot)
+        "." ->
+          case seen_dot:
+            True -> #(pos, True)
+            False ->
+              case is_digit_code(safe_char_at(src, pos + 1)):
+                True -> scan_decimal(src, pos + 1, True)
+                False -> #(pos, seen_dot)
+        ch ->
+          case is_digit_code(string.char_at(ch, 0)):
+            True -> scan_decimal(src, pos + 1, seen_dot)
+            False -> #(pos, seen_dot)
+
+fn scan_hex_digits(src: String, pos: Int) -> Int:
+  case pos >= string.length(src):
+    True -> pos
+    False ->
+      case string.char_str(src, pos):
+        "_" -> scan_hex_digits(src, pos + 1)
+        ch ->
+          case is_hex_digit_code(string.char_at(ch, 0)):
+            True -> scan_hex_digits(src, pos + 1)
+            False -> pos
+
+fn scan_binary_digits(src: String, pos: Int) -> Int:
+  case pos >= string.length(src):
+    True -> pos
+    False ->
+      case string.char_str(src, pos):
+        "_" -> scan_binary_digits(src, pos + 1)
+        "0" -> scan_binary_digits(src, pos + 1)
+        "1" -> scan_binary_digits(src, pos + 1)
+        _ -> pos
+
+fn strip_underscores(s: String) -> String:
+  strip_underscores_acc(s, 0, string.length(s), "")
+
+fn strip_underscores_acc(s: String, i: Int, len: Int, acc: String) -> String:
+  case i >= len:
+    True -> acc
+    False ->
+      case string.char_str(s, i):
+        "_" -> strip_underscores_acc(s, i + 1, len, acc)
+        ch -> strip_underscores_acc(s, i + 1, len, acc <> ch)
+
+fn parse_hex_str(s: String) -> Int:
+  parse_hex_acc(s, 0, string.length(s), 0)
+
+fn parse_hex_acc(s: String, i: Int, len: Int, acc: Int) -> Int:
+  case i >= len:
+    True -> acc
+    False ->
+      case string.char_str(s, i):
+        "_" -> parse_hex_acc(s, i + 1, len, acc)
+        _ ->
+          parse_hex_acc(s, i + 1, len, acc * 16 + hex_val(string.char_at(s, i)))
+
+fn parse_binary_str(s: String) -> Int:
+  parse_binary_acc(s, 0, string.length(s), 0)
+
+fn parse_binary_acc(s: String, i: Int, len: Int, acc: Int) -> Int:
+  case i >= len:
+    True -> acc
+    False ->
+      case string.char_str(s, i):
+        "_" -> parse_binary_acc(s, i + 1, len, acc)
+        "1" -> parse_binary_acc(s, i + 1, len, acc * 2 + 1)
+        _ -> parse_binary_acc(s, i + 1, len, acc * 2)
+
+fn all_hex_digits(s: String, i: Int) -> Bool:
+  case i >= string.length(s):
+    True -> True
+    False ->
+      case is_hex_digit_code(string.char_at(s, i)):
+        False -> False
+        True -> all_hex_digits(s, i + 1)
+
+fn hex_val(c: Int) -> Int:
+  case c >= 48 && c <= 57:
+    True -> c - 48
+    False ->
+      case c >= 65 && c <= 70:
+        True -> c - 55
+        False ->
+          case c >= 97 && c <= 102:
+            True -> c - 87
+            False -> 0
+
+fn lex_ident(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  case string.char_str(src, pos) == "_":
+    True ->
+      let end = scan_ident(src, pos + 1)
+      let name = string.slice(src, pos + 1, end - pos - 1)
+      let sp = span_range(file, line, col, pos, col + (end - pos) - 1, end - 1)
+      push_at(
+        src,
+        end,
+        line,
+        col + (end - pos),
+        file,
+        stack,
+        acc,
+        token.TokDiscard(name),
+        sp,
+        errs,
+        depth
+      )
+    False ->
+      let end = scan_ident(src, pos)
+      let name = string.slice(src, pos, end - pos)
+      let sp = span_range(file, line, col, pos, col + (end - pos) - 1, end - 1)
+      push_at(
+        src,
+        end,
+        line,
+        col + (end - pos),
+        file,
+        stack,
+        acc,
+        resolve_keyword(name),
+        sp,
+        errs,
+        depth
+      )
+
+fn scan_ident(src: String, pos: Int) -> Int:
+  case pos >= string.length(src):
+    True -> pos
+    False ->
+      case string.char_str(src, pos):
+        "_" -> scan_ident(src, pos + 1)
+        ch ->
+          case is_alnum_code(string.char_at(ch, 0)):
+            True -> scan_ident(src, pos + 1)
+            False -> pos
+
+fn resolve_keyword(name: String) -> token.Token:
+  case name:
+    "as" -> token.TokAs
+    "case" -> token.TokCase
+    "const" -> token.TokConst
+    "echo" -> token.TokEcho
+    "external" -> token.TokExternal
+    "fn" -> token.TokFn
+    "if" -> token.TokIf
+    "import" -> token.TokImport
+    "let" -> token.TokLet
+    "opaque" -> token.TokOpaque
+    "panic" -> token.TokPanic
+    "pub" -> token.TokPub
+    "todo" -> token.TokTodo
+    "type" -> token.TokType
+    "True" -> token.TokBool(True)
+    "False" -> token.TokBool(False)
+    _ ->
+      case is_upper_code(string.char_at(name, 0)):
+        True -> token.TokUpperName(name)
+        False -> token.TokName(name)
+
+fn is_digit_code(c: Int) -> Bool:
+  c >= 48 && c <= 57
+
+fn is_upper_code(c: Int) -> Bool:
+  c >= 65 && c <= 90
+
+fn is_lower_code(c: Int) -> Bool:
+  c >= 97 && c <= 122
+
+fn is_alnum_code(c: Int) -> Bool:
+  is_digit_code(c) || is_upper_code(c) || is_lower_code(c)
+
+fn is_ident_start_code(c: Int) -> Bool:
+  is_upper_code(c) || is_lower_code(c) || c == 95
+
+fn is_hex_digit_code(c: Int) -> Bool:
+  is_digit_code(c) || c >= 65 && c <= 70 || c >= 97 && c <= 102
+
+fn safe_char_str(src: String, pos: Int) -> String:
+  case pos >= string.length(src):
+    True -> ""
+    False -> string.char_str(src, pos)
+
+fn safe_char_at(src: String, pos: Int) -> Int:
+  case pos >= string.length(src):
+    True -> 0
+    False -> string.char_at(src, pos)
+
+fn span(file: String, line: Int, col: Int, offset: Int) -> location.Span:
+  let p = location.Position(line, col, offset)
+  location.Span(file, p, p)
+
+fn span_range(
+  file: String,
+  line: Int,
+  start_col: Int,
+  start_off: Int,
+  end_col: Int,
+  end_off: Int
+) -> location.Span:
+  let s = location.Position(line, start_col, start_off)
+  let e = location.Position(line, end_col, end_off)
+  location.Span(file, s, e)
+
+fn push1(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  tok: token.Token,
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  lex_loop(
+    src,
+    pos + 1,
+    line,
+    col + 1,
+    file,
+    stack,
+    [#(tok, span(file, line, col, pos)), ..acc],
+    errs,
+    depth
+  )
+
+fn push2(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  tok: token.Token,
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  lex_loop(
+    src,
+    pos + 2,
+    line,
+    col + 2,
+    file,
+    stack,
+    [#(tok, span(file, line, col, pos)), ..acc],
+    errs,
+    depth
+  )
+
+fn push3(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  tok: token.Token,
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  lex_loop(
+    src,
+    pos + 3,
+    line,
+    col + 3,
+    file,
+    stack,
+    [#(tok, span(file, line, col, pos)), ..acc],
+    errs,
+    depth
+  )
+
+fn push_at(
+  src: String,
+  end: Int,
+  line: Int,
+  new_col: Int,
+  file: String,
+  stack: List(Int),
+  acc: List(#(token.Token, location.Span)),
+  tok: token.Token,
+  sp: location.Span,
+  errs: List(error.DonnaError),
+  depth: Int
+) -> LexResult:
+  lex_loop(
+    src,
+    end,
+    line,
+    new_col,
+    file,
+    stack,
+    [#(tok, sp), ..acc],
+    errs,
+    depth
+  )
+
+fn list_head(lst: List(Int), default: Int) -> Int:
+  case lst:
+    [] -> default
+    [h, .._] -> h

@@ -1,0 +1,141 @@
+//// Command-line dispatcher.
+//// This module routes parsed argv values to subcommands, handles global help
+//// and version flags, and determines the process exit code for CLI output.
+
+import argparse
+import cli/help
+import cli/cmd_new
+import cli/cmd_build
+import cli/cmd_check
+import cli/cmd_clean
+import cli/cmd_run
+import cli/cmd_test
+import cli/cmd_format
+import cli/cmd_docs
+import utilities/colors
+import donna/string
+
+/// Dispatch parsed CLI arguments to the selected Donna command.
+///
+/// The returned string is the complete command output; the executable entry
+/// point prints it and derives the process exit code from it.
+pub fn run(version: String, args: List(#(String, String))) -> String:
+  case first_positional(args):
+    "" ->
+      let text = case has_flag(args, "h"):
+        True -> help.main_help(version)
+        False ->
+          case has_flag(args, "help"):
+            True -> help.main_help(version)
+            False ->
+              case has_flag(args, "V"):
+                True -> version_line(version)
+                False ->
+                  case has_flag(args, "version"):
+                    True -> version_line(version)
+                    False -> help.main_help(version)
+      show(text)
+    "version" -> show(command_or_version(version, args))
+    "help" -> show(help_for(version, second_positional(args)))
+    "build" -> route_command(args, help.build_help(), cmd_build.run)
+    "check" -> route_command(args, help.check_help(), cmd_check.run)
+    "clean" -> route_command(args, help.clean_help(), cmd_clean.run)
+    "new" -> route_command(args, help.new_help(), cmd_new.run)
+    "run" -> route_command(args, help.run_help(), cmd_run.run)
+    "test" -> route_command(args, help.test_help(), cmd_test.run)
+    "format" -> route_command(args, help.format_help(), cmd_format.run)
+    "fmt" -> route_command(args, help.format_help(), cmd_format.run)
+    "docs" -> route_command(args, help.docs_help(), cmd_docs.run)
+    cmd ->
+      let hint = colors.dim("  Run ") <> "donna help" <> colors.dim(" to see available commands")
+      fail("unknown command " <> colors.path(cmd)) <> "\n" <> hint
+
+fn version_line(version: String) -> String:
+  colors.bold("donna") <> " " <> version
+
+fn command_or_version(version: String, args: List(#(String, String))) -> String:
+  case has_help_flag(args):
+    True -> help.version_help()
+    False -> version_line(version)
+
+fn route_command(
+  args: List(#(String, String)),
+  help_text: String,
+  run_fn: fn(List(#(String, String))) -> String
+) -> String:
+  case has_help_flag(args):
+    True -> help_text
+    False -> run_fn(drop_command(args))
+
+fn help_for(version: String, command: String) -> String:
+  case command:
+    "" -> help.main_help(version)
+    "build" -> help.build_help()
+    "check" -> help.check_help()
+    "clean" -> help.clean_help()
+    "docs" -> help.docs_help()
+    "format" -> help.format_help()
+    "fmt" -> help.format_help()
+    "new" -> help.new_help()
+    "run" -> help.run_help()
+    "test" -> help.test_help()
+    "version" -> help.version_help()
+    _ -> fail("unknown help topic " <> colors.path(command))
+
+fn show(text: String) -> String:
+  text
+
+/// Convert command output into a process exit code.
+///
+/// CLI commands currently signal failure by returning text that starts with the
+/// colored `error` or `build failed` prefix.
+pub fn exit_code_for_output(text: String) -> Int:
+  case is_failure_text(text):
+    True -> 1
+    False -> 0
+
+fn is_failure_text(text: String) -> Bool:
+  case string.starts_with(text, colors.red("error")):
+    True -> True
+    False -> string.starts_with(text, colors.red("build failed"))
+
+fn fail(message: String) -> String:
+  colors.red("error") <> ": " <> message
+
+fn drop_command(args: List(#(String, String))) -> List(#(String, String)):
+  case args:
+    [] -> []
+    [#("", _), ..rest] -> rest
+    [x, ..rest] -> [x, ..drop_command(rest)]
+
+fn first_positional(args: List(#(String, String))) -> String:
+  case args:
+    [] -> ""
+    [#("", v), .._] -> v
+    [_, ..rest] -> first_positional(rest)
+
+fn second_positional(args: List(#(String, String))) -> String:
+  second_positional_loop(args, False)
+
+fn second_positional_loop(
+  args: List(#(String, String)),
+  seen_first: Bool
+) -> String:
+  case args:
+    [] -> ""
+    [#("", v), ..rest] ->
+      case seen_first:
+        True -> v
+        False -> second_positional_loop(rest, True)
+    [_, ..rest] -> second_positional_loop(rest, seen_first)
+
+fn has_help_flag(args: List(#(String, String))) -> Bool:
+  has_flag(args, "h") || has_flag(args, "help")
+
+fn has_flag(args: List(#(String, String)), key: String) -> Bool:
+  case args:
+    [] -> False
+    [#(k, _), ..rest] ->
+      case string.equal(k, key):
+        True -> True
+        False -> has_flag(rest, key)

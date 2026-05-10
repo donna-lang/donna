@@ -1,0 +1,333 @@
+//// Top-level parser.
+//// Coordinates declaration parsers, collects module documentation and imports,
+//// recovers from some declaration errors, and returns a full AST module.
+
+import compiler/lexer/token
+import utilities/location
+import errors/error
+import compiler/parser/ast
+import compiler/parser/parse_result
+import compiler/parser/parse_imports
+import compiler/parser/parse_constants
+import compiler/parser/parse_functions
+import compiler/parser/parse_type_defs
+import donna/list
+
+/// Top-level parser output, collecting recoverable declaration errors.
+pub type ParseOutput(a):
+  ParseOk(a)
+  ParseErrors(List(error.DonnaError))
+
+/// Parse a token stream into a full Donna module AST.
+pub fn parse(
+  tokens: List(#(token.Token, location.Span))
+) -> ParseOutput(ast.Module):
+  let ps = parse_result.skip_newlines(tokens)
+  parse_module_loop(ps, [], [], [], [], [], [])
+
+fn parse_module_loop(
+  ps: List(#(token.Token, location.Span)),
+  doc: List(String),
+  imports: List(ast.Import),
+  consts: List(ast.Const),
+  type_defs: List(ast.TypeDef),
+  fns: List(ast.Function),
+  errs: List(error.DonnaError)
+) -> ParseOutput(ast.Module):
+  let ps1 = parse_result.skip_newlines(ps)
+  case ps1:
+    [] ->
+      make_output(doc, imports, consts, type_defs, fns, errs)
+    [#(token.TokEof, _), .._] ->
+      make_output(doc, imports, consts, type_defs, fns, errs)
+    [#(token.TokModuleDoc(text), _), ..rest] ->
+      parse_module_loop(
+        rest,
+        [text, ..doc],
+        imports,
+        consts,
+        type_defs,
+        fns,
+        errs
+      )
+    [#(token.TokImport, _), .._] ->
+      case parse_imports.parse_import(ps1):
+        parse_result.PErr(e) ->
+          parse_module_loop(
+            sync_to_decl(ps1),
+            doc,
+            imports,
+            consts,
+            type_defs,
+            fns,
+            [e, ..errs]
+          )
+        parse_result.POk(imp, ps2) ->
+          parse_module_loop(
+            ps2,
+            doc,
+            [imp, ..imports],
+            consts,
+            type_defs,
+            fns,
+            errs
+          )
+    [#(token.TokConst, _), .._] ->
+      case parse_constants.parse_const(ps1):
+        parse_result.PErr(e) ->
+          parse_module_loop(
+            sync_to_decl(ps1),
+            doc,
+            imports,
+            consts,
+            type_defs,
+            fns,
+            [e, ..errs]
+          )
+        parse_result.POk(c, ps2) ->
+          parse_module_loop(
+            ps2,
+            doc,
+            imports,
+            [c, ..consts],
+            type_defs,
+            fns,
+            errs
+          )
+    [#(token.TokPub, _), #(token.TokConst, _), .._] ->
+      case parse_constants.parse_const(ps1):
+        parse_result.PErr(e) ->
+          parse_module_loop(
+            sync_to_decl(ps1),
+            doc,
+            imports,
+            consts,
+            type_defs,
+            fns,
+            [e, ..errs]
+          )
+        parse_result.POk(c, ps2) ->
+          parse_module_loop(
+            ps2,
+            doc,
+            imports,
+            [c, ..consts],
+            type_defs,
+            fns,
+            errs
+          )
+    [#(token.TokFn, _), .._] ->
+      case parse_functions.parse_function(ps1):
+        parse_result.PErr(e) ->
+          parse_module_loop(
+            sync_to_decl(ps1),
+            doc,
+            imports,
+            consts,
+            type_defs,
+            fns,
+            [e, ..errs]
+          )
+        parse_result.POk(f, ps2) ->
+          parse_module_loop(
+            ps2,
+            doc,
+            imports,
+            consts,
+            type_defs,
+            [f, ..fns],
+            errs
+          )
+    [#(token.TokPub, _), #(token.TokFn, _), .._] ->
+      case parse_functions.parse_function(ps1):
+        parse_result.PErr(e) ->
+          parse_module_loop(
+            sync_to_decl(ps1),
+            doc,
+            imports,
+            consts,
+            type_defs,
+            fns,
+            [e, ..errs]
+          )
+        parse_result.POk(f, ps2) ->
+          parse_module_loop(
+            ps2,
+            doc,
+            imports,
+            consts,
+            type_defs,
+            [f, ..fns],
+            errs
+          )
+    [#(token.TokAt, _), .._] ->
+      case parse_functions.parse_external_fn(ps1):
+        parse_result.PErr(e) ->
+          parse_module_loop(
+            sync_to_decl(ps1),
+            doc,
+            imports,
+            consts,
+            type_defs,
+            fns,
+            [e, ..errs]
+          )
+        parse_result.POk(f, ps2) ->
+          parse_module_loop(
+            ps2,
+            doc,
+            imports,
+            consts,
+            type_defs,
+            [f, ..fns],
+            errs
+          )
+    [#(token.TokType, _), .._] ->
+      case parse_type_defs.parse_type_def(ps1):
+        parse_result.PErr(e) ->
+          parse_module_loop(
+            sync_to_decl(ps1),
+            doc,
+            imports,
+            consts,
+            type_defs,
+            fns,
+            [e, ..errs]
+          )
+        parse_result.POk(td, ps2) ->
+          parse_module_loop(
+            ps2,
+            doc,
+            imports,
+            consts,
+            [td, ..type_defs],
+            fns,
+            errs
+          )
+    [#(token.TokPub, _), #(token.TokType, _), .._] ->
+      case parse_type_defs.parse_type_def(ps1):
+        parse_result.PErr(e) ->
+          parse_module_loop(
+            sync_to_decl(ps1),
+            doc,
+            imports,
+            consts,
+            type_defs,
+            fns,
+            [e, ..errs]
+          )
+        parse_result.POk(td, ps2) ->
+          parse_module_loop(
+            ps2,
+            doc,
+            imports,
+            consts,
+            [td, ..type_defs],
+            fns,
+            errs
+          )
+    [#(token.TokPub, _), #(token.TokOpaque, _), #(token.TokType, _), .._] ->
+      case parse_type_defs.parse_type_def(ps1):
+        parse_result.PErr(e) ->
+          parse_module_loop(
+            sync_to_decl(ps1),
+            doc,
+            imports,
+            consts,
+            type_defs,
+            fns,
+            [e, ..errs]
+          )
+        parse_result.POk(td, ps2) ->
+          parse_module_loop(
+            ps2,
+            doc,
+            imports,
+            consts,
+            [td, ..type_defs],
+            fns,
+            errs
+          )
+    [#(token.TokOpaque, _), #(token.TokType, _), .._] ->
+      case parse_type_defs.parse_type_def(ps1):
+        parse_result.PErr(e) ->
+          parse_module_loop(
+            sync_to_decl(ps1),
+            doc,
+            imports,
+            consts,
+            type_defs,
+            fns,
+            [e, ..errs]
+          )
+        parse_result.POk(td, ps2) ->
+          parse_module_loop(
+            ps2,
+            doc,
+            imports,
+            consts,
+            [td, ..type_defs],
+            fns,
+            errs
+          )
+    [#(tok, sp), .._] ->
+      let e = error.ParseUnexpectedToken(
+        token.to_string(tok),
+        "import, const, type, fn, or @external",
+        sp
+      )
+      parse_module_loop(
+        sync_to_decl(ps1),
+        doc,
+        imports,
+        consts,
+        type_defs,
+        fns,
+        [e, ..errs]
+      )
+
+fn make_output(
+  doc: List(String),
+  imports: List(ast.Import),
+  consts: List(ast.Const),
+  type_defs: List(ast.TypeDef),
+  fns: List(ast.Function),
+  errs: List(error.DonnaError)
+) -> ParseOutput(ast.Module):
+  case list.is_empty(errs):
+    True ->
+      ParseOk(
+        ast.Module(
+          list.reverse(doc),
+          list.reverse(imports),
+          list.reverse(consts),
+          list.reverse(type_defs),
+          list.reverse(fns)
+        )
+      )
+    False ->
+      ParseErrors(list.reverse(errs))
+
+fn sync_to_decl(
+  ps: List(#(token.Token, location.Span))
+) -> List(#(token.Token, location.Span)):
+  case ps:
+    [] -> []
+    [_, ..rest] -> sync_rest(parse_result.skip_newlines(rest))
+
+fn sync_rest(
+  ps: List(#(token.Token, location.Span))
+) -> List(#(token.Token, location.Span)):
+  let ps1 = parse_result.skip_newlines(ps)
+  case ps1:
+    [] -> []
+    [#(token.TokEof, _), .._] -> ps1
+    [#(token.TokFn, _), .._] -> ps1
+    [#(token.TokPub, _), .._] -> ps1
+    [#(token.TokType, _), .._] -> ps1
+    [#(token.TokOpaque, _), .._] -> ps1
+    [#(token.TokConst, _), .._] -> ps1
+    [#(token.TokImport, _), .._] -> ps1
+    [#(token.TokAt, _), .._] -> ps1
+    [#(token.TokModuleDoc(_), _), .._] -> ps1
+    [_, ..rest] -> sync_rest(rest)

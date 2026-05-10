@@ -1,0 +1,69 @@
+//// Defines compiler diagnostic types and helpers for accessing their source spans.
+
+import utilities/location
+
+/// Structured compiler error with source location.
+pub type DonnaError:
+  LexUnexpectedChar(ch: String, span: location.Span)
+  LexUnterminatedString(span: location.Span)
+  LexInvalidEscape(ch: String, span: location.Span)
+  LexInvalidHexEscape(span: location.Span)
+  LexInvalidUnicodeEscape(span: location.Span)
+  LexEmptyNumberLiteral(prefix: String, span: location.Span)
+  ParseUnexpectedToken(got: String, expected: String, span: location.Span)
+  ParseUnexpectedEof(expected: String, span: location.Span)
+  ParseInvalidIndent(span: location.Span)
+  ParseMissingColon(span: location.Span)
+  ParseMissingArrow(span: location.Span)
+  ParseUppercaseFnName(name: String, span: location.Span)
+  ParseLowercaseTypeName(name: String, span: location.Span)
+  TypeMismatch(expected: String, found: String, span: location.Span)
+  TypeUndefinedVar(name: String, span: location.Span)
+  TypeUndefinedModule(name: String, span: location.Span)
+  TypeWrongArgCount(expected: Int, found: Int, span: location.Span)
+  TypeNotAFunction(ty: String, span: location.Span)
+  TypeDuplicateFunction(name: String, span: location.Span)
+  TypeInvalidReturn(expected: String, found: String, span: location.Span)
+
+/// Structured non-fatal compiler warning with source location.
+pub type DonnaWarning:
+  WarnUnusedVariable(name: String, span: location.Span)
+  WarnUnusedParam(name: String, fn_name: String, span: location.Span)
+  WarnUnusedFunction(name: String, span: location.Span)
+  WarnUnusedImport(name: String, span: location.Span)
+  WarnUnreachableCode(span: location.Span)
+  WarnTodo(span: location.Span)
+
+/// Return the source span attached to an error.
+pub fn error_span(e: DonnaError) -> location.Span:
+  case e:
+    LexUnexpectedChar(_, s) -> s
+    LexUnterminatedString(s) -> s
+    LexInvalidEscape(_, s) -> s
+    LexInvalidHexEscape(s) -> s
+    LexInvalidUnicodeEscape(s) -> s
+    LexEmptyNumberLiteral(_, s) -> s
+    ParseUnexpectedToken(_, _, s) -> s
+    ParseUnexpectedEof(_, s) -> s
+    ParseInvalidIndent(s) -> s
+    ParseMissingColon(s) -> s
+    ParseMissingArrow(s) -> s
+    ParseUppercaseFnName(_, s) -> s
+    ParseLowercaseTypeName(_, s) -> s
+    TypeMismatch(_, _, s) -> s
+    TypeUndefinedVar(_, s) -> s
+    TypeUndefinedModule(_, s) -> s
+    TypeWrongArgCount(_, _, s) -> s
+    TypeNotAFunction(_, s) -> s
+    TypeDuplicateFunction(_, s) -> s
+    TypeInvalidReturn(_, _, s) -> s
+
+/// Return the source span attached to a warning.
+pub fn warning_span(w: DonnaWarning) -> location.Span:
+  case w:
+    WarnUnusedVariable(_, s) -> s
+    WarnUnusedParam(_, _, s) -> s
+    WarnUnusedFunction(_, s) -> s
+    WarnUnusedImport(_, s) -> s
+    WarnUnreachableCode(s) -> s
+    WarnTodo(s) -> s

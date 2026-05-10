@@ -1,0 +1,226 @@
+//// Dependency resolution and package fetching.
+//// This module reads dependency declarations from `donna.toml`, resolves git
+//// revisions, keeps the lockfile in sync, and returns local package paths for
+//// the build pipeline.
+
+import donna/files
+import donna/list
+import donna/shell
+import donna/string
+import parsetoml/parsetoml
+import utilities/logger
+import builder/lock
+import builder/semver
+
+/// A resolved package dependency with its local checkout or path.
+pub type Dep:
+  Dep(name: String, path: String)
+
+/// Return the dependency name from a resolved dependency record.
+pub fn dep_name(d: Dep) -> String:
+  case d:
+    Dep(n, _) -> n
+
+/// Return the local filesystem path for a resolved dependency.
+pub fn dep_path(d: Dep) -> String:
+  case d:
+    Dep(_, p) -> p
+
+/// Return the dependency source directory.
+pub fn dep_src_dir(d: Dep) -> String:
+  files.join(dep_path(d), "src")
+
+/// Return the dependency FFI directory.
+pub fn dep_ffi_dir(d: Dep) -> String:
+  files.join(dep_path(d), "ffi")
+
+/// Resolve normal and dev dependencies from `donna.toml`.
+///
+/// The project lockfile is read before resolution and rewritten with any newly
+/// resolved git revisions.
+pub fn resolve_all(toml_path: String, project_dir: String) -> List(Dep):
+  let lock_path = files.join(project_dir, "donna.lock")
+  let locked = lock.read(lock_path)
+  let toml_src = files.read(toml_path)
+  let #(deps, locked1) = parse_section(toml_src, project_dir, "dependencies", locked)
+  let #(dev_deps, locked2) = parse_section(toml_src, project_dir, "dev-dependencies", locked1)
+  let _ = lock.write(lock_path, locked2)
+  list.append(deps, dev_deps)
+
+/// Resolve only `[dependencies]` from `donna.toml` and update the lockfile.
+pub fn resolve_deps(toml_path: String, project_dir: String) -> List(Dep):
+  let lock_path = files.join(project_dir, "donna.lock")
+  let locked = lock.read(lock_path)
+  let #(deps, locked1) = parse_section(files.read(toml_path), project_dir, "dependencies", locked)
+  let _ = lock.write(lock_path, locked1)
+  deps
+
+/// Resolve only `[dev-dependencies]` from `donna.toml` and update the lockfile.
+pub fn resolve_dev_deps(toml_path: String, project_dir: String) -> List(Dep):
+  let lock_path = files.join(project_dir, "donna.lock")
+  let locked = lock.read(lock_path)
+  let #(deps, locked1) = parse_section(files.read(toml_path), project_dir, "dev-dependencies", locked)
+  let _ = lock.write(lock_path, locked1)
+  deps
+
+fn parse_section(
+  toml_src: String,
+  project_dir: String,
+  section: String,
+  locked: List(lock.LockedDep)
+) -> #(List(Dep), List(lock.LockedDep)):
+  let parsed = parsetoml.parse(toml_src)
+  case parsetoml.is_err(parsed):
+    True -> #([], locked)
+    False ->
+      let toml = parsetoml.unwrap_table(parsed)
+      case parsetoml.get_table(toml, section):
+        parsetoml.Err(_) -> #([], locked)
+        parsetoml.Ok(table) ->
+          case table:
+            parsetoml.TomlTable(pairs) ->
+              collect_deps(pairs, project_dir, locked, [], locked)
+            _ -> #([], locked)
+
+fn collect_deps(
+  pairs: List(#(String, parsetoml.TomlValue)),
+  project_dir: String,
+  locked: List(lock.LockedDep),
+  dep_acc: List(Dep),
+  lock_acc: List(lock.LockedDep)
+) -> #(List(Dep), List(lock.LockedDep)):
+  case pairs:
+    [] -> #(list.reverse(dep_acc), lock_acc)
+    [#(name, value), ..rest] ->
+      case parsetoml.get_string(value, "path"):
+        parsetoml.Ok(rel_path) ->
+          let abs = files.join(project_dir, rel_path)
+          collect_deps(
+            rest,
+            project_dir,
+            locked,
+            [Dep(name, abs), ..dep_acc],
+            lock_acc
+          )
+        parsetoml.Err(_) ->
+          case parsetoml.get_string(value, "git"):
+            parsetoml.Err(_) ->
+              collect_deps(rest, project_dir, locked, dep_acc, lock_acc)
+            parsetoml.Ok(url) ->
+              let #(dep, new_lock) = resolve_git_dep(name, url, value, locked)
+              let new_lock_acc = lock.upsert(lock_acc, new_lock)
+              collect_deps(
+                rest,
+                project_dir,
+                locked,
+                [dep, ..dep_acc],
+                new_lock_acc
+              )
+
+fn resolve_git_dep(
+  name: String,
+  url: String,
+  value: parsetoml.TomlValue,
+  locked: List(lock.LockedDep)
+) -> #(Dep, lock.LockedDep):
+  let cache = git_cache_dir()
+  let _ = shell.run("mkdir -p " <> cache)
+  let dest = files.join(cache, name)
+  let pinned_rev = lock.find_rev(locked, name)
+  let cached_rev = lock.read_cached_rev(dest)
+  case string.is_empty(pinned_rev):
+    False ->
+      case string.equal(pinned_rev, cached_rev):
+        True ->
+          #(Dep(name, dest), lock.LockedDep(name, url, pinned_rev))
+        False ->
+          let _ = shell.run("rm -rf " <> dest)
+          let _ = shell.exec(
+            "git",
+            ["clone", "-c", "advice.detachedHead=false", url, dest]
+          )
+          let _ = shell.exec("git", ["-C", dest, "checkout", pinned_rev])
+          let _ = lock.write_cached_rev(dest, pinned_rev)
+          #(Dep(name, dest), lock.LockedDep(name, url, pinned_rev))
+    True ->
+      case files.is_dir(dest):
+        True ->
+          let rev = head_sha(dest)
+          let _ = lock.write_cached_rev(dest, rev)
+          #(Dep(name, dest), lock.LockedDep(name, url, rev))
+        False ->
+          let _ = logger.fetch(name, url)
+          let _ = shell.flush()
+          let ref = pick_ref(url, value)
+          let _ = clone_at_ref(url, dest, ref)
+          let rev = head_sha(dest)
+          let _ = lock.write_cached_rev(dest, rev)
+          #(Dep(name, dest), lock.LockedDep(name, url, rev))
+
+fn pick_ref(url: String, value: parsetoml.TomlValue) -> String:
+  let version = opt_string(value, "version")
+  case string.is_empty(version):
+    False -> resolve_version_range(url, version)
+    True ->
+      let tag = opt_string(value, "tag")
+      case string.is_empty(tag):
+        False -> tag
+        True ->
+          let branch = opt_string(value, "branch")
+          case string.is_empty(branch):
+            False -> branch
+            True -> opt_string(value, "rev")
+
+fn resolve_version_range(url: String, version_str: String) -> String:
+  let cs = semver.parse_constraints(version_str)
+  let output = shell.output("git", ["ls-remote", "--tags", "--sort=-v:refname", url])
+  let lines = string.split(output, "\n")
+  find_best_tag(lines, cs)
+
+fn find_best_tag(lines: List(String), cs: List(semver.Constraint)) -> String:
+  case lines:
+    [] -> ""
+    [line, ..rest] ->
+      let tab = string.index_of(line, "\t")
+      case tab == -1:
+        True -> find_best_tag(rest, cs)
+        False ->
+          let ref = string.slice(line, tab + 1, string.length(line) - tab - 1)
+          case string.ends_with(ref, "^{}"):
+            True -> find_best_tag(rest, cs)
+            False ->
+              case string.starts_with(ref, "refs/tags/"):
+                False -> find_best_tag(rest, cs)
+                True ->
+                  let tag = string.slice(ref, 10, string.length(ref) - 10)
+                  case semver.parse(tag):
+                    option.None -> find_best_tag(rest, cs)
+                    option.Some(v) ->
+                      case semver.satisfies(v, cs):
+                        False -> find_best_tag(rest, cs)
+                        True -> tag
+
+fn clone_at_ref(url: String, dest: String, ref: String) -> Int:
+  case string.is_empty(ref):
+    True -> shell.exec("git", ["clone", "--depth", "1", url, dest])
+    False ->
+      let code = shell.exec("git", ["clone", "--depth", "1", "--branch", ref, url, dest])
+      case code == 0:
+        True -> code
+        False ->
+          let _ = shell.run("rm -rf " <> dest)
+          let c = shell.exec("git", ["clone", url, dest])
+          case c == 0:
+            False -> c
+            True -> shell.exec("git", ["-C", dest, "checkout", ref])
+
+fn git_cache_dir() -> String:
+  files.join(files.join(shell.getenv("HOME"), ".donna"), "packages")
+
+fn head_sha(repo_path: String) -> String:
+  string.trim(shell.output("git", ["-C", repo_path, "rev-parse", "HEAD"]))
+
+fn opt_string(value: parsetoml.TomlValue, key: String) -> String:
+  case parsetoml.get_string(value, key):
+    parsetoml.Err(_) -> ""
+    parsetoml.Ok(s) -> s

@@ -1,0 +1,177 @@
+//// CLI help text.
+//// Centralizes usage output for the main command and every subcommand.
+
+import utilities/colors
+import donna/string
+import donna/list
+
+/// Render the top-level `donna help` text.
+pub fn main_help(version: String) -> String:
+  let title = colors.bold("donna") <> " " <> version
+  let usage = header("Usage:") <> " donna " <> colors.path("<COMMAND>")
+  let cmds = header("Commands:") <> "\n" <> commands_block()
+  let opts = header("Options:") <> "\n" <> options_block()
+  string.join([title, "", usage, "", cmds, "", opts, ""], "\n")
+
+/// Render a standard help page for one subcommand.
+pub fn command_help(
+  name: String,
+  desc: String,
+  usage_line: String,
+  options: List(#(String, String))
+) -> String:
+  let title = "donna " <> name <> " — " <> desc
+  let usage = header("Usage:") <> " " <> usage_line
+  let opts = case list.is_empty(options):
+    True -> ""
+    False ->
+      "\n" <> header("Options:") <> "\n" <> string.join(list.map(options, option_row), "\n")
+  string.join([title, "", usage, opts, ""], "\n")
+
+fn commands_block() -> String:
+  let r1 = command_row("build", "Build the project")
+  let r2 = command_row("check", "Type check the project")
+  let r3 = command_row("clean", "Delete build artifacts")
+  let r4 = command_row("docs", "Generate HTML documentation")
+  let r5 = command_row("format", "Format source files (alias: fmt)")
+  let r6 = command_row("new", "Create a new project")
+  let r7 = command_row("run", "Build and run the project")
+  let r8 = command_row("test", "Run the project tests")
+  let r9 = command_row("version", "Print the compiler version")
+  let r10 = command_row("help", "Show help for Donna or a command")
+  string.join([r1, r2, r3, r4, r5, r6, r7, r8, r9, r10], "\n")
+
+/// Render help for `donna build`.
+pub fn build_help() -> String:
+  command_help(
+    "build",
+    "Build the project",
+    "donna build [DIR]",
+    [
+      #("DIR", "Build another project directory"),
+      #("-h, --help", "Show this help")
+    ]
+  )
+
+/// Render help for `donna check`.
+pub fn check_help() -> String:
+  command_help(
+    "check",
+    "Type check the project entry module",
+    "donna check [DIR]",
+    [
+      #("DIR", "Check another project directory"),
+      #("-h, --help", "Show this help")
+    ]
+  )
+
+/// Render help for `donna clean`.
+pub fn clean_help() -> String:
+  command_help(
+    "clean",
+    "Delete build artifacts",
+    "donna clean [DIR]",
+    [
+      #("DIR", "Clean another project directory"),
+      #("-h, --help", "Show this help")
+    ]
+  )
+
+/// Render help for `donna docs`.
+pub fn docs_help() -> String:
+  command_help(
+    "docs",
+    "Generate HTML documentation",
+    "donna docs [DIR]",
+    [
+      #("DIR", "Generate docs for another project directory"),
+      #("-h, --help", "Show this help")
+    ]
+  )
+
+/// Render help for `donna format`.
+pub fn format_help() -> String:
+  command_help(
+    "format",
+    "Format Donna source files",
+    "donna format [DIR|FILE]",
+    [
+      #("DIR", "Format all .donna files in a project directory"),
+      #("FILE", "Format one .donna file"),
+      #("-h, --help", "Show this help")
+    ]
+  )
+
+/// Render help for `donna new`.
+pub fn new_help() -> String:
+  command_help(
+    "new",
+    "Create a new Donna project",
+    "donna new <NAME>",
+    [
+      #("NAME", "Directory and package name for the new project"),
+      #("-h, --help", "Show this help")
+    ]
+  )
+
+/// Render help for `donna run`.
+pub fn run_help() -> String:
+  command_help(
+    "run",
+    "Build and run an application project",
+    "donna run [DIR]",
+    [
+      #("DIR", "Run another project directory"),
+      #("-h, --help", "Show this help")
+    ]
+  )
+
+/// Render help for `donna test`.
+pub fn test_help() -> String:
+  command_help(
+    "test",
+    "Run the project tests",
+    "donna test [DIR] [FILTER] | donna test --only FILTER",
+    [
+      #(
+        "--only FILTER",
+        "Run tests whose module or function name contains FILTER"
+      ),
+      #("FILTER", "Run matching tests in the current project"),
+      #("DIR", "Run tests in another project directory"),
+      #("-h, --help", "Show this help")
+    ]
+  )
+
+/// Render help for `donna version`.
+pub fn version_help() -> String:
+  command_help(
+    "version",
+    "Print the compiler version",
+    "donna version",
+    [
+      #("-V, --version", "Print version from the top-level command"),
+      #("-h, --help", "Show this help")
+    ]
+  )
+
+fn options_block() -> String:
+  let r1 = option_row(#("-h, --help", "Print help"))
+  let r2 = option_row(#("-V, --version", "Print version"))
+  string.join([r1, r2], "\n")
+
+fn command_row(name: String, desc: String) -> String:
+  "  " <> pad_right(colors.path(name)) <> desc
+
+fn option_row(entry: #(String, String)) -> String:
+  case entry:
+    #(flag, desc) -> "  " <> pad_right(colors.path(flag)) <> desc
+
+fn header(text: String) -> String:
+  colors.bold(colors.orange(text))
+
+fn pad_right(s: String) -> String:
+  let spaces = 16 - colors.visible_length(s)
+  case spaces > 0:
+    True -> s <> string.repeat(" ", spaces)
+    False -> s <> "  "

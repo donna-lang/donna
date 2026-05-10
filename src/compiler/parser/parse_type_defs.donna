@@ -1,0 +1,178 @@
+//// Type declaration parser.
+//// Parses algebraic data type declarations, opaque markers, type parameters,
+//// constructors, and constructor field annotations.
+
+import compiler/lexer/token
+import utilities/location
+import errors/error
+import compiler/parser/ast
+import compiler/parser/parse_result
+import compiler/parser/parse_types
+import donna/list
+
+/// Parse a top-level type declaration.
+pub fn parse_type_def(
+  ps: List(#(token.Token, location.Span))
+) -> parse_result.ParseResult(ast.TypeDef):
+  let #(is_pub, ps1) = parse_pub(ps)
+  let #(is_opaque, ps2) = parse_opaque(ps1)
+  case ps2:
+    [#(token.TokType, sp), #(token.TokUpperName(name), _), ..rest] ->
+      let #(type_params, ps3) = parse_type_params(rest)
+      case ps3:
+        [#(token.TokColon, _), ..ps4] ->
+          case parse_constructors(ps4, []):
+            parse_result.PErr(e) -> parse_result.PErr(e)
+            parse_result.POk(ctors, ps5) ->
+              parse_result.POk(
+                ast.TypeDef(name, is_pub, is_opaque, type_params, ctors, sp),
+                ps5
+              )
+        [#(tok, sp2), .._] ->
+          parse_result.PErr(error.ParseMissingColon(sp2))
+        [] ->
+          parse_result.PErr(error.ParseUnexpectedEof(":", sp))
+    [#(token.TokType, _), #(token.TokName(name), sp2), .._] ->
+      parse_result.PErr(error.ParseLowercaseTypeName(name, sp2))
+    [#(token.TokType, sp), .._] ->
+      parse_result.PErr(error.ParseUnexpectedEof("type name", sp))
+    [#(tok, sp), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "type", sp)
+      )
+    [] ->
+      parse_result.PErr(
+        error.ParseUnexpectedEof("type", location.zero("unknown"))
+      )
+
+fn parse_pub(
+  ps: List(#(token.Token, location.Span))
+) -> #(Bool, List(#(token.Token, location.Span))):
+  case ps:
+    [#(token.TokPub, _), ..rest] -> #(True, rest)
+    _ -> #(False, ps)
+
+fn parse_opaque(
+  ps: List(#(token.Token, location.Span))
+) -> #(Bool, List(#(token.Token, location.Span))):
+  case ps:
+    [#(token.TokOpaque, _), ..rest] -> #(True, rest)
+    _ -> #(False, ps)
+
+fn parse_type_params(
+  ps: List(#(token.Token, location.Span))
+) -> #(List(String), List(#(token.Token, location.Span))):
+  case ps:
+    [#(token.TokLParen, _), ..rest] ->
+      parse_type_param_list(rest, [])
+    _ ->
+      #([], ps)
+
+fn parse_type_param_list(
+  ps: List(#(token.Token, location.Span)),
+  acc: List(String)
+) -> #(List(String), List(#(token.Token, location.Span))):
+  case ps:
+    [#(token.TokRParen, _), ..rest] ->
+      #(list.reverse(acc), rest)
+    [#(token.TokName(p), _), ..rest] ->
+      case rest:
+        [#(token.TokComma, _), ..rest2] ->
+          parse_type_param_list(parse_result.skip_newlines(rest2), [p, ..acc])
+        [#(token.TokRParen, _), ..rest2] ->
+          #(list.reverse([p, ..acc]), rest2)
+        _ ->
+          #(list.reverse([p, ..acc]), rest)
+    _ ->
+      #(list.reverse(acc), ps)
+
+fn parse_constructors(
+  ps: List(#(token.Token, location.Span)),
+  acc: List(ast.ConstructorDef)
+) -> parse_result.ParseResult(List(ast.ConstructorDef)):
+  let ps1 = parse_result.skip_newlines(ps)
+  case ps1:
+    [#(token.TokIndent, _), ..ps2] ->
+      parse_ctor_block(ps2, acc)
+    [#(tok, sp), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(
+          token.to_string(tok),
+          "indented constructor block",
+          sp
+        )
+      )
+    [] ->
+      parse_result.PErr(
+        error.ParseUnexpectedEof("constructor", location.zero("unknown"))
+      )
+
+fn parse_ctor_block(
+  ps: List(#(token.Token, location.Span)),
+  acc: List(ast.ConstructorDef)
+) -> parse_result.ParseResult(List(ast.ConstructorDef)):
+  let ps1 = parse_result.skip_newlines(ps)
+  case ps1:
+    [#(token.TokDedent, _), ..rest] ->
+      parse_result.POk(list.reverse(acc), rest)
+    [#(token.TokUpperName(name), sp), ..rest] ->
+      case rest:
+        [#(token.TokLParen, _), ..rest2] ->
+          case parse_field_list(rest2, [], []):
+            parse_result.PErr(e) -> parse_result.PErr(e)
+            parse_result.POk(#(field_names, fields), ps2) ->
+              parse_ctor_block(
+                ps2,
+                [ast.ConstructorDef(name, field_names, fields, sp), ..acc]
+              )
+        _ ->
+          parse_ctor_block(rest, [ast.ConstructorDef(name, [], [], sp), ..acc])
+    [#(tok, sp), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "constructor name", sp)
+      )
+    [] ->
+      parse_result.POk(list.reverse(acc), [])
+
+fn parse_field_list(
+  ps: List(#(token.Token, location.Span)),
+  acc_names: List(String),
+  acc_types: List(ast.TypeAnnotation)
+) -> parse_result.ParseResult(#(List(String), List(ast.TypeAnnotation))):
+  let ps1 = parse_result.skip_newlines(ps)
+  case ps1:
+    [#(token.TokRParen, _), ..rest] ->
+      parse_result.POk(
+        #(list.reverse(acc_names), list.reverse(acc_types)),
+        rest
+      )
+    [#(token.TokName(n), _), #(token.TokColon, _), ..rest2] ->
+      case parse_types.parse_type(rest2):
+        parse_result.PErr(e) -> parse_result.PErr(e)
+        parse_result.POk(ty, ps2) ->
+          let new_names = [n, ..acc_names]
+          let new_types = [ty, ..acc_types]
+          case ps2:
+            [#(token.TokComma, _), ..rest3] ->
+              parse_field_list(
+                parse_result.skip_newlines(rest3),
+                new_names,
+                new_types
+              )
+            _ ->
+              parse_field_list(ps2, new_names, new_types)
+    _ ->
+      case parse_types.parse_type(ps1):
+        parse_result.PErr(e) -> parse_result.PErr(e)
+        parse_result.POk(ty, ps2) ->
+          let new_names = ["", ..acc_names]
+          let new_types = [ty, ..acc_types]
+          case ps2:
+            [#(token.TokComma, _), ..rest2] ->
+              parse_field_list(
+                parse_result.skip_newlines(rest2),
+                new_names,
+                new_types
+              )
+            _ ->
+              parse_field_list(ps2, new_names, new_types)

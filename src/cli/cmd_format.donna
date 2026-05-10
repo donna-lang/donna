@@ -1,0 +1,110 @@
+//// `donna format` command.
+//// Formats one Donna file or every source file in a project using the
+//// formatter tool.
+
+import donna/files
+import donna/list
+import donna/string
+import donna/result
+import utilities/colors
+import utilities/logger
+import builder/scanner
+import tools/fmt/formatter
+import donna/time
+
+/// Run `donna format` for a file or project directory and return CLI output.
+pub fn run(args: List(#(String, String))) -> String:
+  let target = first_positional(args)
+  case string.ends_with(target, ".donna"):
+    True -> format_file(target)
+    False -> format_project(target)
+
+fn format_project(dir: String) -> String:
+  case scanner.scan(dir):
+    scanner.ScanErr(msg) ->
+      colors.red("error") <> ": " <> msg
+    scanner.ScanOk(project) ->
+      let src_dir = scanner.project_src_dir(project)
+      let t0 = time.now_us()
+      let paths = find_donna_files(src_dir, [])
+      let changed = format_files(paths, 0)
+      let elapsed = time.now_us() - t0
+      let _ = logger.fmt_ok(elapsed)
+      case changed == 0:
+        True -> colors.dim("  no changes")
+        False ->
+          colors.dim("  " <> string.from_int(changed) <> " file(s) changed")
+
+fn find_donna_files(dir: String, acc: List(String)) -> List(String):
+  let entries = files.list_dir(dir)
+  collect_entries(entries, dir, acc)
+
+fn collect_entries(
+  entries: List(String),
+  dir: String,
+  acc: List(String)
+) -> List(String):
+  case entries:
+    [] -> acc
+    [entry, ..rest] ->
+      let path = files.join(dir, entry)
+      let acc2 = case files.is_dir(path):
+        True -> find_donna_files(path, acc)
+        False ->
+          case string.ends_with(entry, ".donna"):
+            True -> [path, ..acc]
+            False -> acc
+      collect_entries(rest, dir, acc2)
+
+fn format_files(paths: List(String), changed: Int) -> Int:
+  case paths:
+    [] -> changed
+    [p, ..rest] ->
+      let did_change = format_one(p)
+      format_files(rest, changed + did_change)
+
+fn path_to_module(path: String) -> String:
+  let marker = "src/"
+  let i = string.index_of(path, marker)
+  let rel = case i == -1:
+    True -> path
+    False -> string.slice(path, i + 4, string.length(path) - i - 4)
+  case string.ends_with(rel, ".donna"):
+    True -> string.slice(rel, 0, string.length(rel) - 6)
+    False -> rel
+
+fn format_one(path: String) -> Int:
+  let src = files.read(path)
+  case formatter.format_source(src, path):
+    result.Error(_) ->
+      let _ = logger.step("skip (parse error): " <> path)
+      0
+    result.Ok(formatted) ->
+      case string.equal(src, formatted):
+        True -> 0
+        False ->
+          let _ = files.write(path, formatted)
+          let _ = logger.formatting(path_to_module(path))
+          1
+
+fn format_file(path: String) -> String:
+  case files.exists(path):
+    False ->
+      colors.red("error") <> ": file not found: " <> colors.dim(path)
+    True ->
+      let src = files.read(path)
+      case formatter.format_source(src, path):
+        result.Error(msg) ->
+          colors.red("error") <> ": " <> msg
+        result.Ok(formatted) ->
+          case string.equal(src, formatted):
+            True -> colors.green("formatted") <> colors.dim("  no changes")
+            False ->
+              let _ = files.write(path, formatted)
+              colors.green("formatted") <> " " <> colors.dim(path)
+
+fn first_positional(args: List(#(String, String))) -> String:
+  case args:
+    [] -> "."
+    [#("", v), .._] -> v
+    [_, ..rest] -> first_positional(rest)

@@ -1,0 +1,61 @@
+//// Import parser.
+//// Parses top-level import paths and optional aliases.
+
+import compiler/lexer/token
+import utilities/location
+import errors/error
+import compiler/parser/ast
+import compiler/parser/parse_result
+import donna/list
+
+/// Parse a top-level import declaration.
+pub fn parse_import(
+  ps: List(#(token.Token, location.Span))
+) -> parse_result.ParseResult(ast.Import):
+  case ps:
+    [#(token.TokImport, sp), ..rest] ->
+      case parse_import_path(rest, []):
+        parse_result.PErr(e) -> parse_result.PErr(e)
+        parse_result.POk(path, ps2) ->
+          let ps3 = parse_result.skip_newlines(ps2)
+          case ps3:
+            [#(token.TokAs, _), #(token.TokName(alias), _), ..ps4] ->
+              let ps5 = parse_result.skip_newlines(ps4)
+              parse_result.POk(ast.Import(path, alias, sp), ps5)
+            _ ->
+              let alias = last_segment(path)
+              parse_result.POk(ast.Import(path, alias, sp), ps3)
+    [#(tok, sp), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "import", sp)
+      )
+    [] ->
+      parse_result.PErr(
+        error.ParseUnexpectedEof("import", location.zero("unknown"))
+      )
+
+fn parse_import_path(
+  ps: List(#(token.Token, location.Span)),
+  acc: List(String)
+) -> parse_result.ParseResult(List(String)):
+  case ps:
+    [#(token.TokName(seg), _), ..rest] ->
+      case rest:
+        [#(token.TokSlash, _), ..rest2] ->
+          parse_import_path(rest2, [seg, ..acc])
+        _ ->
+          parse_result.POk(list.reverse([seg, ..acc]), rest)
+    [#(tok, sp), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "module name", sp)
+      )
+    [] ->
+      parse_result.PErr(
+        error.ParseUnexpectedEof("module name", location.zero("unknown"))
+      )
+
+fn last_segment(path: List(String)) -> String:
+  case path:
+    [] -> ""
+    [x] -> x
+    [_, ..rest] -> last_segment(rest)

@@ -1,0 +1,108 @@
+//// `donna docs` command.
+//// Extracts doc comments from source modules and renders static HTML
+//// documentation into the project `docs/` directory.
+
+import donna/files
+import donna/list
+import donna/string
+import utilities/colors
+import utilities/logger
+import builder/scanner
+import tools/docgen/extractor
+import tools/docgen/render
+import donna/time
+import donna/option
+
+/// Run `donna docs` for a project directory and return CLI output.
+pub fn run(args: List(#(String, String))) -> String:
+  let target = first_positional(args)
+  let dir = case string.is_empty(target):
+    True -> "."
+    False -> target
+  case scanner.scan(dir):
+    scanner.ScanErr(msg) ->
+      colors.red("error") <> ": " <> msg
+    scanner.ScanOk(project) ->
+      let meta = scanner.scan_meta(dir)
+      let src_dir = scanner.project_src_dir(project)
+      let docs_dir = files.join(dir, "docs")
+      let t0 = time.now_us()
+      let _ = files.mkdir(docs_dir)
+      let paths = find_donna_files(src_dir, [])
+      let modules = extract_modules(paths, src_dir, [])
+      let readme = read_readme(dir)
+      let index_html = render.render_index(meta, readme)
+      let docs_html = render.render_docs(meta, modules)
+      let _ = files.write(files.join(docs_dir, "index.html"), index_html)
+      let _ = files.write(files.join(docs_dir, "docs.html"), docs_html)
+      let elapsed = time.now_us() - t0
+      let _ = logger.docs_ok(elapsed)
+      let _ = warn_missing_github_repo(meta)
+      colors.orange("  Docs") <> " → " <> colors.dim(docs_dir)
+
+fn warn_missing_github_repo(meta: scanner.ProjectMeta) -> Nil:
+  case scanner.meta_github_owner_repo(meta):
+    option.Some(_) -> Nil
+    option.None ->
+      let _ = logger.warn("could not derive GitHub owner/repo from donna.toml")
+      logger.hint("set `repository = { type = \"github\", user = \"OWNER\", repo = \"REPO\" }` so docs and badges can point at GitHub Pages")
+
+fn extract_modules(
+  paths: List(String),
+  src_dir: String,
+  acc: List(extractor.DocModule)
+) -> List(extractor.DocModule):
+  case paths:
+    [] -> list.reverse(acc)
+    [path, ..rest] ->
+      let src = files.read(path)
+      let name = path_to_module(path, src_dir)
+      let m = extractor.extract(src, path, name)
+      extract_modules(rest, src_dir, [m, ..acc])
+
+fn path_to_module(path: String, src_dir: String) -> String:
+  let prefix = src_dir <> "/"
+  let rel = case string.starts_with(path, prefix):
+    True ->
+      string.slice(
+        path,
+        string.length(prefix),
+        string.length(path) - string.length(prefix)
+      )
+    False -> path
+  case string.ends_with(rel, ".donna"):
+    True -> string.slice(rel, 0, string.length(rel) - 6)
+    False -> rel
+
+fn read_readme(dir: String) -> String:
+  let path = files.join(dir, "README.md")
+  case files.exists(path):
+    True -> files.read(path)
+    False -> ""
+
+fn find_donna_files(dir: String, acc: List(String)) -> List(String):
+  let entries = files.list_dir(dir)
+  collect_entries(entries, dir, acc)
+
+fn collect_entries(
+  entries: List(String),
+  dir: String,
+  acc: List(String)
+) -> List(String):
+  case entries:
+    [] -> acc
+    [entry, ..rest] ->
+      let path = files.join(dir, entry)
+      let acc2 = case files.is_dir(path):
+        True -> find_donna_files(path, acc)
+        False ->
+          case string.ends_with(entry, ".donna"):
+            True -> [path, ..acc]
+            False -> acc
+      collect_entries(rest, dir, acc2)
+
+fn first_positional(args: List(#(String, String))) -> String:
+  case args:
+    [] -> ""
+    [#("", v), .._] -> v
+    [_, ..rest] -> first_positional(rest)

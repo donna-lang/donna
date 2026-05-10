@@ -1,0 +1,881 @@
+// Tests for the Donna stage2 type checker.
+//
+// Tests type-check complete source snippets via the lex → parse → check pipeline.
+// Tests verify that expressions get the right types, type definitions register
+// their constructors, and extract_interface exports the right bindings.
+//
+// Note: stage2 requires indented function bodies — `fn f() -> T:\n  expr`.
+// Inline bodies `fn f() -> T: expr` are not supported by the stage2 parser.
+
+import compiler/lexer/lexer
+import compiler/parser/parser
+import compiler/parser/ast
+import compiler/typesystem/checker
+import compiler/typesystem/types
+import compiler/typesystem/typed_ast
+import utilities/location
+import errors/error
+import donna/result
+import donna/list
+import donna/option
+import donna/string
+import donna/int
+import unittest/should
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn check_src(src: String) -> result.Result(typed_ast.TypedModule, List(error.DonnaError)):
+  case lexer.lex(src, "test"):
+    lexer.LexErrors(errs) ->
+      result.Error(errs)
+    lexer.LexOk(toks) ->
+      case parser.parse(toks):
+        parser.ParseErrors(errs) ->
+          result.Error(errs)
+        parser.ParseOk(m) ->
+          checker.check_module(m, "test")
+
+fn typed_fns(m: typed_ast.TypedModule) -> List(typed_ast.TypedFunction):
+  case m:
+    typed_ast.TypedModule(_, fns, _, _, _) -> fns
+
+fn typed_consts(m: typed_ast.TypedModule) -> List(typed_ast.TypedConstant):
+  case m:
+    typed_ast.TypedModule(_, _, cs, _, _) -> cs
+
+fn typed_type_defs(m: typed_ast.TypedModule) -> List(typed_ast.TypedTypeDef):
+  case m:
+    typed_ast.TypedModule(_, _, _, tds, _) -> tds
+
+fn typed_ctor_info(m: typed_ast.TypedModule) -> List(#(String, #(String, List(types.Type), Int))):
+  case m:
+    typed_ast.TypedModule(_, _, _, _, info) -> info
+
+fn fn_ret_type(f: typed_ast.TypedFunction) -> types.Type:
+  case f:
+    typed_ast.TypedFunction(_, _, _, ret, _, _, _) -> ret
+
+fn fn_body(f: typed_ast.TypedFunction) -> types.TypedExpr:
+  case f:
+    typed_ast.TypedFunction(_, _, _, _, body, _, _) -> body
+
+fn fn_name_of(f: typed_ast.TypedFunction) -> String:
+  case f:
+    typed_ast.TypedFunction(name, _, _, _, _, _, _) -> name
+
+fn fn_is_pub(f: typed_ast.TypedFunction) -> Bool:
+  case f:
+    typed_ast.TypedFunction(_, is_pub, _, _, _, _, _) -> is_pub
+
+fn fn_type_of(f: typed_ast.TypedFunction) -> types.Type:
+  case f:
+    typed_ast.TypedFunction(_, _, _, _, _, _, fn_type) -> fn_type
+
+fn fn_params_of(f: typed_ast.TypedFunction) -> List(#(String, types.Type)):
+  case f:
+    typed_ast.TypedFunction(_, _, params, _, _, _, _) -> params
+
+fn fn_external_info(f: typed_ast.TypedFunction) -> option.Option(#(String, String)):
+  case f:
+    typed_ast.TypedFunction(_, _, _, _, _, ext, _) -> ext
+
+fn const_name_of(c: typed_ast.TypedConstant) -> String:
+  case c:
+    typed_ast.TypedConstant(name, _, _, _) -> name
+
+fn const_type_of(c: typed_ast.TypedConstant) -> types.Type:
+  case c:
+    typed_ast.TypedConstant(_, _, t, _) -> t
+
+fn typedef_name(td: typed_ast.TypedTypeDef) -> String:
+  case td:
+    typed_ast.TypedTypeDef(name, _, _) -> name
+
+fn typedef_ctors(td: typed_ast.TypedTypeDef) -> List(typed_ast.TypedConstructor):
+  case td:
+    typed_ast.TypedTypeDef(_, _, ctors) -> ctors
+
+fn ctor_name_of(c: typed_ast.TypedConstructor) -> String:
+  case c:
+    typed_ast.TypedConstructor(name, _, _) -> name
+
+fn ctor_tag_of(c: typed_ast.TypedConstructor) -> Int:
+  case c:
+    typed_ast.TypedConstructor(_, _, tag) -> tag
+
+fn ctor_fields_of(c: typed_ast.TypedConstructor) -> List(types.Type):
+  case c:
+    typed_ast.TypedConstructor(_, fields, _) -> fields
+
+fn iface_bindings_of(iface: typed_ast.ModuleInterface) -> List(#(String, types.Type)):
+  case iface:
+    typed_ast.ModuleInterface(bs, _) -> bs
+
+fn iface_ctor_info_of(iface: typed_ast.ModuleInterface) -> List(#(String, #(String, List(types.Type), Int))):
+  case iface:
+    typed_ast.ModuleInterface(_, ci) -> ci
+
+fn type_str(t: types.Type) -> String:
+  types.type_to_string(t)
+
+fn binding_type(bs: List(#(String, types.Type)), name: String) -> option.Option(types.Type):
+  case bs:
+    [] -> option.None
+    [#(k, v), ..rest] ->
+      case string.equal(k, name):
+        True  -> option.Some(v)
+        False -> binding_type(rest, name)
+
+// ── Module-level checks ───────────────────────────────────────────────────────
+
+pub fn check_empty_module_test() -> String:
+  case check_src(""):
+    result.Error(_) -> should.fail("empty module should type-check ok")
+    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(0)
+
+pub fn check_single_fn_count_test() -> String:
+  case check_src("fn f() -> Int:\n  42"):
+    result.Error(_) -> should.fail("single fn should type-check ok")
+    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(1)
+
+pub fn check_multi_fn_count_test() -> String:
+  let src = "fn a() -> Int:\n  1\nfn b() -> Int:\n  2\nfn c() -> Int:\n  3"
+  case check_src(src):
+    result.Error(_) -> should.fail("three fns should type-check ok")
+    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(3)
+
+// ── Function return types ─────────────────────────────────────────────────────
+
+pub fn check_int_lit_ret_type_test() -> String:
+  case check_src("fn f() -> Int:\n  42"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("Int")
+        [] -> should.fail("no functions")
+
+pub fn check_float_lit_ret_type_test() -> String:
+  case check_src("fn f() -> Float:\n  3.14"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("Float")
+        [] -> should.fail("no functions")
+
+pub fn check_string_lit_ret_type_test() -> String:
+  case check_src("fn f() -> String:\n  \"hello\""):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("String")
+        [] -> should.fail("no functions")
+
+pub fn check_bool_lit_ret_type_test() -> String:
+  case check_src("fn f() -> Bool:\n  True"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("Bool")
+        [] -> should.fail("no functions")
+
+pub fn check_nil_ret_type_test() -> String:
+  case check_src("fn f() -> Nil:\n  echo 42"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("Nil")
+        [] -> should.fail("no functions")
+
+// ── Function signature types ──────────────────────────────────────────────────
+
+pub fn check_fn_type_no_params_test() -> String:
+  case check_src("fn f() -> Int:\n  42"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_type_of(f)) |> should.equal_string("fn() -> Int")
+        [] -> should.fail("no functions")
+
+pub fn check_fn_type_with_params_test() -> String:
+  case check_src("fn add(x: Int, y: Int) -> Int:\n  x + y"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_type_of(f)) |> should.equal_string("fn(Int, Int) -> Int")
+        [] -> should.fail("no functions")
+
+pub fn check_fn_params_test() -> String:
+  case check_src("fn f(x: Int, y: String) -> Bool:\n  True"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] ->
+          let params = fn_params_of(f)
+          list.length(params) |> should.equal_int(2)
+        [] -> should.fail("no functions")
+
+pub fn check_pub_fn_test() -> String:
+  case check_src("pub fn f() -> Int:\n  1"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> fn_is_pub(f) |> should.is_true()
+        [] -> should.fail("no functions")
+
+pub fn check_private_fn_test() -> String:
+  case check_src("fn f() -> Int:\n  1"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> fn_is_pub(f) |> should.is_false()
+        [] -> should.fail("no functions")
+
+// ── Body expression types ─────────────────────────────────────────────────────
+
+pub fn check_body_int_lit_type_test() -> String:
+  case check_src("fn f() -> Int:\n  42"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Int")
+        [] -> should.fail("no functions")
+
+pub fn check_body_string_lit_type_test() -> String:
+  case check_src("fn f() -> String:\n  \"hi\""):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("String")
+        [] -> should.fail("no functions")
+
+pub fn check_body_binop_add_type_test() -> String:
+  case check_src("fn f() -> Int:\n  1 + 2"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Int")
+        [] -> should.fail("no functions")
+
+pub fn check_body_binop_eq_type_test() -> String:
+  case check_src("fn f() -> Bool:\n  1 == 1"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Bool")
+        [] -> should.fail("no functions")
+
+pub fn check_body_binop_concat_type_test() -> String:
+  case check_src("fn f() -> String:\n  \"a\" <> \"b\""):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("String")
+        [] -> should.fail("no functions")
+
+pub fn check_body_unary_neg_type_test() -> String:
+  case check_src("fn f() -> Int:\n  -5"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Int")
+        [] -> should.fail("no functions")
+
+pub fn check_body_unary_not_type_test() -> String:
+  case check_src("fn f() -> Bool:\n  !True"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Bool")
+        [] -> should.fail("no functions")
+
+// ── Block and let statements ──────────────────────────────────────────────────
+
+pub fn check_block_single_stmt_test() -> String:
+  let src = "fn f() -> Int:\n  let x = 42\n  x"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Int")
+        [] -> should.fail("no functions")
+
+pub fn check_block_annotated_let_test() -> String:
+  let src = "fn f() -> String:\n  let x: String = \"hi\"\n  x"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("String")
+        [] -> should.fail("no functions")
+
+pub fn check_block_multi_let_test() -> String:
+  let src = "fn f() -> Int:\n  let a = 1\n  let b = 2\n  a + b"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(1)
+
+// ── Tuple types ───────────────────────────────────────────────────────────────
+
+pub fn check_tuple_type_test() -> String:
+  case check_src("fn f() -> #(Int, String):\n  #(1, \"a\")"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("#(Int, String)")
+        [] -> should.fail("no functions")
+
+pub fn check_tuple_ret_type_annotation_test() -> String:
+  case check_src("fn f() -> #(Int, Bool):\n  #(42, True)"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("#(Int, Bool)")
+        [] -> should.fail("no functions")
+
+// ── List types ────────────────────────────────────────────────────────────────
+
+pub fn check_empty_list_test() -> String:
+  case check_src("fn f() -> List(Int):\n  []"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("List(Int)")
+        [] -> should.fail("no functions")
+
+pub fn check_nonempty_list_type_test() -> String:
+  case check_src("fn f() -> List(Int):\n  [1, 2, 3]"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("List(Int)")
+        [] -> should.fail("no functions")
+
+pub fn check_list_spread_type_test() -> String:
+  case check_src("fn f(xs: List(Int)) -> List(Int):\n  [1, ..xs]"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("List(Int)")
+        [] -> should.fail("no functions")
+
+// ── Case expressions ──────────────────────────────────────────────────────────
+
+pub fn check_case_bool_type_test() -> String:
+  let src = "fn f(x: Int) -> Bool:\n  case x:\n    0 -> False\n    _ -> True"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Bool")
+        [] -> should.fail("no functions")
+
+pub fn check_case_string_type_test() -> String:
+  let src = "fn f(b: Bool) -> String:\n  case b:\n    True -> \"yes\"\n    False -> \"no\""
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("String")
+        [] -> should.fail("no functions")
+
+pub fn check_case_with_guard_test() -> String:
+  let src = "fn f(x: Int) -> String:\n  case x:\n    n if n > 0 -> \"pos\"\n    _ -> \"other\""
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(1)
+
+// Pattern binding gives fresh type vars; use literal body to test case type.
+pub fn check_case_tuple_pattern_type_test() -> String:
+  let src = "fn f(t: #(Int, Bool)) -> Int:\n  case t:\n    #(_, _) -> 42"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Int")
+        [] -> should.fail("no functions")
+
+pub fn check_case_list_pattern_test() -> String:
+  let src = "fn f(xs: List(Int)) -> Int:\n  case xs:\n    [] -> 0\n    [x, ..] -> x"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(1)
+
+// ── Custom type definitions ───────────────────────────────────────────────────
+
+pub fn check_simple_adt_test() -> String:
+  let src = "type Color:\n  Red\n  Green\n  Blue"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) -> list.length(typed_type_defs(m)) |> should.equal_int(1)
+
+pub fn check_adt_constructor_count_test() -> String:
+  let src = "type Color:\n  Red\n  Green\n  Blue"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_type_defs(m):
+        [td, ..] -> list.length(typedef_ctors(td)) |> should.equal_int(3)
+        [] -> should.fail("no type defs")
+
+pub fn check_adt_constructor_tags_test() -> String:
+  let src = "type Color:\n  Red\n  Green\n  Blue"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_type_defs(m):
+        [td, ..] ->
+          case typedef_ctors(td):
+            [r, g, b] ->
+              let r1 = ctor_tag_of(r) |> should.equal_int(0)
+              let r2 = ctor_tag_of(g) |> should.equal_int(1)
+              let r3 = ctor_tag_of(b) |> should.equal_int(2)
+              r1 <> r2 <> r3
+            _ -> should.fail("expected 3 constructors")
+        [] -> should.fail("no type defs")
+
+pub fn check_adt_constructor_names_test() -> String:
+  let src = "type Color:\n  Red\n  Green\n  Blue"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_type_defs(m):
+        [td, ..] ->
+          case typedef_ctors(td):
+            [r, g, b] ->
+              let r1 = ctor_name_of(r) |> should.equal_string("Red")
+              let r2 = ctor_name_of(g) |> should.equal_string("Green")
+              let r3 = ctor_name_of(b) |> should.equal_string("Blue")
+              r1 <> r2 <> r3
+            _ -> should.fail("expected 3 constructors")
+        [] -> should.fail("no type defs")
+
+pub fn check_adt_with_fields_test() -> String:
+  let src = "type Shape:\n  Circle(Int)\n  Rect(Int, Int)"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_type_defs(m):
+        [td, ..] ->
+          case typedef_ctors(td):
+            [circle, rect] ->
+              let r1 = list.length(ctor_fields_of(circle)) |> should.equal_int(1)
+              let r2 = list.length(ctor_fields_of(rect)) |> should.equal_int(2)
+              r1 <> r2
+            _ -> should.fail("expected 2 constructors")
+        [] -> should.fail("no type defs")
+
+pub fn check_adt_field_types_test() -> String:
+  let src = "type Pair:\n  Pair(Int, String)"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_type_defs(m):
+        [td, ..] ->
+          case typedef_ctors(td):
+            [ctor] ->
+              case ctor_fields_of(ctor):
+                [t1, t2] ->
+                  let r1 = type_str(t1) |> should.equal_string("Int")
+                  let r2 = type_str(t2) |> should.equal_string("String")
+                  r1 <> r2
+                _ -> should.fail("expected 2 fields")
+            _ -> should.fail("expected 1 constructor")
+        [] -> should.fail("no type defs")
+
+pub fn check_parameterized_adt_test() -> String:
+  let src = "type Maybe(a):\n  Nothing\n  Just(a)"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_type_defs(m):
+        [td, ..] ->
+          case typedef_ctors(td):
+            [nothing, just] ->
+              let r1 = list.length(ctor_fields_of(nothing)) |> should.equal_int(0)
+              let r2 = list.length(ctor_fields_of(just)) |> should.equal_int(1)
+              r1 <> r2
+            _ -> should.fail("expected 2 constructors")
+        [] -> should.fail("no type defs")
+
+pub fn check_adt_not_in_ctor_info_when_private_test() -> String:
+  let src = "type Color:\n  Red\n  Green"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) -> list.length(typed_ctor_info(m)) |> should.equal_int(0)
+
+pub fn check_pub_adt_in_ctor_info_test() -> String:
+  let src = "pub type Color:\n  Red\n  Green"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) -> list.length(typed_ctor_info(m)) |> should.equal_int(2)
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+pub fn check_const_int_test() -> String:
+  case check_src("const answer = 42"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_consts(m):
+        [c, ..] -> type_str(const_type_of(c)) |> should.equal_string("Int")
+        [] -> should.fail("no constants")
+
+pub fn check_const_string_test() -> String:
+  case check_src("const greeting = \"hello\""):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_consts(m):
+        [c, ..] -> type_str(const_type_of(c)) |> should.equal_string("String")
+        [] -> should.fail("no constants")
+
+pub fn check_const_annotated_test() -> String:
+  case check_src("const pi: Float = 3.14"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_consts(m):
+        [c, ..] -> type_str(const_type_of(c)) |> should.equal_string("Float")
+        [] -> should.fail("no constants")
+
+pub fn check_const_name_test() -> String:
+  case check_src("const my_val = 99"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_consts(m):
+        [c, ..] -> const_name_of(c) |> should.equal_string("my_val")
+        [] -> should.fail("no constants")
+
+// ── Lambda expressions ────────────────────────────────────────────────────────
+
+pub fn check_lambda_type_test() -> String:
+  let src = "fn f() -> fn(Int) -> Int:\n  fn(x: Int) -> x + 1"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [func, ..] -> type_str(types.typed_expr_type(fn_body(func))) |> should.equal_string("fn(Int) -> Int")
+        [] -> should.fail("no functions")
+
+pub fn check_lambda_no_params_type_test() -> String:
+  let src = "fn f() -> fn() -> String:\n  fn() -> \"hi\""
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [func, ..] -> type_str(types.typed_expr_type(fn_body(func))) |> should.equal_string("fn() -> String")
+        [] -> should.fail("no functions")
+
+// ── Echo and builtins ─────────────────────────────────────────────────────────
+
+pub fn check_echo_type_test() -> String:
+  let src = "fn f() -> Nil:\n  echo 42"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [func, ..] -> type_str(types.typed_expr_type(fn_body(func))) |> should.equal_string("Nil")
+        [] -> should.fail("no functions")
+
+pub fn check_echo_string_type_test() -> String:
+  let src = "fn f() -> Nil:\n  echo \"debug\""
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(1)
+
+// ── Panic and todo ────────────────────────────────────────────────────────────
+
+pub fn check_todo_type_test() -> String:
+  let src = "fn f() -> Int:\n  todo"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(1)
+
+pub fn check_panic_type_test() -> String:
+  let src = "fn f() -> Int:\n  panic \"unreachable\""
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(1)
+
+// ── External functions ────────────────────────────────────────────────────────
+
+pub fn check_external_fn_test() -> String:
+  let src = "@external(\"c\", \"printf\")\npub fn printf(fmt: String) -> Int"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] ->
+          case fn_external_info(f):
+            option.Some(#(lang, sym)) ->
+              let r1 = lang |> should.equal_string("c")
+              let r2 = sym |> should.equal_string("printf")
+              r1 <> r2
+            option.None -> should.fail("expected external info")
+        [] -> should.fail("no functions")
+
+pub fn check_external_fn_ret_type_test() -> String:
+  let src = "@external(\"c\", \"strlen\")\nfn strlen(s: String) -> Int"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("Int")
+        [] -> should.fail("no functions")
+
+// ── Pipe operator ─────────────────────────────────────────────────────────────
+
+pub fn check_pipe_desugaring_test() -> String:
+  let src = "fn double(x: Int) -> Int:\n  x * 2\nfn f() -> Int:\n  5 |> double"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(2)
+
+// ── Interface extraction ──────────────────────────────────────────────────────
+
+pub fn extract_iface_pub_fn_test() -> String:
+  let src = "pub fn greet() -> String:\n  \"hi\""
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let iface = checker.extract_interface(m)
+      let bs = iface_bindings_of(iface)
+      case binding_type(bs, "greet"):
+        option.Some(t) -> type_str(t) |> should.equal_string("fn() -> String")
+        option.None -> should.fail("greet not in interface")
+
+pub fn extract_iface_private_fn_excluded_test() -> String:
+  let src = "fn secret() -> Int:\n  42"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let iface = checker.extract_interface(m)
+      let bs = iface_bindings_of(iface)
+      case binding_type(bs, "secret"):
+        option.Some(_) -> should.fail("private fn should not be in interface")
+        option.None -> ""
+
+pub fn extract_iface_pub_const_test() -> String:
+  let src = "pub const version = \"1.0\""
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let iface = checker.extract_interface(m)
+      let bs = iface_bindings_of(iface)
+      case binding_type(bs, "version"):
+        option.Some(t) -> type_str(t) |> should.equal_string("String")
+        option.None -> should.fail("version not in interface")
+
+pub fn extract_iface_pub_type_ctors_test() -> String:
+  let src = "pub type Bit:\n  Zero\n  One"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let iface = checker.extract_interface(m)
+      let bs = iface_bindings_of(iface)
+      case binding_type(bs, "Zero"):
+        option.Some(_) -> ""
+        option.None -> should.fail("Zero not in interface")
+
+pub fn extract_iface_pub_type_ctor_info_test() -> String:
+  let src = "pub type Bit:\n  Zero\n  One"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let iface = checker.extract_interface(m)
+      let ci = iface_ctor_info_of(iface)
+      list.length(ci) |> should.equal_int(2)
+
+pub fn extract_iface_private_type_excluded_test() -> String:
+  let src = "type Internal:\n  A\n  B"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let iface = checker.extract_interface(m)
+      let bs = iface_bindings_of(iface)
+      case binding_type(bs, "A"):
+        option.Some(_) -> should.fail("private type ctor should not be in interface")
+        option.None -> ""
+
+// ── Function cross-references ─────────────────────────────────────────────────
+
+pub fn check_mutual_fn_call_test() -> String:
+  let src = "fn a() -> Int:\n  b()\nfn b() -> Int:\n  42"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(2)
+
+pub fn check_fn_name_preserved_test() -> String:
+  case check_src("fn my_fn() -> Int:\n  0"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> fn_name_of(f) |> should.equal_string("my_fn")
+        [] -> should.fail("no functions")
+
+// ── Type annotation shapes ────────────────────────────────────────────────────
+
+pub fn check_list_annotation_test() -> String:
+  case check_src("fn f(xs: List(Int)) -> List(Int):\n  xs"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("List(Int)")
+        [] -> should.fail("no functions")
+
+pub fn check_fn_annotation_test() -> String:
+  case check_src("fn f(g: fn(Int) -> Bool) -> Bool:\n  g(42)"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("Bool")
+        [] -> should.fail("no functions")
+
+pub fn check_nested_list_annotation_test() -> String:
+  case check_src("fn f() -> List(List(Int)):\n  [[1, 2], [3, 4]]"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("List(List(Int))")
+        [] -> should.fail("no functions")
+
+// ── Mixed module ──────────────────────────────────────────────────────────────
+
+pub fn check_full_module_test() -> String:
+  let src = "pub type Result(a, e):\n  Ok(a)\n  Err(e)\n\npub const zero = 0\n\npub fn identity(x: Int) -> Int:\n  x"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let r1 = list.length(typed_type_defs(m)) |> should.equal_int(1)
+      let r2 = list.length(typed_consts(m)) |> should.equal_int(1)
+      let r3 = list.length(typed_fns(m)) |> should.equal_int(1)
+      r1 <> r2 <> r3
+
+// ── Float type checking ───────────────────────────────────────────────────────
+
+pub fn check_float_add_type_test() -> String:
+  case check_src("fn f() -> Float:\n  3.14 +. 2.0"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Float")
+        [] -> should.fail("no functions")
+
+pub fn check_float_sub_type_test() -> String:
+  case check_src("fn f() -> Float:\n  5.0 -. 2.0"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Float")
+        [] -> should.fail("no functions")
+
+pub fn check_float_mul_type_test() -> String:
+  case check_src("fn f() -> Float:\n  3.0 *. 2.0"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Float")
+        [] -> should.fail("no functions")
+
+pub fn check_float_div_type_test() -> String:
+  case check_src("fn f() -> Float:\n  6.0 /. 2.0"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Float")
+        [] -> should.fail("no functions")
+
+pub fn check_float_lt_type_test() -> String:
+  case check_src("fn f() -> Bool:\n  1.0 <. 2.0"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Bool")
+        [] -> should.fail("no functions")
+
+pub fn check_float_gt_type_test() -> String:
+  case check_src("fn f() -> Bool:\n  3.0 >. 1.0"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Bool")
+        [] -> should.fail("no functions")
+
+pub fn check_float_neg_type_test() -> String:
+  case check_src("fn f() -> Float:\n  -3.14"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Float")
+        [] -> should.fail("no functions")
+
+pub fn check_float_op_on_int_error_test() -> String:
+  case check_src("fn f() -> Float:\n  1 +. 2"):
+    result.Error(_) -> ""
+    result.Ok(_) -> should.fail("should have rejected int with float operator")
+
+pub fn check_float_op_mixed_error_test() -> String:
+  case check_src("fn f() -> Float:\n  1.0 +. 2"):
+    result.Error(_) -> ""
+    result.Ok(_) -> should.fail("should have rejected mixed float/int")
+
+pub fn check_bool_op_on_int_error_test() -> String:
+  case check_src("fn f() -> Bool:\n  1 && True"):
+    result.Error(_) -> ""
+    result.Ok(_) -> should.fail("should have rejected non-bool in &&")
+
+// ── Generic functions ─────────────────────────────────────────────────────────
+
+pub fn check_generic_identity_ret_type_test() -> String:
+  case check_src("fn identity(x: a) -> a:\n  x"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("a97")
+        [] -> should.fail("no functions")
+
+pub fn check_generic_call_instantiates_int_test() -> String:
+  let src = "fn identity(x: a) -> a:\n  x\n\nfn f() -> Int:\n  identity(42)"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [_, f, ..] ->
+          type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Int")
+        _ -> should.fail("expected two functions")
+
+pub fn check_generic_call_instantiates_string_test() -> String:
+  let src = "fn identity(x: a) -> a:\n  x\n\nfn f() -> String:\n  identity(\"hello\")"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [_, f, ..] ->
+          type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("String")
+        _ -> should.fail("expected two functions")
+
+pub fn check_generic_two_params_test() -> String:
+  let src = "fn first(x: a, _y: b) -> a:\n  x\n\nfn f() -> Int:\n  first(1, \"hi\")"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [_, f, ..] ->
+          type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Int")
+        _ -> should.fail("expected two functions")
+
+pub fn check_generic_list_ret_type_test() -> String:
+  let src = "fn wrap(x: a) -> List(a):\n  [x]"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("List(a97)")
+        [] -> should.fail("no functions")
+
+pub fn check_generic_call_list_instantiates_test() -> String:
+  let src = "fn wrap(x: a) -> List(a):\n  [x]\n\nfn f() -> List(Int):\n  wrap(42)"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [_, f, ..] ->
+          type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("List(Int)")
+        _ -> should.fail("expected two functions")

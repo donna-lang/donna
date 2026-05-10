@@ -1,0 +1,597 @@
+//// Compiler build pipeline.
+//// This module turns Donna source files into checked module interfaces and
+//// generated QBE SSA files. It also owns the small external-tool boundary for
+//// QBE and C FFI object compilation.
+
+import compiler/lexer/lexer
+import compiler/parser/parser
+import compiler/typesystem/checker
+import compiler/typesystem/typed_ast
+import compiler/codegen/codegen
+import errors/reporter
+import errors/error
+import donna/files
+import donna/list
+import donna/result
+import donna/string
+import donna/shell
+import utilities/logger
+
+/// Compile one Donna module into a module interface and an SSA artifact.
+///
+/// The interface is always produced from the current source so imports can be
+/// typechecked correctly. The SSA file is regenerated only when the source is
+/// newer than the cached artifact, unless `force` is true.
+pub fn compile_module(
+  path: String,
+  mod_name: String,
+  artifacts_dir: String,
+  ifaces: List(#(String, typed_ast.ModuleInterface)),
+  force: Bool
+) -> result.Result(#(typed_ast.ModuleInterface, String, Bool), String):
+  let stem = mod_name_to_stem(mod_name)
+  let ssa_path = files.join(artifacts_dir, stem <> ".ssa")
+  let cached = case force:
+    True -> False
+    False -> file_is_current(path, ssa_path)
+  let _ = case cached:
+    True -> ""
+    False ->
+      let _ = logger.step(mod_name)
+      ""
+  let src = files.read(path)
+  case lexer.lex(src, path):
+    lexer.LexErrors(_) -> result.Error("lex error: " <> path)
+    lexer.LexOk(toks) ->
+      case parser.parse(toks):
+        parser.ParseErrors(_) -> result.Error("parse error: " <> path)
+        parser.ParseOk(module) ->
+          case checker.check_module_with_imports(module, mod_name, ifaces):
+            result.Error(errs) ->
+              let msgs = render_errors(errs, src, [])
+              result.Error(
+                "type error in " <> path <> ":\n" <> string.join(msgs, "\n")
+              )
+            result.Ok(typed_module) ->
+              let iface = checker.extract_interface(typed_module)
+              case cached:
+                True -> result.Ok(#(iface, ssa_path, False))
+                False ->
+                  let ir = codegen.generate(typed_module)
+                  let _ = files.write(ssa_path, ir)
+                  result.Ok(#(iface, ssa_path, True))
+
+/// Compile an explicit list of Donna source files.
+///
+/// This path is used by the test command, where files are discovered outside of
+/// a normal `src/` tree and are given a synthetic module prefix such as `test`.
+pub fn compile_file_list(
+  paths: List(String),
+  mod_prefix: String,
+  artifacts_dir: String,
+  ifaces: List(#(String, typed_ast.ModuleInterface))
+) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool), String):
+  compile_loop(
+    sort_by_import_count(paths),
+    mod_prefix,
+    artifacts_dir,
+    ifaces,
+    [],
+    [],
+    False
+  )
+
+/// Compile every Donna source file under a directory.
+///
+/// The directory walk preserves nested module names and topologically sorts
+/// local imports before compiling, so modules such as `donna/int` build after
+/// the modules they import.
+pub fn compile_dir(
+  dir: String,
+  mod_prefix: String,
+  artifacts_dir: String,
+  ifaces: List(#(String, typed_ast.ModuleInterface)),
+  force: Bool
+) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool), String):
+  let pairs = collect_pairs_recursive(files.list_dir(dir), dir, mod_prefix, [])
+  compile_pairs_loop(
+    topo_sort_pairs(pairs),
+    artifacts_dir,
+    ifaces,
+    [],
+    [],
+    force
+  )
+
+fn compile_pairs_loop(
+  pairs: List(#(String, String)),
+  artifacts_dir: String,
+  ifaces: List(#(String, typed_ast.ModuleInterface)),
+  iface_acc: List(#(String, typed_ast.ModuleInterface)),
+  ssa_acc: List(String),
+  dirty: Bool
+) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool), String):
+  case pairs:
+    [] -> result.Ok(#(list.reverse(iface_acc), list.reverse(ssa_acc), dirty))
+    [#(path, mod_name), ..rest] ->
+      let cur_ifaces = list.append(ifaces, iface_acc)
+      case compile_module(path, mod_name, artifacts_dir, cur_ifaces, dirty):
+        result.Error(e) -> result.Error(e)
+        result.Ok(#(iface, ssa, rebuilt)) ->
+          let next_dirty = case rebuilt:
+            True -> True
+            False -> dirty
+          compile_pairs_loop(
+            rest,
+            artifacts_dir,
+            ifaces,
+            [#(mod_name, iface), ..iface_acc],
+            [ssa, ..ssa_acc],
+            next_dirty
+          )
+
+fn compile_loop(
+  paths: List(String),
+  mod_prefix: String,
+  artifacts_dir: String,
+  ifaces: List(#(String, typed_ast.ModuleInterface)),
+  iface_acc: List(#(String, typed_ast.ModuleInterface)),
+  ssa_acc: List(String),
+  dirty: Bool
+) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool), String):
+  case paths:
+    [] -> result.Ok(#(list.reverse(iface_acc), list.reverse(ssa_acc), dirty))
+    [path, ..rest] ->
+      let stem = files.drop_extension(files.basename(path))
+      let mod_name = case string.is_empty(mod_prefix):
+        True -> stem
+        False -> mod_prefix <> "/" <> stem
+      let cur_ifaces = list.append(ifaces, iface_acc)
+      case compile_module(path, mod_name, artifacts_dir, cur_ifaces, dirty):
+        result.Error(e) -> result.Error(e)
+        result.Ok(#(iface, ssa, rebuilt)) ->
+          let next_dirty = case rebuilt:
+            True -> True
+            False -> dirty
+          compile_loop(
+            rest,
+            mod_prefix,
+            artifacts_dir,
+            ifaces,
+            [#(mod_name, iface), ..iface_acc],
+            [ssa, ..ssa_acc],
+            next_dirty
+          )
+
+/// Return whether QBE is available in the current process PATH.
+///
+/// Build and test commands call this before linking so a missing QBE binary is
+/// reported as an installation problem instead of collapsing into a later
+/// linker failure.
+pub fn qbe_available() -> Bool:
+  shell.run("command -v qbe >/dev/null 2>&1") == 0
+
+/// Return the C compiler command Donna should use.
+///
+/// `DONNA_CC` wins when set. Otherwise Donna prefers `cc`, then falls back to
+/// `zig cc` when Zig is installed. The command may contain spaces, so callers
+/// should build the full shell command with `c_command`.
+pub fn c_compiler_command() -> String:
+  let configured = string.trim(shell.getenv("DONNA_CC"))
+  case string.is_empty(configured):
+    False -> configured
+    True ->
+      case shell.run("command -v cc >/dev/null 2>&1") == 0:
+        True -> "cc"
+        False ->
+          case shell.run("command -v zig >/dev/null 2>&1") == 0:
+            True -> "zig cc"
+            False -> ""
+
+/// Return whether Donna can find a C compiler for FFI and linking.
+pub fn c_compiler_available() -> Bool:
+  string.is_empty(c_compiler_command()) == False
+
+/// Build a shell command for invoking the resolved C compiler with arguments.
+pub fn c_command(args: List(String)) -> String:
+  c_compiler_command() <> " " <> join_shell_args(args)
+
+/// Run QBE for one SSA file and return the generated assembly path.
+///
+/// An empty string means QBE failed. Callers should check `qbe_available()`
+/// before calling this function so missing QBE produces a clear user error.
+pub fn run_qbe(ssa_path: String) -> String:
+  let s_path = files.drop_extension(ssa_path) <> ".s"
+  case file_is_current(ssa_path, s_path):
+    True -> s_path
+    False ->
+      let code = shell.run("qbe -o " <> sh_quote(s_path) <> " " <> sh_quote(ssa_path) <> " >/dev/null 2>&1")
+      case code == 0:
+        True -> s_path
+        False -> ""
+
+/// Run QBE for every SSA file and keep the assembly files that were produced.
+///
+/// This currently skips failed QBE invocations. The command layer guards the
+/// common missing-QBE case first, but this should eventually return `Result` so
+/// individual QBE failures can be reported with their source artifact.
+pub fn run_qbe_all(ssa_paths: List(String), acc: List(String)) -> List(String):
+  case ssa_paths:
+    [] -> list.reverse(acc)
+    [path, ..rest] ->
+      let s = run_qbe(path)
+      case string.is_empty(s):
+        True -> run_qbe_all(rest, acc)
+        False -> run_qbe_all(rest, [s, ..acc])
+
+/// Compile one C FFI source file into an object file.
+///
+/// The object path is returned in a one-item list on success and an empty list
+/// on failure. This mirrors the older pipeline style; a future improvement
+/// should return `Result` and preserve the C compiler error.
+pub fn compile_c(src_path: String, obj_path: String) -> List(String):
+  case files.exists(src_path):
+    False -> []
+    True ->
+      case file_is_current(src_path, obj_path):
+        True -> [obj_path]
+        False ->
+          let code = shell.run(c_command(["-c", "-O2", src_path, "-o", obj_path]) <> " >/dev/null 2>&1")
+          case code == 0:
+            True -> [obj_path]
+            False -> []
+
+/// Compile every C file inside a package or project `ffi/` directory.
+///
+/// Projects without FFI return an empty object list.
+pub fn compile_ffi(dep_path: String, artifacts_dir: String) -> List(String):
+  let ffi_dir = files.join(dep_path, "ffi")
+  case files.is_dir(ffi_dir):
+    False -> []
+    True ->
+      compile_c_files(files.list_dir(ffi_dir), ffi_dir, artifacts_dir, [])
+
+fn compile_c_files(
+  entries: List(String),
+  ffi_dir: String,
+  artifacts_dir: String,
+  acc: List(String)
+) -> List(String):
+  case entries:
+    [] -> list.reverse(acc)
+    [name, ..rest] ->
+      case string.ends_with(name, ".c"):
+        False -> compile_c_files(rest, ffi_dir, artifacts_dir, acc)
+        True ->
+          let src = files.join(ffi_dir, name)
+          let obj = files.join(artifacts_dir, files.drop_extension(name) <> ".o")
+          let objs = compile_c(src, obj)
+          compile_c_files(rest, ffi_dir, artifacts_dir, list.append(objs, acc))
+
+/// Convert a module path such as `donna/string` into an artifact-safe stem.
+pub fn mod_name_to_stem(mod_name: String) -> String:
+  string.replace(mod_name, "/", "_")
+
+fn file_is_current(src: String, output: String) -> Bool:
+  case files.exists(output):
+    False -> False
+    True -> shell.run("test " <> sh_quote(src) <> " -nt " <> sh_quote(output)) != 0
+
+fn sh_quote(s: String) -> String:
+  "'" <> string.replace(s, "'", "'\\''") <> "'"
+
+fn join_shell_args(args: List(String)) -> String:
+  case args:
+    [] -> ""
+    [arg] -> sh_quote(arg)
+    [arg, ..rest] -> sh_quote(arg) <> " " <> join_shell_args(rest)
+
+fn render_errors(
+  errs: List(error.DonnaError),
+  src: String,
+  acc: List(String)
+) -> List(String):
+  case errs:
+    [] -> list.reverse(acc)
+    [e, ..rest] ->
+      render_errors(rest, src, [reporter.render_error(e, src), ..acc])
+
+fn collect_donna(
+  entries: List(String),
+  dir: String,
+  acc: List(String)
+) -> List(String):
+  case entries:
+    [] -> list.reverse(acc)
+    [name, ..rest] ->
+      case string.ends_with(name, ".donna"):
+        True -> collect_donna(rest, dir, [files.join(dir, name), ..acc])
+        False -> collect_donna(rest, dir, acc)
+
+fn collect_pairs_recursive(
+  entries: List(String),
+  dir: String,
+  prefix: String,
+  acc: List(#(String, String))
+) -> List(#(String, String)):
+  case entries:
+    [] -> list.reverse(acc)
+    [name, ..rest] ->
+      let full_path = files.join(dir, name)
+      case string.ends_with(name, ".donna"):
+        True ->
+          let stem = files.drop_extension(name)
+          let mod_name = case string.is_empty(prefix):
+            True -> stem
+            False -> prefix <> "/" <> stem
+          collect_pairs_recursive(
+            rest,
+            dir,
+            prefix,
+            [#(full_path, mod_name), ..acc]
+          )
+        False ->
+          case files.is_dir(full_path):
+            False -> collect_pairs_recursive(rest, dir, prefix, acc)
+            True ->
+              let sub_prefix = case string.is_empty(prefix):
+                True -> name
+                False -> prefix <> "/" <> name
+              let sub_pairs = collect_pairs_recursive(
+                files.list_dir(full_path),
+                full_path,
+                sub_prefix,
+                []
+              )
+              collect_pairs_recursive(
+                rest,
+                dir,
+                prefix,
+                list.append(list.reverse(sub_pairs), acc)
+              )
+
+fn topo_sort_pairs(pairs: List(#(String, String))) -> List(#(String, String)):
+  let all_names = collect_mod_names(pairs, [])
+  let tagged = tag_with_local_deps(pairs, all_names, [])
+  kahn_sort(tagged, [], [])
+
+fn collect_mod_names(
+  pairs: List(#(String, String)),
+  acc: List(String)
+) -> List(String):
+  case pairs:
+    [] -> list.reverse(acc)
+    [#(_, name), ..rest] -> collect_mod_names(rest, [name, ..acc])
+
+fn tag_with_local_deps(
+  pairs: List(#(String, String)),
+  all_names: List(String),
+  acc: List(#(String, String, List(String)))
+) -> List(#(String, String, List(String))):
+  case pairs:
+    [] -> list.reverse(acc)
+    [#(path, mod_name), ..rest] ->
+      let src = files.read(path)
+      let imps = parse_import_names(string.split(src, "\n"), [])
+      let local = filter_local_deps(imps, all_names, [])
+      tag_with_local_deps(rest, all_names, [#(path, mod_name, local), ..acc])
+
+fn parse_import_names(lines: List(String), acc: List(String)) -> List(String):
+  case lines:
+    [] -> list.reverse(acc)
+    [line, ..rest] ->
+      case string.starts_with(line, "import "):
+        False -> parse_import_names(rest, acc)
+        True ->
+          let raw = string.slice(line, 7, string.length(line) - 7)
+          let name = import_path_only(raw)
+          parse_import_names(rest, [name, ..acc])
+
+fn import_path_only(raw: String) -> String:
+  let trimmed = string.trim(raw)
+  let parts = string.split(trimmed, " as ")
+  case parts:
+    [] -> trimmed
+    [path, .._] -> string.trim(path)
+
+fn filter_local_deps(
+  imps: List(String),
+  all_names: List(String),
+  acc: List(String)
+) -> List(String):
+  case imps:
+    [] -> list.reverse(acc)
+    [imp, ..rest] ->
+      let dep = local_dep_name(imp, all_names)
+      case string.is_empty(dep):
+        True -> filter_local_deps(rest, all_names, acc)
+        False -> filter_local_deps(rest, all_names, [dep, ..acc])
+
+fn local_dep_name(imp: String, all_names: List(String)) -> String:
+  case list.contains_str(all_names, imp):
+    True -> imp
+    False ->
+      let last = path_last_segment(imp)
+      find_local_dep_by_last_segment(all_names, last)
+
+fn find_local_dep_by_last_segment(names: List(String), last: String) -> String:
+  case names:
+    [] -> ""
+    [name, ..rest] ->
+      case string.equal(path_last_segment(name), last):
+        True -> name
+        False -> find_local_dep_by_last_segment(rest, last)
+
+fn path_last_segment(path: String) -> String:
+  path_last_segment_loop(string.split(path, "/"), "")
+
+fn path_last_segment_loop(parts: List(String), last: String) -> String:
+  case parts:
+    [] -> last
+    [part, ..rest] -> path_last_segment_loop(rest, part)
+
+fn kahn_sort(
+  pending: List(#(String, String, List(String))),
+  compiled: List(String),
+  result: List(#(String, String))
+) -> List(#(String, String)):
+  case pending:
+    [] -> list.reverse(result)
+    _ ->
+      let #(ready, blocked) = split_ready(pending, compiled, [], [])
+      case list.is_empty(ready):
+        True ->
+          let fallback = tagged_to_pairs(blocked, [])
+          list.append(list.reverse(result), fallback)
+        False ->
+          let new_compiled = list.append(compiled, tagged_names(ready, []))
+          let new_result = prepend_tagged_pairs(ready, result)
+          kahn_sort(blocked, new_compiled, new_result)
+
+fn split_ready(
+  tagged: List(#(String, String, List(String))),
+  compiled: List(String),
+  ready: List(#(String, String, List(String))),
+  blocked: List(#(String, String, List(String)))
+) -> #(List(#(String, String, List(String))), List(#(String, String, List(String)))):
+  case tagged:
+    [] -> #(list.reverse(ready), list.reverse(blocked))
+    [#(path, name, deps), ..rest] ->
+      case all_compiled(deps, compiled):
+        True ->
+          split_ready(rest, compiled, [#(path, name, deps), ..ready], blocked)
+        False ->
+          split_ready(rest, compiled, ready, [#(path, name, deps), ..blocked])
+
+fn all_compiled(deps: List(String), compiled: List(String)) -> Bool:
+  case deps:
+    [] -> True
+    [d, ..rest] ->
+      case list.contains_str(compiled, d):
+        True -> all_compiled(rest, compiled)
+        False -> False
+
+fn tagged_names(
+  tagged: List(#(String, String, List(String))),
+  acc: List(String)
+) -> List(String):
+  case tagged:
+    [] -> list.reverse(acc)
+    [#(_, name, _), ..rest] -> tagged_names(rest, [name, ..acc])
+
+fn tagged_to_pairs(
+  tagged: List(#(String, String, List(String))),
+  acc: List(#(String, String))
+) -> List(#(String, String)):
+  case tagged:
+    [] -> list.reverse(acc)
+    [#(path, name, _), ..rest] -> tagged_to_pairs(rest, [#(path, name), ..acc])
+
+fn prepend_tagged_pairs(
+  tagged: List(#(String, String, List(String))),
+  result: List(#(String, String))
+) -> List(#(String, String)):
+  case tagged:
+    [] -> result
+    [#(path, name, _), ..rest] ->
+      prepend_tagged_pairs(rest, [#(path, name), ..result])
+
+fn sort_by_import_count(paths: List(String)) -> List(String):
+  let pairs = tag_with_count(paths, [])
+  extract_sorted(isort(pairs), [])
+
+fn tag_with_count(
+  paths: List(String),
+  acc: List(#(Int, String))
+) -> List(#(Int, String)):
+  case paths:
+    [] -> list.reverse(acc)
+    [p, ..rest] ->
+      tag_with_count(rest, [#(count_imports(files.read(p)), p), ..acc])
+
+fn count_imports(src: String) -> Int:
+  count_import_lines(string.split(src, "\n"), 0)
+
+fn count_import_lines(lines: List(String), acc: Int) -> Int:
+  case lines:
+    [] -> acc
+    [line, ..rest] ->
+      case string.starts_with(line, "import "):
+        True -> count_import_lines(rest, acc + 1)
+        False -> count_import_lines(rest, acc)
+
+fn isort(xs: List(#(Int, String))) -> List(#(Int, String)):
+  case xs:
+    [] -> []
+    [x, ..rest] -> insert_by_count(x, isort(rest))
+
+fn insert_by_count(
+  x: #(Int, String),
+  sorted: List(#(Int, String))
+) -> List(#(Int, String)):
+  case sorted:
+    [] -> [x]
+    [head, ..rest] ->
+      case pair_count(x) <= pair_count(head):
+        True -> [x, ..sorted]
+        False -> [head, ..insert_by_count(x, rest)]
+
+fn pair_count(p: #(Int, String)) -> Int:
+  case p:
+    #(n, _) -> n
+
+fn extract_sorted(
+  pairs: List(#(Int, String)),
+  acc: List(String)
+) -> List(String):
+  case pairs:
+    [] -> list.reverse(acc)
+    [#(_, p), ..rest] -> extract_sorted(rest, [p, ..acc])
+
+fn sort_pairs_by_import_count(
+  pairs: List(#(String, String))
+) -> List(#(String, String)):
+  let tagged = tag_pairs_with_count(pairs, [])
+  extract_pairs_sorted(isort_pairs(tagged), [])
+
+fn tag_pairs_with_count(
+  pairs: List(#(String, String)),
+  acc: List(#(Int, #(String, String)))
+) -> List(#(Int, #(String, String))):
+  case pairs:
+    [] -> list.reverse(acc)
+    [#(path, mod_name), ..rest] ->
+      tag_pairs_with_count(
+        rest,
+        [#(count_imports(files.read(path)), #(path, mod_name)), ..acc]
+      )
+
+fn isort_pairs(
+  xs: List(#(Int, #(String, String)))
+) -> List(#(Int, #(String, String))):
+  case xs:
+    [] -> []
+    [x, ..rest] -> insert_pair_by_count(x, isort_pairs(rest))
+
+fn insert_pair_by_count(
+  x: #(Int, #(String, String)),
+  sorted: List(#(Int, #(String, String)))
+) -> List(#(Int, #(String, String))):
+  case sorted:
+    [] -> [x]
+    [head, ..rest] ->
+      case pair_int(x) <= pair_int(head):
+        True -> [x, ..sorted]
+        False -> [head, ..insert_pair_by_count(x, rest)]
+
+fn pair_int(p: #(Int, #(String, String))) -> Int:
+  case p:
+    #(n, _) -> n
+
+fn extract_pairs_sorted(
+  tagged: List(#(Int, #(String, String))),
+  acc: List(#(String, String))
+) -> List(#(String, String)):
+  case tagged:
+    [] -> list.reverse(acc)
+    [#(_, pair), ..rest] -> extract_pairs_sorted(rest, [pair, ..acc])

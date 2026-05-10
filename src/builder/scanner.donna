@@ -1,0 +1,271 @@
+//// Project discovery.
+//// This module reads `donna.toml` and derives the standard project paths used
+//// by build, test, docs, clean, and run commands.
+
+import donna/files
+import donna/string
+import donna/list
+import donna/option
+import parsetoml/parsetoml
+
+/// Core project paths derived from `donna.toml`.
+pub type Project:
+  Project(name: String, src_dir: String, build_dir: String)
+
+/// Result of scanning a directory for a Donna project.
+pub type ScanResult:
+  ScanOk(Project)
+  ScanErr(String)
+
+/// Optional package metadata used by generated docs.
+pub type ProjectMeta:
+  ProjectMeta(name: String, version: String, description: String, authors: List(String), licence: String, homepage: String, repository: String, links: List(#(String, String)))
+
+/// Scan a directory for `donna.toml` and return the project paths needed by commands.
+pub fn scan(dir: String) -> ScanResult:
+  let toml_path = files.join(dir, "donna.toml")
+  case files.exists(toml_path):
+    False ->
+      ScanErr(
+        "no donna.toml found — run `donna new <name>` to create a project"
+      )
+    True ->
+      let raw = files.read(toml_path)
+      let parsed = parsetoml.parse(raw)
+      case parsetoml.is_err(parsed):
+        True ->
+          ScanErr("invalid donna.toml: " <> parsetoml.err_msg(parsed))
+        False ->
+          let name_result = parsetoml.get_string(parsetoml.unwrap_table(parsed), "name")
+          case parsetoml.is_err(name_result):
+            True ->
+              ScanErr("donna.toml is missing required field `name`")
+            False ->
+              let name = parsetoml.unwrap_string(name_result)
+              ScanOk(
+                Project(name, files.join(dir, "src"), files.join(dir, "build"))
+              )
+
+/// Return the configured project name.
+pub fn project_name(p: Project) -> String:
+  case p:
+    Project(n, _, _) -> n
+
+/// Return the project source directory.
+pub fn project_src_dir(p: Project) -> String:
+  case p:
+    Project(_, s, _) -> s
+
+/// Return the root build directory for the project.
+pub fn project_build_dir(p: Project) -> String:
+  case p:
+    Project(_, _, b) -> b
+
+/// Return the directory where executable binaries are written.
+pub fn project_bin_dir(p: Project) -> String:
+  files.join(project_build_dir(p), "bin")
+
+/// Return the build directory used for dev-dependency artifacts.
+pub fn project_dev_dir(p: Project) -> String:
+  files.join(project_build_dir(p), "dev")
+
+/// Return the artifact directory used for dev-dependency compilation.
+pub fn project_dev_artifacts_dir(p: Project) -> String:
+  files.join(project_dev_dir(p), "artifacts")
+
+/// Return the directory where fetched package dependencies are built.
+pub fn project_packages_dir(p: Project) -> String:
+  files.join(project_build_dir(p), "packages")
+
+/// Return the build directory for one dependency package.
+pub fn project_package_dir(p: Project, pkg_name: String) -> String:
+  files.join(project_packages_dir(p), pkg_name)
+
+/// Return the artifact directory for one dependency package.
+pub fn project_package_artifacts_dir(p: Project, pkg_name: String) -> String:
+  files.join(project_package_dir(p, pkg_name), "artifacts")
+
+/// Return the build directory used for generated test runners and test binaries.
+pub fn project_test_dir(p: Project) -> String:
+  files.join(project_build_dir(p), "test")
+
+/// Return the package name from project metadata.
+pub fn meta_name(m: ProjectMeta) -> String:
+  case m:
+    ProjectMeta(n, _, _, _, _, _, _, _) -> n
+
+/// Return the package version from project metadata.
+pub fn meta_version(m: ProjectMeta) -> String:
+  case m:
+    ProjectMeta(_, v, _, _, _, _, _, _) -> v
+
+/// Return the package description from project metadata.
+pub fn meta_description(m: ProjectMeta) -> String:
+  case m:
+    ProjectMeta(_, _, d, _, _, _, _, _) -> d
+
+/// Return the package authors from project metadata.
+pub fn meta_authors(m: ProjectMeta) -> List(String):
+  case m:
+    ProjectMeta(_, _, _, a, _, _, _, _) -> a
+
+/// Return the package licence from project metadata.
+pub fn meta_licence(m: ProjectMeta) -> String:
+  case m:
+    ProjectMeta(_, _, _, _, l, _, _, _) -> l
+
+/// Return the package homepage URL from project metadata.
+pub fn meta_homepage(m: ProjectMeta) -> String:
+  case m:
+    ProjectMeta(_, _, _, _, _, h, _, _) -> h
+
+/// Return the package repository URL from project metadata.
+pub fn meta_repository(m: ProjectMeta) -> String:
+  case m:
+    ProjectMeta(_, _, _, _, _, _, r, _) -> r
+
+/// Return `owner/repo` when the metadata repository points at GitHub.
+pub fn meta_github_owner_repo(m: ProjectMeta) -> option.Option(String):
+  github_owner_repo(meta_repository(m))
+
+/// Return extra documentation links from project metadata.
+pub fn meta_links(m: ProjectMeta) -> List(#(String, String)):
+  case m:
+    ProjectMeta(_, _, _, _, _, _, _, ls) -> ls
+
+/// Read optional package metadata from `donna.toml`.
+///
+/// Missing or invalid metadata fields are returned as empty strings or lists so
+/// docs generation can continue for incomplete projects.
+pub fn scan_meta(dir: String) -> ProjectMeta:
+  let toml_path = files.join(dir, "donna.toml")
+  case files.exists(toml_path):
+    False -> empty_meta()
+    True ->
+      let raw = files.read(toml_path)
+      case parsetoml.parse(raw):
+        parsetoml.Err(_) -> empty_meta()
+        parsetoml.Ok(table) ->
+          ProjectMeta(
+            opt_str(table, "name"),
+            opt_str(table, "version"),
+            opt_str(table, "description"),
+            str_array(table, "authors"),
+            parse_licence(table),
+            opt_str(table, "homepage"),
+            parse_repository(table),
+            parse_links(table)
+          )
+
+fn empty_meta() -> ProjectMeta:
+  ProjectMeta("", "", "", [], "", "", "", [])
+
+fn parse_licence(table: parsetoml.TomlValue) -> String:
+  let from_array = case parsetoml.get_array(table, "licences"):
+    parsetoml.Err(_) -> ""
+    parsetoml.Ok(items) ->
+      case items:
+        [] -> ""
+        [parsetoml.TomlString(s), .._] -> s
+        _ -> ""
+  case string.is_empty(from_array):
+    False -> from_array
+    True -> opt_str(table, "licence")
+
+fn parse_repository(table: parsetoml.TomlValue) -> String:
+  case parsetoml.get_table(table, "repository"):
+    parsetoml.Err(_) -> opt_str(table, "repository")
+    parsetoml.Ok(repo_table) ->
+      let repo_type = opt_str(repo_table, "type")
+      let user = opt_str(repo_table, "user")
+      let repo = opt_str(repo_table, "repo")
+      case string.equal(repo_type, "github"):
+        True ->
+          case string.is_empty(user) || string.is_empty(repo):
+            True -> ""
+            False -> "https://github.com/" <> user <> "/" <> repo
+        False -> opt_str(table, "repository")
+
+fn github_owner_repo(repo: String) -> option.Option(String):
+  let clean = strip_git_suffix(strip_trailing_slash(repo))
+  let prefix = "https://github.com/"
+  case string.starts_with(clean, prefix):
+    True ->
+      let rest = string.slice(clean, string.length(prefix), string.length(clean) - string.length(prefix))
+      owner_repo_from_parts(string.split(rest, "/"))
+    False ->
+      let ssh_prefix = "git@github.com:"
+      case string.starts_with(clean, ssh_prefix):
+        True ->
+          let rest = string.slice(clean, string.length(ssh_prefix), string.length(clean) - string.length(ssh_prefix))
+          owner_repo_from_parts(string.split(rest, "/"))
+        False -> option.None
+
+fn owner_repo_from_parts(parts: List(String)) -> option.Option(String):
+  case parts:
+    [owner, repo, .._] ->
+      case string.is_empty(owner) || string.is_empty(repo):
+        True -> option.None
+        False -> option.Some(owner <> "/" <> repo)
+    _ -> option.None
+
+fn strip_trailing_slash(s: String) -> String:
+  case string.ends_with(s, "/"):
+    True -> string.slice(s, 0, string.length(s) - 1)
+    False -> s
+
+fn strip_git_suffix(s: String) -> String:
+  case string.ends_with(s, ".git"):
+    True -> string.slice(s, 0, string.length(s) - 4)
+    False -> s
+
+fn parse_links(table: parsetoml.TomlValue) -> List(#(String, String)):
+  case parsetoml.get_array(table, "links"):
+    parsetoml.Err(_) -> []
+    parsetoml.Ok(items) -> collect_links(items, [])
+
+fn collect_links(
+  items: List(parsetoml.TomlValue),
+  acc: List(#(String, String))
+) -> List(#(String, String)):
+  case items:
+    [] -> list.reverse(acc)
+    [parsetoml.TomlTable(pairs), ..rest] ->
+      let title = case lookup_pair(pairs, "title"):
+        parsetoml.TomlString(s) -> s
+        _ -> ""
+      let href = case lookup_pair(pairs, "href"):
+        parsetoml.TomlString(s) -> s
+        _ -> ""
+      collect_links(rest, [#(title, href), ..acc])
+    [_, ..rest] -> collect_links(rest, acc)
+
+fn lookup_pair(
+  pairs: List(#(String, parsetoml.TomlValue)),
+  key: String
+) -> parsetoml.TomlValue:
+  case pairs:
+    [] -> parsetoml.TomlString("")
+    [#(k, v), ..rest] ->
+      case string.equal(k, key):
+        True -> v
+        False -> lookup_pair(rest, key)
+
+fn opt_str(table: parsetoml.TomlValue, key: String) -> String:
+  case parsetoml.get_string(table, key):
+    parsetoml.Ok(s) -> s
+    parsetoml.Err(_) -> ""
+
+fn str_array(table: parsetoml.TomlValue, key: String) -> List(String):
+  case parsetoml.get_array(table, key):
+    parsetoml.Err(_) -> []
+    parsetoml.Ok(items) -> collect_strings(items, [])
+
+fn collect_strings(
+  items: List(parsetoml.TomlValue),
+  acc: List(String)
+) -> List(String):
+  case items:
+    [] -> list.reverse(acc)
+    [parsetoml.TomlString(s), ..rest] -> collect_strings(rest, [s, ..acc])
+    [_, ..rest] -> collect_strings(rest, acc)

@@ -1,0 +1,93 @@
+//// Collects name references and local bindings from Donna AST nodes for analysis passes.
+
+import compiler/parser/ast
+import utilities/location
+import donna/list
+import donna/option
+import donna/string
+
+/// Collect variable and function references from an expression tree.
+pub fn refs_in_expr(e: ast.Expr) -> List(String):
+  case e:
+    ast.IntLit(_, _) -> []
+    ast.FloatLit(_, _) -> []
+    ast.StringLit(_, _) -> []
+    ast.BoolLit(_, _) -> []
+    ast.Var(name, _) -> [name]
+    ast.FieldAccess(obj, _, _) ->
+      refs_in_expr(obj)
+    ast.Tuple(elems, _) ->
+      list.flat_map(elems, refs_in_expr)
+    ast.EList(elems, _) ->
+      list.flat_map(elems, refs_in_expr)
+    ast.ListSpread(elems, tail, _) ->
+      list.append(list.flat_map(elems, refs_in_expr), refs_in_expr(tail))
+    ast.Call(f, args, _) ->
+      list.append(refs_in_expr(f), list.flat_map(args, refs_in_expr))
+    ast.BinOp(_, l, r, _) ->
+      list.append(refs_in_expr(l), refs_in_expr(r))
+    ast.UnaryOp(_, inner, _) ->
+      refs_in_expr(inner)
+    ast.Case(subj, clauses, _) ->
+      list.append(refs_in_expr(subj), list.flat_map(clauses, refs_in_clause))
+    ast.Block(stmts, _) ->
+      refs_in_stmts(stmts)
+    ast.Pipe(l, r, _) ->
+      list.append(refs_in_expr(l), refs_in_expr(r))
+    ast.Lambda(_, body, _) ->
+      refs_in_expr(body)
+    ast.Echo(inner, _) ->
+      refs_in_expr(inner)
+    ast.Panic(inner, _) ->
+      refs_in_expr(inner)
+    ast.Todo(_) ->
+      []
+
+/// Collect references from a list of statements.
+pub fn refs_in_stmts(stmts: List(ast.Stmt)) -> List(String):
+  list.flat_map(stmts, refs_in_stmt)
+
+/// Collect references from a single statement.
+pub fn refs_in_stmt(s: ast.Stmt) -> List(String):
+  case s:
+    ast.LetStmt(_, _, val, _) -> refs_in_expr(val)
+    ast.LetPatStmt(_, val, _) -> refs_in_expr(val)
+    ast.ExprStmt(e, _) -> refs_in_expr(e)
+
+/// Return all names bound by a pattern with their source spans.
+pub fn bound_by_pattern(p: ast.Pattern) -> List(#(String, location.Span)):
+  case p:
+    ast.PWild(_) -> []
+    ast.PDiscard(_, _) -> []
+    ast.PVar(name, sp) -> [#(name, sp)]
+    ast.PInt(_, _) -> []
+    ast.PFloat(_, _) -> []
+    ast.PString(_, _) -> []
+    ast.PBool(_, _) -> []
+    ast.PTuple(elems, _) ->
+      list.flat_map(elems, bound_by_pattern)
+    ast.PList(elems, _, _) ->
+      list.flat_map(elems, bound_by_pattern)
+    ast.PCons(_, _, args, _) ->
+      list.flat_map(args, bound_by_pattern)
+
+fn refs_in_clause(clause: ast.CaseClause) -> List(String):
+  case clause:
+    ast.CaseClause(_, guard_opt, body, _) ->
+      let guard_refs = case guard_opt:
+        option.None -> []
+        option.Some(g) -> refs_in_expr(g)
+      list.append(guard_refs, refs_in_expr(body))
+
+/// Return whether a list of names contains the requested name.
+pub fn contains_name(names: List(String), name: String) -> Bool:
+  case names:
+    [] -> False
+    [h, ..rest] ->
+      case string.equal(h, name):
+        True -> True
+        False -> contains_name(rest, name)
+
+/// Return whether a binding name is intentionally discarded.
+pub fn is_discard(name: String) -> Bool:
+  string.starts_with(name, "_")

@@ -1,0 +1,30 @@
+//// Typed AST and module interfaces.
+//// These structures are produced by the typechecker and consumed by codegen and
+//// importing modules.
+
+import compiler/typesystem/types
+import donna/option
+
+/// Public bindings and constructor metadata exported by a module.
+pub type ModuleInterface:
+  ModuleInterface(List(#(String, types.Type)), List(#(String, #(String, List(types.Type), Int))))
+
+/// A fully typechecked module ready for code generation.
+pub type TypedModule:
+  TypedModule(String, List(TypedFunction), List(TypedConstant), List(TypedTypeDef), List(#(String, #(String, List(types.Type), Int))))
+
+/// A typechecked type declaration.
+pub type TypedTypeDef:
+  TypedTypeDef(String, Bool, List(TypedConstructor))
+
+/// A typechecked data constructor with field types and runtime tag.
+pub type TypedConstructor:
+  TypedConstructor(String, List(types.Type), Int)
+
+/// A typechecked function declaration.
+pub type TypedFunction:
+  TypedFunction(String, Bool, List(#(String, types.Type)), types.Type, types.TypedExpr, option.Option(#(String, String)), types.Type)
+
+/// A typechecked constant declaration.
+pub type TypedConstant:
+  TypedConstant(String, Bool, types.Type, types.TypedExpr)

@@ -1,0 +1,856 @@
+// Tests for the Donna stage2 lexer — covers every token kind, escape
+// sequence, indentation rule, span position, and error case.
+
+import compiler/lexer/lexer
+import compiler/lexer/token
+import utilities/location
+import donna/string
+import donna/list
+import unittest/should
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn lex_ok(src: String) -> List(token.Token):
+  case lexer.lex(src, "test"):
+    lexer.LexErrors(_) -> []
+    lexer.LexOk(toks) -> list.map(toks, tok_of_pair)
+
+fn tok_of_pair(pair: #(token.Token, location.Span)) -> token.Token:
+  case pair:
+    #(t, _) -> t
+
+fn lex_err(src: String) -> Bool:
+  case lexer.lex(src, "test"):
+    lexer.LexErrors(_) -> True
+    lexer.LexOk(_)     -> False
+
+fn tok_strings(toks: List(token.Token)) -> List(String):
+  list.map(toks, token.to_string)
+
+fn lex_strings(src: String) -> List(String):
+  tok_strings(lex_ok(src))
+
+// ── Empty input ───────────────────────────────────────────────────────────────
+
+pub fn lex_empty_gives_eof_test() -> String:
+  case lex_ok(""):
+    [token.TokEof] -> ""
+    _ -> should.fail("expected [Eof]")
+
+pub fn lex_whitespace_only_gives_eof_test() -> String:
+  case lex_ok("   "):
+    [token.TokEof] -> ""
+    _ -> should.fail("expected [Eof]")
+
+pub fn lex_tabs_only_gives_eof_test() -> String:
+  case lex_ok("\t\t"):
+    [token.TokEof] -> ""
+    _ -> should.fail("expected [Eof]")
+
+pub fn lex_crlf_only_gives_eof_test() -> String:
+  case lex_ok("\r\n"):
+    [token.TokEof] -> ""
+    _ -> should.fail("expected [Eof]")
+
+// ── Integer literals ──────────────────────────────────────────────────────────
+
+pub fn lex_single_int_test() -> String:
+  case lex_ok("42"):
+    [token.TokInt("42"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(42) Eof")
+
+pub fn lex_zero_test() -> String:
+  case lex_ok("0"):
+    [token.TokInt("0"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(0) Eof")
+
+pub fn lex_large_int_test() -> String:
+  case lex_ok("1000000"):
+    [token.TokInt("1000000"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(1000000) Eof")
+
+pub fn lex_int_with_underscores_stripped_test() -> String:
+  case lex_ok("1_000_000"):
+    [token.TokInt("1000000"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(1000000) Eof")
+
+pub fn lex_hex_uppercase_test() -> String:
+  case lex_ok("0xFF"):
+    [token.TokInt("255"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(255) Eof")
+
+pub fn lex_hex_lowercase_test() -> String:
+  case lex_ok("0xff"):
+    [token.TokInt("255"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(255) Eof")
+
+pub fn lex_hex_zero_test() -> String:
+  case lex_ok("0x0"):
+    [token.TokInt("0"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(0) Eof")
+
+pub fn lex_hex_with_underscores_test() -> String:
+  case lex_ok("0xFF_FF"):
+    [token.TokInt("65535"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(65535) Eof")
+
+pub fn lex_binary_test() -> String:
+  case lex_ok("0b1010"):
+    [token.TokInt("10"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(10) Eof")
+
+pub fn lex_binary_zero_test() -> String:
+  case lex_ok("0b0"):
+    [token.TokInt("0"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(0) Eof")
+
+pub fn lex_binary_all_ones_test() -> String:
+  case lex_ok("0b1111"):
+    [token.TokInt("15"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(15) Eof")
+
+pub fn lex_binary_with_underscores_test() -> String:
+  case lex_ok("0b1111_0000"):
+    [token.TokInt("240"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(240) Eof")
+
+// ── Float literals ────────────────────────────────────────────────────────────
+
+pub fn lex_float_test() -> String:
+  case lex_ok("3.14"):
+    [token.TokFloat("3.14"), token.TokEof] -> ""
+    _ -> should.fail("expected Float(3.14) Eof")
+
+pub fn lex_float_zero_test() -> String:
+  case lex_ok("0.5"):
+    [token.TokFloat("0.5"), token.TokEof] -> ""
+    _ -> should.fail("expected Float(0.5) Eof")
+
+pub fn lex_int_dot_no_digit_is_int_and_dot_test() -> String:
+  case lex_ok("1."):
+    [token.TokInt("1"), token.TokDot, token.TokEof] -> ""
+    _ -> should.fail("expected Int(1) Dot Eof")
+
+pub fn lex_float_with_underscores_test() -> String:
+  case lex_ok("1_000.5"):
+    [token.TokFloat("1000.5"), token.TokEof] -> ""
+    _ -> should.fail("expected Float(1000.5) Eof")
+
+// ── String literals ───────────────────────────────────────────────────────────
+
+pub fn lex_empty_string_test() -> String:
+  case lex_ok("\"\""):
+    [token.TokString(s), token.TokEof] -> should.equal_string(s, "")
+    _ -> should.fail("expected String() Eof")
+
+pub fn lex_simple_string_test() -> String:
+  case lex_ok("\"hello\""):
+    [token.TokString(s), token.TokEof] -> should.equal_string(s, "hello")
+    _ -> should.fail("expected String(hello) Eof")
+
+pub fn lex_string_escape_newline_test() -> String:
+  case lex_ok("\"a\\nb\""):
+    [token.TokString(s), token.TokEof] -> should.equal_int(string.length(s), 3)
+    _ -> should.fail("expected String with newline")
+
+pub fn lex_string_escape_tab_test() -> String:
+  case lex_ok("\"a\\tb\""):
+    [token.TokString(s), token.TokEof] -> should.equal_int(string.length(s), 3)
+    _ -> should.fail("expected String with tab")
+
+pub fn lex_string_escape_backslash_test() -> String:
+  case lex_ok("\"a\\\\b\""):
+    [token.TokString(s), token.TokEof] -> should.equal_string(s, "a\\b")
+    _ -> should.fail("expected String(a\\b)")
+
+pub fn lex_string_escape_quote_test() -> String:
+  case lex_ok("\"a\\\"b\""):
+    [token.TokString(s), token.TokEof] -> should.equal_string(s, "a\"b")
+    _ -> should.fail("expected String(a\"b)")
+
+pub fn lex_string_escape_cr_test() -> String:
+  case lex_ok("\"a\\rb\""):
+    [token.TokString(s), token.TokEof] -> should.equal_int(string.length(s), 3)
+    _ -> should.fail("expected String with cr")
+
+pub fn lex_string_escape_ascii_bell_test() -> String:
+  case lex_ok("\"\\a\""):
+    [token.TokString(s), token.TokEof] -> should.equal_int(string.char_at(s, 0), 7)
+    _ -> should.fail("expected ASCII bell from \\a")
+
+pub fn lex_string_escape_ascii_backspace_test() -> String:
+  case lex_ok("\"\\b\""):
+    [token.TokString(s), token.TokEof] -> should.equal_int(string.char_at(s, 0), 8)
+    _ -> should.fail("expected ASCII backspace from \\b")
+
+pub fn lex_string_escape_ascii_form_feed_test() -> String:
+  case lex_ok("\"\\f\""):
+    [token.TokString(s), token.TokEof] -> should.equal_int(string.char_at(s, 0), 12)
+    _ -> should.fail("expected ASCII form feed from \\f")
+
+pub fn lex_string_escape_ascii_vertical_tab_test() -> String:
+  case lex_ok("\"\\v\""):
+    [token.TokString(s), token.TokEof] -> should.equal_int(string.char_at(s, 0), 11)
+    _ -> should.fail("expected ASCII vertical tab from \\v")
+
+pub fn lex_string_escape_ascii_escape_test() -> String:
+  case lex_ok("\"\\e\""):
+    [token.TokString(s), token.TokEof] -> should.equal_int(string.char_at(s, 0), 27)
+    _ -> should.fail("expected ASCII escape from \\e")
+
+pub fn lex_string_hex_escape_H_test() -> String:
+  case lex_ok("\"\\x48\""):
+    [token.TokString("H"), token.TokEof] -> ""
+    _ -> should.fail("expected String(H) from \\x48")
+
+pub fn lex_string_hex_escape_a_test() -> String:
+  case lex_ok("\"\\x61\""):
+    [token.TokString("a"), token.TokEof] -> ""
+    _ -> should.fail("expected String(a) from \\x61")
+
+pub fn lex_string_hex_escape_zero_test() -> String:
+  case lex_ok("\"\\x00\""):
+    [token.TokString(_), token.TokEof] -> ""
+    _ -> should.fail("expected String from \\x00")
+
+pub fn lex_string_hex_escape_ascii_escape_test() -> String:
+  case lex_ok("\"\\x1b\""):
+    [token.TokString(s), token.TokEof] -> should.equal_int(string.char_at(s, 0), 27)
+    _ -> should.fail("expected ASCII escape from \\x1b")
+
+pub fn lex_string_hex_escape_ascii_del_test() -> String:
+  case lex_ok("\"\\x7f\""):
+    [token.TokString(s), token.TokEof] -> should.equal_int(string.char_at(s, 0), 127)
+    _ -> should.fail("expected ASCII DEL from \\x7f")
+
+pub fn lex_string_unicode_4digit_H_test() -> String:
+  case lex_ok("\"\\u0048\""):
+    [token.TokString("H"), token.TokEof] -> ""
+    _ -> should.fail("expected String(H) from \\u0048")
+
+pub fn lex_string_unicode_4digit_a_test() -> String:
+  case lex_ok("\"\\u0061\""):
+    [token.TokString("a"), token.TokEof] -> ""
+    _ -> should.fail("expected String(a) from \\u0061")
+
+pub fn lex_string_unicode_brace_test() -> String:
+  case lex_ok("\"\\u{48}\""):
+    [token.TokString("H"), token.TokEof] -> ""
+    _ -> should.fail("expected String(H) from \\u{48}")
+
+pub fn lex_unterminated_string_is_error_test() -> String:
+  lex_err("\"hello") |> should.is_true()
+
+pub fn lex_unterminated_string_mid_escape_is_error_test() -> String:
+  lex_err("\"\\") |> should.is_true()
+
+// ── Identifiers ───────────────────────────────────────────────────────────────
+
+pub fn lex_lowercase_name_test() -> String:
+  case lex_ok("foo"):
+    [token.TokName("foo"), token.TokEof] -> ""
+    _ -> should.fail("expected Name(foo) Eof")
+
+pub fn lex_name_with_digits_test() -> String:
+  case lex_ok("foo42"):
+    [token.TokName("foo42"), token.TokEof] -> ""
+    _ -> should.fail("expected Name(foo42) Eof")
+
+pub fn lex_name_with_underscore_test() -> String:
+  case lex_ok("foo_bar"):
+    [token.TokName("foo_bar"), token.TokEof] -> ""
+    _ -> should.fail("expected Name(foo_bar) Eof")
+
+pub fn lex_upper_name_test() -> String:
+  case lex_ok("Foo"):
+    [token.TokUpperName("Foo"), token.TokEof] -> ""
+    _ -> should.fail("expected UpperName(Foo) Eof")
+
+pub fn lex_upper_name_multi_word_test() -> String:
+  case lex_ok("FooBar"):
+    [token.TokUpperName("FooBar"), token.TokEof] -> ""
+    _ -> should.fail("expected UpperName(FooBar) Eof")
+
+pub fn lex_discard_named_test() -> String:
+  case lex_ok("_foo"):
+    [token.TokDiscard("foo"), token.TokEof] -> ""
+    _ -> should.fail("expected Discard(foo) Eof")
+
+pub fn lex_bare_discard_test() -> String:
+  case lex_ok("_"):
+    [token.TokDiscard(""), token.TokEof] -> ""
+    _ -> should.fail("expected Discard() Eof")
+
+// ── Keywords ──────────────────────────────────────────────────────────────────
+
+pub fn lex_kw_as_test() -> String:
+  case lex_ok("as"):
+    [token.TokAs, token.TokEof] -> ""
+    _ -> should.fail("expected As Eof")
+
+pub fn lex_kw_case_test() -> String:
+  case lex_ok("case"):
+    [token.TokCase, token.TokEof] -> ""
+    _ -> should.fail("expected Case Eof")
+
+pub fn lex_kw_const_test() -> String:
+  case lex_ok("const"):
+    [token.TokConst, token.TokEof] -> ""
+    _ -> should.fail("expected Const Eof")
+
+pub fn lex_kw_echo_test() -> String:
+  case lex_ok("echo"):
+    [token.TokEcho, token.TokEof] -> ""
+    _ -> should.fail("expected Echo Eof")
+
+pub fn lex_kw_external_test() -> String:
+  case lex_ok("external"):
+    [token.TokExternal, token.TokEof] -> ""
+    _ -> should.fail("expected External Eof")
+
+pub fn lex_kw_fn_test() -> String:
+  case lex_ok("fn"):
+    [token.TokFn, token.TokEof] -> ""
+    _ -> should.fail("expected Fn Eof")
+
+pub fn lex_kw_if_test() -> String:
+  case lex_ok("if"):
+    [token.TokIf, token.TokEof] -> ""
+    _ -> should.fail("expected If Eof")
+
+pub fn lex_kw_import_test() -> String:
+  case lex_ok("import"):
+    [token.TokImport, token.TokEof] -> ""
+    _ -> should.fail("expected Import Eof")
+
+pub fn lex_kw_let_test() -> String:
+  case lex_ok("let"):
+    [token.TokLet, token.TokEof] -> ""
+    _ -> should.fail("expected Let Eof")
+
+pub fn lex_kw_opaque_test() -> String:
+  case lex_ok("opaque"):
+    [token.TokOpaque, token.TokEof] -> ""
+    _ -> should.fail("expected Opaque Eof")
+
+pub fn lex_kw_panic_test() -> String:
+  case lex_ok("panic"):
+    [token.TokPanic, token.TokEof] -> ""
+    _ -> should.fail("expected Panic Eof")
+
+pub fn lex_kw_pub_test() -> String:
+  case lex_ok("pub"):
+    [token.TokPub, token.TokEof] -> ""
+    _ -> should.fail("expected Pub Eof")
+
+pub fn lex_kw_todo_test() -> String:
+  case lex_ok("todo"):
+    [token.TokTodo, token.TokEof] -> ""
+    _ -> should.fail("expected Todo Eof")
+
+pub fn lex_kw_type_test() -> String:
+  case lex_ok("type"):
+    [token.TokType, token.TokEof] -> ""
+    _ -> should.fail("expected Type Eof")
+
+pub fn lex_kw_prefix_is_not_keyword_test() -> String:
+  case lex_ok("echo1"):
+    [token.TokName("echo1"), token.TokEof] -> ""
+    _ -> should.fail("echo1 should be Name, not keyword")
+
+// ── Boolean literals ──────────────────────────────────────────────────────────
+
+pub fn lex_true_is_bool_token_test() -> String:
+  case lex_ok("True"):
+    [token.TokBool(True), token.TokEof] -> ""
+    _ -> should.fail("expected TokBool(True) Eof")
+
+pub fn lex_false_is_bool_token_test() -> String:
+  case lex_ok("False"):
+    [token.TokBool(False), token.TokEof] -> ""
+    _ -> should.fail("expected TokBool(False) Eof")
+
+pub fn lex_true_not_upper_name_test() -> String:
+  case lex_ok("True"):
+    [token.TokUpperName(_), ..] -> should.fail("True should not be UpperName")
+    _ -> ""
+
+pub fn lex_false_not_upper_name_test() -> String:
+  case lex_ok("False"):
+    [token.TokUpperName(_), ..] -> should.fail("False should not be UpperName")
+    _ -> ""
+
+// ── Single-char punctuation ───────────────────────────────────────────────────
+
+pub fn lex_at_test() -> String:
+  case lex_ok("@"):
+    [token.TokAt, token.TokEof] -> ""
+    _ -> should.fail("expected At Eof")
+
+pub fn lex_colon_test() -> String:
+  case lex_ok(":"):
+    [token.TokColon, token.TokEof] -> ""
+    _ -> should.fail("expected Colon Eof")
+
+pub fn lex_comma_test() -> String:
+  case lex_ok(","):
+    [token.TokComma, token.TokEof] -> ""
+    _ -> should.fail("expected Comma Eof")
+
+pub fn lex_hash_test() -> String:
+  case lex_ok("#"):
+    [token.TokHash, token.TokEof] -> ""
+    _ -> should.fail("expected Hash Eof")
+
+pub fn lex_lparen_test() -> String:
+  case lex_ok("("):
+    [token.TokLParen, token.TokEof] -> ""
+    _ -> should.fail("expected LParen Eof")
+
+pub fn lex_rparen_test() -> String:
+  case lex_ok(")"):
+    [token.TokRParen, token.TokEof] -> ""
+    _ -> should.fail("expected RParen Eof")
+
+pub fn lex_lsquare_test() -> String:
+  case lex_ok("["):
+    [token.TokLSquare, token.TokEof] -> ""
+    _ -> should.fail("expected LSquare Eof")
+
+pub fn lex_rsquare_test() -> String:
+  case lex_ok("]"):
+    [token.TokRSquare, token.TokEof] -> ""
+    _ -> should.fail("expected RSquare Eof")
+
+pub fn lex_lbrace_test() -> String:
+  case lex_ok("{"):
+    [token.TokLBrace, token.TokEof] -> ""
+    _ -> should.fail("expected LBrace Eof")
+
+pub fn lex_rbrace_test() -> String:
+  case lex_ok("}"):
+    [token.TokRBrace, token.TokEof] -> ""
+    _ -> should.fail("expected RBrace Eof")
+
+pub fn lex_percent_test() -> String:
+  case lex_ok("%"):
+    [token.TokPercent, token.TokEof] -> ""
+    _ -> should.fail("expected Percent Eof")
+
+pub fn lex_vbar_test() -> String:
+  case lex_ok("|"):
+    [token.TokVBar, token.TokEof] -> ""
+    _ -> should.fail("expected VBar Eof")
+
+// ── Arithmetic operators ──────────────────────────────────────────────────────
+
+pub fn lex_plus_test() -> String:
+  case lex_ok("+"):
+    [token.TokPlus, token.TokEof] -> ""
+    _ -> should.fail("expected Plus Eof")
+
+pub fn lex_plus_dot_test() -> String:
+  case lex_ok("+."):
+    [token.TokPlusDot, token.TokEof] -> ""
+    _ -> should.fail("expected PlusDot Eof")
+
+pub fn lex_minus_test() -> String:
+  case lex_ok("-"):
+    [token.TokMinus, token.TokEof] -> ""
+    _ -> should.fail("expected Minus Eof")
+
+pub fn lex_minus_dot_test() -> String:
+  case lex_ok("-."):
+    [token.TokMinusDot, token.TokEof] -> ""
+    _ -> should.fail("expected MinusDot Eof")
+
+pub fn lex_star_test() -> String:
+  case lex_ok("*"):
+    [token.TokStar, token.TokEof] -> ""
+    _ -> should.fail("expected Star Eof")
+
+pub fn lex_star_dot_test() -> String:
+  case lex_ok("*."):
+    [token.TokStarDot, token.TokEof] -> ""
+    _ -> should.fail("expected StarDot Eof")
+
+pub fn lex_slash_test() -> String:
+  case lex_ok("/"):
+    [token.TokSlash, token.TokEof] -> ""
+    _ -> should.fail("expected Slash Eof")
+
+pub fn lex_slash_dot_test() -> String:
+  case lex_ok("/."):
+    [token.TokSlashDot, token.TokEof] -> ""
+    _ -> should.fail("expected SlashDot Eof")
+
+pub fn lex_percent_alone_test() -> String:
+  case lex_ok("%"):
+    [token.TokPercent, token.TokEof] -> ""
+    _ -> should.fail("expected Percent Eof")
+
+// ── Comparison operators ──────────────────────────────────────────────────────
+
+pub fn lex_eq_eq_test() -> String:
+  case lex_ok("=="):
+    [token.TokEqEq, token.TokEof] -> ""
+    _ -> should.fail("expected EqEq Eof")
+
+pub fn lex_equal_not_eqeq_test() -> String:
+  case lex_ok("="):
+    [token.TokEqual, token.TokEof] -> ""
+    _ -> should.fail("expected Equal Eof")
+
+pub fn lex_not_eq_test() -> String:
+  case lex_ok("!="):
+    [token.TokNotEq, token.TokEof] -> ""
+    _ -> should.fail("expected NotEq Eof")
+
+pub fn lex_bang_not_noteq_test() -> String:
+  case lex_ok("!"):
+    [token.TokBang, token.TokEof] -> ""
+    _ -> should.fail("expected Bang Eof")
+
+pub fn lex_lt_test() -> String:
+  case lex_ok("<"):
+    [token.TokLt, token.TokEof] -> ""
+    _ -> should.fail("expected Lt Eof")
+
+pub fn lex_lt_dot_test() -> String:
+  case lex_ok("<."):
+    [token.TokLtDot, token.TokEof] -> ""
+    _ -> should.fail("expected LtDot Eof")
+
+pub fn lex_lt_eq_test() -> String:
+  case lex_ok("<="):
+    [token.TokLtEq, token.TokEof] -> ""
+    _ -> should.fail("expected LtEq Eof")
+
+pub fn lex_lt_eq_dot_test() -> String:
+  case lex_ok("<=."):
+    [token.TokLtEqDot, token.TokEof] -> ""
+    _ -> should.fail("expected LtEqDot Eof")
+
+pub fn lex_gt_test() -> String:
+  case lex_ok(">"):
+    [token.TokGt, token.TokEof] -> ""
+    _ -> should.fail("expected Gt Eof")
+
+pub fn lex_gt_dot_test() -> String:
+  case lex_ok(">."):
+    [token.TokGtDot, token.TokEof] -> ""
+    _ -> should.fail("expected GtDot Eof")
+
+pub fn lex_gt_eq_test() -> String:
+  case lex_ok(">="):
+    [token.TokGtEq, token.TokEof] -> ""
+    _ -> should.fail("expected GtEq Eof")
+
+pub fn lex_gt_eq_dot_test() -> String:
+  case lex_ok(">=."):
+    [token.TokGtEqDot, token.TokEof] -> ""
+    _ -> should.fail("expected GtEqDot Eof")
+
+// ── Boolean and string operators ──────────────────────────────────────────────
+
+pub fn lex_and_test() -> String:
+  case lex_ok("&&"):
+    [token.TokAnd, token.TokEof] -> ""
+    _ -> should.fail("expected And Eof")
+
+pub fn lex_or_test() -> String:
+  case lex_ok("||"):
+    [token.TokOr, token.TokEof] -> ""
+    _ -> should.fail("expected Or Eof")
+
+pub fn lex_pipe_test() -> String:
+  case lex_ok("|>"):
+    [token.TokPipe, token.TokEof] -> ""
+    _ -> should.fail("expected Pipe Eof")
+
+pub fn lex_vbar_not_pipe_test() -> String:
+  case lex_ok("|"):
+    [token.TokVBar, token.TokEof] -> ""
+    _ -> should.fail("expected VBar not Pipe")
+
+pub fn lex_lt_gt_test() -> String:
+  case lex_ok("<>"):
+    [token.TokLtGt, token.TokEof] -> ""
+    _ -> should.fail("expected LtGt Eof")
+
+pub fn lex_arrow_test() -> String:
+  case lex_ok("->"):
+    [token.TokArrow, token.TokEof] -> ""
+    _ -> should.fail("expected Arrow Eof")
+
+pub fn lex_dot_dot_test() -> String:
+  case lex_ok(".."):
+    [token.TokDotDot, token.TokEof] -> ""
+    _ -> should.fail("expected DotDot Eof")
+
+pub fn lex_dot_not_dotdot_test() -> String:
+  case lex_ok("."):
+    [token.TokDot, token.TokEof] -> ""
+    _ -> should.fail("expected Dot not DotDot")
+
+// ── EOF boundary safety ───────────────────────────────────────────────────────
+
+pub fn lex_single_slash_at_eof_test() -> String:
+  case lex_ok("/"):
+    [token.TokSlash, token.TokEof] -> ""
+    _ -> should.fail("/ at EOF should be Slash")
+
+pub fn lex_single_eq_at_eof_test() -> String:
+  case lex_ok("="):
+    [token.TokEqual, token.TokEof] -> ""
+    _ -> should.fail("= at EOF should be Equal")
+
+pub fn lex_single_lt_at_eof_test() -> String:
+  case lex_ok("<"):
+    [token.TokLt, token.TokEof] -> ""
+    _ -> should.fail("< at EOF should be Lt")
+
+pub fn lex_single_gt_at_eof_test() -> String:
+  case lex_ok(">"):
+    [token.TokGt, token.TokEof] -> ""
+    _ -> should.fail("> at EOF should be Gt")
+
+pub fn lex_single_minus_at_eof_test() -> String:
+  case lex_ok("-"):
+    [token.TokMinus, token.TokEof] -> ""
+    _ -> should.fail("- at EOF should be Minus")
+
+pub fn lex_single_pipe_at_eof_test() -> String:
+  case lex_ok("|"):
+    [token.TokVBar, token.TokEof] -> ""
+    _ -> should.fail("| at EOF should be VBar")
+
+pub fn lex_single_bang_at_eof_test() -> String:
+  case lex_ok("!"):
+    [token.TokBang, token.TokEof] -> ""
+    _ -> should.fail("! at EOF should be Bang")
+
+// ── Comments ──────────────────────────────────────────────────────────────────
+
+pub fn lex_line_comment_gives_eof_test() -> String:
+  case lex_ok("// this is a comment"):
+    [token.TokEof] -> ""
+    _ -> should.fail("comment only → Eof")
+
+pub fn lex_comment_then_token_test() -> String:
+  case lex_ok("// comment\n42"):
+    [token.TokInt("42"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(42) Eof after comment")
+
+pub fn lex_doc_comment_gives_module_doc_test() -> String:
+  case lex_ok("//// Hello"):
+    [token.TokModuleDoc("Hello"), token.TokEof] -> ""
+    _ -> should.fail("expected ModuleDoc(Hello) Eof")
+
+pub fn lex_doc_comment_trims_whitespace_test() -> String:
+  case lex_ok("////   trimmed"):
+    [token.TokModuleDoc("trimmed"), token.TokEof] -> ""
+    _ -> should.fail("expected ModuleDoc(trimmed) Eof")
+
+pub fn lex_triple_slash_is_plain_comment_test() -> String:
+  case lex_ok("/// doc comment\n42"):
+    [token.TokInt("42"), token.TokEof] -> ""
+    _ -> should.fail("/// is a plain comment, not module doc")
+
+pub fn lex_token_before_comment_test() -> String:
+  case lex_ok("42 // inline"):
+    [token.TokInt("42"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(42) Eof before inline comment")
+
+// ── Indentation: Newline ──────────────────────────────────────────────────────
+
+pub fn lex_two_names_same_level_get_newline_test() -> String:
+  case lex_ok("a\nb"):
+    [token.TokName("a"), token.TokNewline, token.TokName("b"), token.TokEof] -> ""
+    _ -> should.fail("expected a Newline b Eof")
+
+pub fn lex_blank_line_ignored_test() -> String:
+  case lex_ok("a\n\nb"):
+    [token.TokName("a"), token.TokNewline, token.TokName("b"), token.TokEof] -> ""
+    _ -> should.fail("blank line should be ignored")
+
+pub fn lex_crlf_newline_test() -> String:
+  case lex_ok("a\r\nb"):
+    [token.TokName("a"), token.TokNewline, token.TokName("b"), token.TokEof] -> ""
+    _ -> should.fail("CRLF should work like LF")
+
+// ── Indentation: Indent / Dedent ──────────────────────────────────────────────
+
+pub fn lex_indent_emits_indent_token_test() -> String:
+  case lex_ok("a\n  b"):
+    [token.TokName("a"), token.TokNewline, token.TokIndent, token.TokName("b"), token.TokDedent, token.TokEof] -> ""
+    _ -> should.fail("expected Newline Indent b Dedent")
+
+pub fn lex_dedent_back_to_zero_test() -> String:
+  case lex_ok("a\n  b\nc"):
+    [token.TokName("a"), token.TokNewline, token.TokIndent, token.TokName("b"), token.TokNewline, token.TokDedent, token.TokName("c"), token.TokEof] -> ""
+    _ -> should.fail("expected correct dedent sequence")
+
+pub fn lex_nested_indent_test() -> String:
+  case lex_ok("a\n  b\n    c"):
+    [token.TokName("a"), token.TokNewline, token.TokIndent, token.TokName("b"), token.TokNewline, token.TokIndent, token.TokName("c"), token.TokDedent, token.TokDedent, token.TokEof] -> ""
+    _ -> should.fail("expected two-level indent")
+
+pub fn lex_first_line_no_newline_before_indent_test() -> String:
+  case lex_ok("a\n  b"):
+    [token.TokName(_), token.TokNewline, token.TokIndent, ..] -> ""
+    _ -> should.fail("first indent should emit Newline then Indent")
+
+// ── Indentation: continuation ─────────────────────────────────────────────────
+
+pub fn lex_pipe_continuation_no_indent_test() -> String:
+  case lex_ok("a\n|> b"):
+    [token.TokName("a"), token.TokPipe, token.TokName("b"), token.TokEof] -> ""
+    _ -> should.fail("|> continuation should suppress Newline/Indent")
+
+pub fn lex_ltgt_continuation_no_indent_test() -> String:
+  case lex_ok("a\n<> b"):
+    [token.TokName("a"), token.TokLtGt, token.TokName("b"), token.TokEof] -> ""
+    _ -> should.fail("<> continuation should suppress Newline/Indent")
+
+// ── Errors ────────────────────────────────────────────────────────────────────
+
+pub fn lex_unexpected_char_is_error_test() -> String:
+  lex_err("$") |> should.is_true()
+
+pub fn lex_bare_ampersand_is_error_test() -> String:
+  lex_err("&") |> should.is_true()
+
+pub fn lex_valid_input_is_not_error_test() -> String:
+  lex_err("42") |> should.is_false()
+
+// ── Span positions ────────────────────────────────────────────────────────────
+
+pub fn span_first_token_line_is_one_test() -> String:
+  case lexer.lex("42", "f"):
+    lexer.LexErrors(_) -> should.fail("expected Ok")
+    lexer.LexOk(toks) ->
+      case toks:
+        [#(_, sp), ..] -> should.equal_int(location.pos_line(location.span_start(sp)), 1)
+        [] -> should.fail("empty")
+
+pub fn span_first_token_col_is_one_test() -> String:
+  case lexer.lex("42", "f"):
+    lexer.LexErrors(_) -> should.fail("expected Ok")
+    lexer.LexOk(toks) ->
+      case toks:
+        [#(_, sp), ..] -> should.equal_int(location.pos_col(location.span_start(sp)), 1)
+        [] -> should.fail("empty")
+
+pub fn span_indented_token_col_is_correct_test() -> String:
+  case lexer.lex("   x", "f"):
+    lexer.LexErrors(_) -> should.fail("expected Ok")
+    lexer.LexOk(toks) ->
+      case toks:
+        [#(_, sp), ..] -> should.equal_int(location.pos_col(location.span_start(sp)), 4)
+        [] -> should.fail("empty")
+
+pub fn span_file_label_is_set_test() -> String:
+  case lexer.lex("x", "my.donna"):
+    lexer.LexErrors(_) -> should.fail("expected Ok")
+    lexer.LexOk(toks) ->
+      case toks:
+        [#(_, sp), ..] -> should.equal_string(location.span_file(sp), "my.donna")
+        [] -> should.fail("empty")
+
+// ── Mini programs ─────────────────────────────────────────────────────────────
+
+pub fn lex_fn_declaration_test() -> String:
+  let toks = lex_ok("pub fn add(x: Int) -> Int:")
+  let strs = tok_strings(toks)
+  let has_pub = list.any(strs, is_pub)
+  let has_fn  = list.any(strs, is_fn)
+  let has_arr = list.any(strs, is_arrow)
+  should.all([
+    should.is_true(has_pub),
+    should.is_true(has_fn),
+    should.is_true(has_arr)
+  ])
+
+pub fn lex_import_statement_test() -> String:
+  case lex_ok("import donna/string"):
+    [token.TokImport, token.TokName("donna"), token.TokSlash, token.TokName("string"), token.TokEof] -> ""
+    _ -> should.fail("expected Import Name(donna) Slash Name(string) Eof")
+
+pub fn lex_type_definition_test() -> String:
+  let toks = lex_ok("pub type Option(a):")
+  let strs = tok_strings(toks)
+  should.all([
+    should.is_true(list.any(strs, is_type)),
+    should.is_true(list.any(strs, is_pub))
+  ])
+
+pub fn lex_external_attribute_test() -> String:
+  case lex_ok("@external"):
+    [token.TokAt, token.TokExternal, token.TokEof] -> ""
+    _ -> should.fail("expected At External Eof")
+
+// ── Helpers for mini program tests ────────────────────────────────────────────
+
+fn is_pub(s: String) -> Bool:
+  string.equal(s, "pub")
+
+fn is_fn(s: String) -> Bool:
+  string.equal(s, "fn")
+
+fn is_arrow(s: String) -> Bool:
+  string.equal(s, "->")
+
+fn is_type(s: String) -> Bool:
+  string.equal(s, "type")
+
+// ── Escape sequence error tests ───────────────────────────────────────────────
+
+pub fn lex_invalid_escape_is_error_test() -> String:
+  should.is_true(lex_err("\"\\q\""))
+
+pub fn lex_invalid_escape_z_is_error_test() -> String:
+  should.is_true(lex_err("\"\\z\""))
+
+pub fn lex_valid_escapes_are_ok_test() -> String:
+  should.not_empty_list(lex_ok("\"\\n\\t\\r\\a\\b\\f\\v\\e\\\\\\\"\""))
+
+pub fn lex_invalid_hex_escape_is_error_test() -> String:
+  should.is_true(lex_err("\"\\xGG\""))
+
+pub fn lex_invalid_hex_escape_partial_is_error_test() -> String:
+  should.is_true(lex_err("\"\\x4G\""))
+
+pub fn lex_valid_hex_escape_is_ok_test() -> String:
+  case lex_ok("\"\\x41\""):
+    [token.TokString("A"), token.TokEof] -> ""
+    _ -> should.fail("expected TokString(A)")
+
+pub fn lex_invalid_unicode_escape_empty_is_error_test() -> String:
+  should.is_true(lex_err("\"\\u{}\""))
+
+pub fn lex_invalid_unicode_escape_bad_chars_is_error_test() -> String:
+  should.is_true(lex_err("\"\\u{GG}\""))
+
+pub fn lex_valid_unicode_escape_is_ok_test() -> String:
+  case lex_ok("\"\\u{41}\""):
+    [token.TokString("A"), token.TokEof] -> ""
+    _ -> should.fail("expected TokString(A)")
+
+// ── Empty number literal error tests ─────────────────────────────────────────
+
+pub fn lex_empty_hex_literal_is_error_test() -> String:
+  should.is_true(lex_err("0x"))
+
+pub fn lex_empty_binary_literal_is_error_test() -> String:
+  should.is_true(lex_err("0b"))
+
+pub fn lex_valid_hex_literal_is_ok_test() -> String:
+  case lex_ok("0xFF"):
+    [token.TokInt("255"), token.TokEof] -> ""
+    _ -> should.fail("expected TokInt(255)")
+
+pub fn lex_valid_binary_literal_is_ok_test() -> String:
+  case lex_ok("0b1010"):
+    [token.TokInt("10"), token.TokEof] -> ""
+    _ -> should.fail("expected TokInt(10)")

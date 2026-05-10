@@ -1,0 +1,176 @@
+//// Test discovery and runner generation.
+//// The `donna test` command scans test modules, finds public test functions,
+//// and generates a temporary Donna test runner executable.
+
+import donna/string
+import donna/list
+import donna/files
+import donna/int
+
+/// Read test source files and collect each module with its public `_test` functions.
+pub fn collect_test_modules(
+  paths: List(String)
+) -> List(#(String, List(String))):
+  collect_loop(paths, [])
+
+fn collect_loop(
+  paths: List(String),
+  acc: List(#(String, List(String)))
+) -> List(#(String, List(String))):
+  case paths:
+    [] -> list.reverse(acc)
+    [path, ..rest] ->
+      let stem = files.drop_extension(files.basename(path))
+      let fns = find_test_fns(files.read(path))
+      collect_loop(rest, [#(stem, fns), ..acc])
+
+/// Find public test functions in source text.
+///
+/// A test function is any top-level `pub fn` whose name ends with `_test`.
+pub fn find_test_fns(content: String) -> List(String):
+  collect_fns(string.split(content, "\n"), [])
+
+fn collect_fns(lines: List(String), acc: List(String)) -> List(String):
+  case lines:
+    [] -> list.reverse(acc)
+    [line, ..rest] ->
+      case string.starts_with(line, "pub fn "):
+        False -> collect_fns(rest, acc)
+        True ->
+          let after = string.slice(line, 7, string.length(line) - 7)
+          let paren = string.index_of(after, "(")
+          case paren >= 0:
+            False -> collect_fns(rest, acc)
+            True ->
+              let name = string.slice(after, 0, paren)
+              case string.ends_with(name, "_test"):
+                True -> collect_fns(rest, [name, ..acc])
+                False -> collect_fns(rest, acc)
+
+/// Count the total number of test functions across collected modules.
+pub fn count_total(mods: List(#(String, List(String)))) -> Int:
+  case mods:
+    [] -> 0
+    [#(_, fns), ..rest] -> list.length(fns) + count_total(rest)
+
+/// Generate a Donna test runner that executes every discovered test.
+pub fn generate_runner(test_mods: List(#(String, List(String)))) -> String:
+  generate_filtered_runner(test_mods, [])
+
+/// Generate a Donna test runner that executes tests matching the given filters.
+///
+/// Filters can match a module name, function name, or `module.function`.
+pub fn generate_filtered_runner(
+  test_mods: List(#(String, List(String))),
+  filters: List(String)
+) -> String:
+  let selected = filter_test_modules(test_mods, filters)
+  let total = count_total(selected)
+  let imports = gen_imports(test_mods)
+  let module_runners = gen_module_runners(selected)
+  let main_calls = gen_main_module_calls(selected)
+  "// Auto-generated test runner — do not edit.\n" <> imports <> "\n@external(\"c\", \"donna_ffi_time_now_us\")\nfn ffi_now_us() -> Int\n" <> "\nfn digit_char(d: Int) -> String:\n" <> "  case d:\n" <> "    0 -> \"0\"\n" <> "    1 -> \"1\"\n" <> "    2 -> \"2\"\n" <> "    3 -> \"3\"\n" <> "    4 -> \"4\"\n" <> "    5 -> \"5\"\n" <> "    6 -> \"6\"\n" <> "    7 -> \"7\"\n" <> "    8 -> \"8\"\n" <> "    _ -> \"9\"\n" <> "\nfn pos_int_to_str(n: Int) -> String:\n" <> "  case n < 10:\n" <> "    True  -> digit_char(n)\n" <> "    False -> pos_int_to_str(n / 10) <> digit_char(n - n / 10 * 10)\n" <> "\nfn int_to_str(n: Int) -> String:\n" <> "  case n < 0:\n" <> "    True  -> \"-\" <> pos_int_to_str(0 - n)\n" <> "    False -> pos_int_to_str(n)\n" <> "\nfn two_digits(n: Int) -> String:\n" <> "  digit_char(n / 10) <> digit_char(n - n / 10 * 10)\n" <> "\nfn format_us(us: Int) -> String:\n" <> "  case us <= 0:\n" <> "    True -> \"<1us\"\n" <> "    False ->\n" <> "      case us < 1000:\n" <> "        True -> int_to_str(us) <> \"us\"\n" <> "        False ->\n" <> "          case us < 1000000:\n" <> "            True ->\n" <> "              let ms = us / 1000\n" <> "              let frac = (us - ms * 1000) / 10\n" <> "              int_to_str(ms) <> \".\" <> two_digits(frac) <> \"ms\"\n" <> "            False ->\n" <> "              let s = us / 1000000\n" <> "              let frac = (us - s * 1000000) / 10000\n" <> "              int_to_str(s) <> \".\" <> two_digits(frac) <> \"s\"\n" <> "\nfn reverse_strings(xs: List(String), acc: List(String)) -> List(String):\n" <> "  case xs:\n" <> "    [] -> acc\n" <> "    [x, ..rest] -> reverse_strings(rest, [x, ..acc])\n" <> "\nfn append_strings(xs: List(String), ys: List(String)) -> List(String):\n" <> "  case xs:\n" <> "    [] -> ys\n" <> "    [x, ..rest] -> [x, ..append_strings(rest, ys)]\n" <> "\nfn add_failure(failures: List(String), name: String, result: String) -> List(String):\n" <> "  case result == \"\":\n" <> "    True -> failures\n" <> "    False -> [name, ..failures]\n" <> "\nfn print_failure_names(names: List(String)) -> Nil:\n" <> "  case names:\n" <> "    [] -> Nil\n" <> "    [name, ..rest] ->\n" <> "      echo \"  \" <> name\n" <> "      print_failure_names(rest)\n" <> "\nfn print_failures(failures: List(String)) -> Nil:\n" <> "  case failures:\n" <> "    [] -> Nil\n" <> "    _ ->\n" <> "      echo \"\"\n" <> "      echo \"\\x1b[31mFailures:\\x1b[0m\"\n" <> "      print_failure_names(reverse_strings(failures, []))\n" <> "\nfn run_test(name: String, result: String, us: Int) -> Int:\n" <> "  let duration = format_us(us)\n" <> "  case result == \"\":\n" <> "    True  ->\n" <> "      echo \"\\x1b[32m·pass\\x1b[0m \" <> name <> \" \" <> duration\n" <> "      0\n" <> "    False ->\n" <> "      echo \"\\x1b[31m·FAIL\\x1b[0m \" <> name <> \" \" <> duration\n" <> "      echo result\n" <> "      1\n" <> "\nfn run_case(s: Int, failures: List(String), name: String, test_fn: fn() -> String) -> #(Int, List(String)):\n" <> "  let t = ffi_now_us()\n" <> "  let r = test_fn()\n" <> "  let us = ffi_now_us() - t\n" <> "  let failures2 = add_failure(failures, name, r)\n" <> "  #(s + run_test(name, r, us), failures2)\n" <> module_runners <> "\npub fn main() -> Int:\n" <> "  let t0 = ffi_now_us()\n" <> "  let s = 0\n" <> "  let failures = []\n" <> main_calls <> "  let passed = " <> int.to_string(total) <> " - s\n" <> "  let elapsed = ffi_now_us() - t0\n" <> "  let ts = format_us(elapsed)\n" <> "  case s == 0:\n" <> "    True  -> echo \"\\x1b[32m\" <> int_to_str(passed) <> \" passed\\x1b[0m, no failures in \" <> ts\n" <> "    False ->\n" <> "      print_failures(failures)\n" <> "      echo \"\\x1b[32m\" <> int_to_str(passed) <> \" passed\\x1b[0m, \\x1b[31m\" <> int_to_str(s) <> \" failed\\x1b[0m in \" <> ts\n" <> "  s\n"
+
+fn filter_test_modules(
+  mods: List(#(String, List(String))),
+  filters: List(String)
+) -> List(#(String, List(String))):
+  case filters:
+    [] -> mods
+    _ -> filter_modules_loop(mods, filters, [])
+
+fn filter_modules_loop(
+  mods: List(#(String, List(String))),
+  filters: List(String),
+  acc: List(#(String, List(String)))
+) -> List(#(String, List(String))):
+  case mods:
+    [] -> list.reverse(acc)
+    [#(stem, fns), ..rest] ->
+      let selected = filter_fns(stem, fns, filters, [])
+      case list.is_empty(selected):
+        True -> filter_modules_loop(rest, filters, acc)
+        False -> filter_modules_loop(rest, filters, [#(stem, selected), ..acc])
+
+fn filter_fns(
+  stem: String,
+  fns: List(String),
+  filters: List(String),
+  acc: List(String)
+) -> List(String):
+  case fns:
+    [] -> list.reverse(acc)
+    [fn_name, ..rest] ->
+      case matches_filters(stem, fn_name, filters):
+        True -> filter_fns(stem, rest, filters, [fn_name, ..acc])
+        False -> filter_fns(stem, rest, filters, acc)
+
+fn matches_filters(
+  stem: String,
+  fn_name: String,
+  filters: List(String)
+) -> Bool:
+  let full = stem <> "." <> fn_name
+  case filters:
+    [] -> False
+    [needle, ..rest] ->
+      case contains_text(full, needle):
+        True -> True
+        False ->
+          case contains_text(fn_name, needle):
+            True -> True
+            False ->
+              case contains_text(stem, needle):
+                True -> True
+                False -> matches_filters(stem, fn_name, rest)
+
+fn contains_text(s: String, needle: String) -> Bool:
+  let nlen = string.length(needle)
+  case nlen == 0:
+    True -> False
+    False -> contains_text_from(s, needle, string.length(s), nlen, 0)
+
+fn contains_text_from(
+  s: String,
+  needle: String,
+  slen: Int,
+  nlen: Int,
+  pos: Int
+) -> Bool:
+  case pos + nlen > slen:
+    True -> False
+    False ->
+      case string.equal(string.slice(s, pos, nlen), needle):
+        True -> True
+        False -> contains_text_from(s, needle, slen, nlen, pos + 1)
+
+fn gen_imports(mods: List(#(String, List(String)))) -> String:
+  case mods:
+    [] -> ""
+    [#(stem, _), ..rest] ->
+      "import test/" <> stem <> "\n" <> gen_imports(rest)
+
+fn gen_call_lines(mods: List(#(String, List(String)))) -> String:
+  case mods:
+    [] -> ""
+    [#(stem, fns), ..rest] ->
+      gen_mod_calls(stem, fns) <> gen_call_lines(rest)
+
+fn gen_module_runners(mods: List(#(String, List(String)))) -> String:
+  case mods:
+    [] -> ""
+    [#(stem, fns), ..rest] ->
+      "\nfn run_module_" <> stem <> "() -> #(Int, List(String)):\n" <> "  let s = 0\n" <> "  let failures = []\n" <> gen_mod_calls(stem, fns) <> "  #(s, failures)\n" <> gen_module_runners(rest)
+
+fn gen_main_module_calls(mods: List(#(String, List(String)))) -> String:
+  case mods:
+    [] -> ""
+    [#(stem, _), ..rest] ->
+      "  let #(s_" <> stem <> ", failures_" <> stem <> ") = run_module_" <> stem <> "()\n" <> "  let s = s + s_" <> stem <> "\n" <> "  let failures = append_strings(failures_" <> stem <> ", failures)\n" <> gen_main_module_calls(rest)
+
+fn gen_mod_calls(stem: String, fns: List(String)) -> String:
+  case fns:
+    [] -> ""
+    [fn_name, ..rest] ->
+      let full_name = stem <> "." <> fn_name
+      "  let #(s, failures) = run_case(s, failures, \"" <> full_name <> "\", fn() -> " <> stem <> "." <> fn_name <> "())\n" <> gen_mod_calls(stem, rest)

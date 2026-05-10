@@ -1,0 +1,78 @@
+//// Low-level single-file build helpers.
+//// This older builder path compiles one SSA artifact through QBE and the C
+//// compiler. The project build pipeline uses `builder/pipeline` for normal
+//// package builds, but this module remains useful for focused build tasks.
+
+import compiler/codegen/codegen
+import compiler/typesystem/typed_ast
+import donna/files
+import donna/shell
+import donna/string
+import builder/pipeline
+
+/// Return the SSA artifact path for a module name inside a build directory.
+pub fn ssa_path(dir: String, name: String) -> String:
+  files.join(dir, name <> ".ssa")
+
+/// Return the assembly artifact path for a module name inside a build directory.
+pub fn asm_path(dir: String, name: String) -> String:
+  files.join(dir, name <> ".s")
+
+/// Return the executable path for a project name inside a build directory.
+pub fn bin_path(dir: String, name: String) -> String:
+  files.join(dir, name)
+
+/// Generate QBE SSA for a typed module, run QBE, then link the resulting executable.
+///
+/// This helper returns `"ok"` on success or a compact error string when either
+/// QBE or the C compiler fails.
+pub fn build(
+  name: String,
+  ssa_path_val: String,
+  out_path: String,
+  typed_module: typed_ast.TypedModule
+) -> String:
+  let ir = codegen.generate(typed_module)
+  let _ = files.write(ssa_path_val, ir)
+  let s_path = files.drop_extension(ssa_path_val) <> ".s"
+  let qbe_status = shell.exec("qbe", ["-o", s_path, ssa_path_val])
+  case qbe_status == 0:
+    False ->
+      "error: qbe failed with status " <> int_to_str(qbe_status)
+    True ->
+      case pipeline.c_compiler_available():
+        False ->
+          "error: C compiler not found"
+        True ->
+          let cc_status = shell.run(pipeline.c_command(["-o", out_path, s_path]))
+          case cc_status == 0:
+            False ->
+              "error: C compiler failed with status " <> int_to_str(cc_status)
+            True ->
+              "ok"
+
+fn int_to_str(n: Int) -> String:
+  case n == 0:
+    True -> "0"
+    False ->
+      case n < 0:
+        True -> "-" <> pos_int_to_str(0 - n)
+        False -> pos_int_to_str(n)
+
+fn pos_int_to_str(n: Int) -> String:
+  case n < 10:
+    True -> digit_char(n)
+    False -> pos_int_to_str(n / 10) <> digit_char(n - n / 10 * 10)
+
+fn digit_char(d: Int) -> String:
+  case d:
+    0 -> "0"
+    1 -> "1"
+    2 -> "2"
+    3 -> "3"
+    4 -> "4"
+    5 -> "5"
+    6 -> "6"
+    7 -> "7"
+    8 -> "8"
+    _ -> "9"

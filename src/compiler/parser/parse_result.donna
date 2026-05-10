@@ -1,0 +1,34 @@
+//// Parser result utilities.
+//// Provides the success/error wrapper used by parser helpers to return a value
+//// together with the remaining token stream.
+
+import compiler/lexer/token
+import utilities/location
+import errors/error
+
+/// Result wrapper returned by parser helpers.
+pub type ParseResult(a):
+  POk(a, List(#(token.Token, location.Span)))
+  PErr(error.DonnaError)
+
+/// Drop leading newline tokens from a parser input stream.
+pub fn skip_newlines(
+  ps: List(#(token.Token, location.Span))
+) -> List(#(token.Token, location.Span)):
+  case ps:
+    [#(token.TokNewline, _), ..rest] -> skip_newlines(rest)
+    _ -> ps
+
+/// Peek at the next non-newline token.
+pub fn peek(ps: List(#(token.Token, location.Span))) -> token.Token:
+  case ps:
+    [] -> token.TokEof
+    [#(token.TokNewline, _), ..rest] -> peek(rest)
+    [#(tok, _), .._] -> tok
+
+/// Peek at the span of the next non-newline token.
+pub fn peek_span(ps: List(#(token.Token, location.Span))) -> location.Span:
+  case ps:
+    [] -> location.zero("unknown")
+    [#(token.TokNewline, _), ..rest] -> peek_span(rest)
+    [#(_, sp), .._] -> sp

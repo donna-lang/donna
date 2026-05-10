@@ -1,0 +1,15 @@
+//// Provides the Donna compiler executable entry point and delegates command handling to the CLI module.
+
+import argparse
+import cli/cli
+import version
+
+@external("c", "exit")
+fn process_exit(code: Int) -> Nil
+
+/// Run the Donna CLI process.
+pub fn main() -> Nil:
+  let args = argparse.from_argv()
+  let text = cli.run(version.version, args)
+  echo text
+  process_exit(cli.exit_code_for_output(text))

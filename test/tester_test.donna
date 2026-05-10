@@ -1,0 +1,90 @@
+import builder/tester
+import donna/list
+import donna/string
+import unittest/should
+
+pub fn find_test_fns_discovers_public_tests_test() -> String:
+  let src = "pub fn alpha_test() -> String:\n  \"\"\n\nfn helper_test() -> String:\n  \"\"\n\npub fn helper() -> String:\n  \"\"\n\npub fn beta_test() -> String:\n  \"\"\n"
+  let fns = tester.find_test_fns(src)
+  should.all([
+    should.length_list(fns, 2),
+    should.contains_string_value(fns, "alpha_test"),
+    should.contains_string_value(fns, "beta_test")
+  ])
+
+pub fn generate_filtered_runner_keeps_matching_tests_test() -> String:
+  let mods = [#("parser_test", ["parse_import_test", "parse_tuple_test"]), #("lexer_test", ["lex_name_test"])]
+  let src = tester.generate_filtered_runner(mods, ["parse_import"])
+  should.all([
+    should.contains_string(src, "parser_test.parse_import_test"),
+    should.not_contains_string(src, "parser_test.parse_tuple_test"),
+    should.not_contains_string(src, "lexer_test.lex_name_test")
+  ])
+
+pub fn generate_filtered_runner_matches_module_name_test() -> String:
+  let mods = [#("parser_test", ["parse_import_test"]), #("lexer_test", ["lex_name_test"])]
+  let src = tester.generate_filtered_runner(mods, ["lexer"])
+  should.all([
+    should.contains_string(src, "lexer_test.lex_name_test"),
+    should.not_contains_string(src, "parser_test.parse_import_test")
+  ])
+
+pub fn generate_filtered_runner_matches_full_test_name_test() -> String:
+  let mods = [#("parser_test", ["parse_import_test"]), #("lexer_test", ["lex_name_test"])]
+  let src = tester.generate_filtered_runner(mods, ["parser_test.parse_import_test"])
+  should.all([
+    should.contains_string(src, "parser_test.parse_import_test"),
+    should.not_contains_string(src, "lexer_test.lex_name_test")
+  ])
+
+pub fn generate_filtered_runner_accepts_multiple_filters_test() -> String:
+  let mods = [#("parser_test", ["parse_import_test", "parse_tuple_test"]), #("lexer_test", ["lex_name_test"])]
+  let src = tester.generate_filtered_runner(mods, ["parse_tuple", "lex_name"])
+  should.all([
+    should.not_contains_string(src, "parser_test.parse_import_test"),
+    should.contains_string(src, "parser_test.parse_tuple_test"),
+    should.contains_string(src, "lexer_test.lex_name_test")
+  ])
+
+pub fn generate_filtered_runner_with_no_matches_runs_zero_tests_test() -> String:
+  let mods = [#("parser_test", ["parse_import_test"]), #("lexer_test", ["lex_name_test"])]
+  let src = tester.generate_filtered_runner(mods, ["does_not_exist"])
+  should.all([
+    should.contains_string(src, "let passed = 0 - s"),
+    should.not_contains_string(src, "run_case(s, failures"),
+    should.not_contains_string(src, "run_module_parser_test"),
+    should.not_contains_string(src, "run_module_lexer_test")
+  ])
+
+pub fn generate_unfiltered_runner_keeps_all_tests_test() -> String:
+  let mods = [#("parser_test", ["parse_import_test"]), #("lexer_test", ["lex_name_test"])]
+  let src = tester.generate_runner(mods)
+  should.all([
+    should.contains_string(src, "parser_test.parse_import_test"),
+    should.contains_string(src, "lexer_test.lex_name_test")
+  ])
+
+pub fn generate_runner_includes_timing_output_test() -> String:
+  let mods = [#("parser_test", ["parse_import_test"])]
+  let src = tester.generate_runner(mods)
+  should.all([
+    should.contains_string(src, "@external(\"c\", \"donna_ffi_time_now_us\")"),
+    should.contains_string(src, "fn format_us(us: Int) -> String:"),
+    should.contains_string(src, "\"<1us\""),
+    should.contains_string(src, "\"us\""),
+    should.contains_string(src, "\"ms\""),
+    should.contains_string(src, "\"s\"")
+  ])
+
+pub fn generate_runner_includes_failed_summary_test() -> String:
+  let mods = [#("parser_test", ["parse_import_test"])]
+  let src = tester.generate_runner(mods)
+  should.all([
+    should.contains_string(src, "fn print_failures(failures: List(String)) -> Nil:"),
+    should.contains_string(src, "echo \"\\x1b[31mFailures:\\x1b[0m\""),
+    should.contains_string(src, "print_failure_names(reverse_strings(failures, []))")
+  ])
+
+pub fn count_total_sums_all_module_tests_test() -> String:
+  let mods = [#("parser_test", ["a_test", "b_test"]), #("lexer_test", ["c_test"]), #("empty_test", [])]
+  tester.count_total(mods) |> should.equal_int(3)

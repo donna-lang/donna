@@ -1,0 +1,141 @@
+//// Token definitions.
+//// This module contains every lexical token produced by the lexer and the
+//// display helper used by tests and diagnostics.
+
+/// A lexical token emitted by the Donna lexer.
+pub type Token:
+  TokInt(String)
+  TokFloat(String)
+  TokString(String)
+  TokModuleDoc(String)
+  TokName(String)
+  TokUpperName(String)
+  TokDiscard(String)
+  TokBool(Bool)
+  TokAt
+  TokAs
+  TokCase
+  TokConst
+  TokEcho
+  TokExternal
+  TokFn
+  TokIf
+  TokImport
+  TokLet
+  TokOpaque
+  TokPanic
+  TokPub
+  TokTodo
+  TokType
+  TokArrow
+  TokColon
+  TokComma
+  TokDot
+  TokDotDot
+  TokEqual
+  TokHash
+  TokLParen
+  TokRParen
+  TokLSquare
+  TokRSquare
+  TokLBrace
+  TokRBrace
+  TokVBar
+  TokPlus
+  TokPlusDot
+  TokMinus
+  TokMinusDot
+  TokStar
+  TokStarDot
+  TokSlash
+  TokSlashDot
+  TokPercent
+  TokEqEq
+  TokNotEq
+  TokLt
+  TokLtDot
+  TokLtEq
+  TokLtEqDot
+  TokGt
+  TokGtDot
+  TokGtEq
+  TokGtEqDot
+  TokAnd
+  TokOr
+  TokBang
+  TokPipe
+  TokLtGt
+  TokNewline
+  TokIndent
+  TokDedent
+  TokEof
+
+/// Render a token as diagnostic-friendly text.
+pub fn to_string(tok: Token) -> String:
+  case tok:
+    TokInt(v) -> "Int(" <> v <> ")"
+    TokFloat(v) -> "Float(" <> v <> ")"
+    TokString(v) -> "String(\"" <> v <> "\")"
+    TokModuleDoc(v) -> "ModuleDoc(" <> v <> ")"
+    TokName(v) -> "Name(" <> v <> ")"
+    TokUpperName(v) -> "UpperName(" <> v <> ")"
+    TokDiscard(v) -> "Discard(_" <> v <> ")"
+    TokBool(True) -> "Bool(True)"
+    TokBool(False) -> "Bool(False)"
+    TokAt -> "@"
+    TokAs -> "as"
+    TokCase -> "case"
+    TokConst -> "const"
+    TokEcho -> "echo"
+    TokExternal -> "external"
+    TokFn -> "fn"
+    TokIf -> "if"
+    TokImport -> "import"
+    TokLet -> "let"
+    TokOpaque -> "opaque"
+    TokPanic -> "panic"
+    TokPub -> "pub"
+    TokTodo -> "todo"
+    TokType -> "type"
+    TokArrow -> "->"
+    TokColon -> ":"
+    TokComma -> ","
+    TokDot -> "."
+    TokDotDot -> ".."
+    TokEqual -> "="
+    TokHash -> "#"
+    TokLParen -> "("
+    TokRParen -> ")"
+    TokLSquare -> "["
+    TokRSquare -> "]"
+    TokLBrace -> "{"
+    TokRBrace -> "}"
+    TokVBar -> "|"
+    TokPlus -> "+"
+    TokPlusDot -> "+."
+    TokMinus -> "-"
+    TokMinusDot -> "-."
+    TokStar -> "*"
+    TokStarDot -> "*."
+    TokSlash -> "/"
+    TokSlashDot -> "/."
+    TokPercent -> "%"
+    TokEqEq -> "=="
+    TokNotEq -> "!="
+    TokLt -> "<"
+    TokLtDot -> "<."
+    TokLtEq -> "<="
+    TokLtEqDot -> "<=."
+    TokGt -> ">"
+    TokGtDot -> ">."
+    TokGtEq -> ">="
+    TokGtEqDot -> ">=."
+    TokAnd -> "&&"
+    TokOr -> "||"
+    TokBang -> "!"
+    TokPipe -> "|>"
+    TokLtGt -> "<>"
+    TokNewline -> "Newline"
+    TokIndent -> "Indent"
+    TokDedent -> "Dedent"
+    TokEof -> "Eof"

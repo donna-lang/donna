@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+real_cc="${REAL_CC:-/usr/bin/cc}"
+os="$(uname -s 2>/dev/null || printf unknown)"
+is_link=1
+args=()
+
+for arg in "$@"; do
+  if [[ "$arg" == "-c" ]]; then
+    is_link=0
+  fi
+
+  case "$os:$arg" in
+    Linux:-Wl,-stack_size,0x2000000)
+      ;;
+    *)
+      args+=("$arg")
+      ;;
+  esac
+done
+
+if [[ "$os" == "Linux" && "$is_link" -eq 1 ]]; then
+  args+=("-lm")
+fi
+
+exec "$real_cc" "${args[@]}"

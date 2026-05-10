@@ -1,0 +1,169 @@
+//// `donna build` command.
+//// Builds project dependencies, compiles source modules, invokes QBE, and links
+//// application projects into `build/bin/`.
+
+import donna/files
+import donna/list
+import donna/string
+import donna/shell
+import donna/result
+import utilities/colors
+import utilities/logger
+import builder/scanner
+import builder/pipeline
+import builder/dependencies
+import compiler/typesystem/typed_ast
+import compiler/typesystem/types
+import donna/time
+
+/// Result of building a project and whether it produced an application binary.
+pub type BuildOutcome:
+  BuildOk(Bool)
+  BuildFailed(String)
+
+/// Run the `donna build` command and return the text printed by the CLI.
+pub fn run(args: List(#(String, String))) -> String:
+  let dir = first_positional(args)
+  case scanner.scan(dir):
+    scanner.ScanErr(msg) ->
+      colors.red("error") <> ": " <> msg
+    scanner.ScanOk(project) ->
+      case build_project(dir, project):
+        BuildFailed(msg) -> msg
+        BuildOk(_) -> ""
+
+/// Build a scanned project.
+///
+/// Library projects are considered successful even when they do not have a
+/// public `main`; application projects continue through QBE and the system C
+/// linker to produce an executable in `build/bin/`.
+pub fn build_project(dir: String, project: scanner.Project) -> BuildOutcome:
+  let t0 = time.now_us()
+  let build_dir = scanner.project_build_dir(project)
+  let bin_dir = scanner.project_bin_dir(project)
+  let dev_dir = scanner.project_dev_dir(project)
+  let artifacts_dir = scanner.project_dev_artifacts_dir(project)
+  let _ = files.mkdir(build_dir)
+  let _ = files.mkdir(bin_dir)
+  let _ = files.mkdir(dev_dir)
+  let _ = files.mkdir(artifacts_dir)
+  let toml_path = files.join(dir, "donna.toml")
+  let all_deps = dependencies.resolve_deps(toml_path, dir)
+  let proj_ffi_objs = pipeline.compile_ffi(dir, artifacts_dir)
+  case compile_deps(all_deps, build_dir, [], [], proj_ffi_objs):
+    result.Error(e) -> BuildFailed(colors.red("error") <> ": " <> e)
+    result.Ok(#(dep_ifaces, dep_ssa, dep_objs, deps_rebuilt)) ->
+      let src_dir = scanner.project_src_dir(project)
+      case pipeline.compile_dir(src_dir, "", artifacts_dir, dep_ifaces, deps_rebuilt):
+        result.Error(e) -> BuildFailed(colors.red("error") <> ": " <> e)
+        result.Ok(#(src_ifaces, src_ssa, _)) ->
+          case has_public_main(src_ifaces):
+            False ->
+              let out_path = files.join(bin_dir, scanner.project_name(project))
+              let _ = files.delete(out_path)
+              let _ = logger.ok("", time.now_us() - t0)
+              BuildOk(False)
+            True ->
+              let all_ssa = list.append(dep_ssa, src_ssa)
+              case pipeline.qbe_available():
+                False -> BuildFailed(qbe_missing_error())
+                True ->
+                  case pipeline.c_compiler_available():
+                    False -> BuildFailed(c_compiler_missing_error())
+                    True ->
+                      let s_files = pipeline.run_qbe_all(all_ssa, [])
+                      let name = scanner.project_name(project)
+                      let out_path = files.join(bin_dir, name)
+                      let link_args = list.append(
+                        s_files,
+                        list.append(
+                          dep_objs,
+                          list.append(linker_flags(), ["-o", out_path])
+                        )
+                      )
+                      let link_code = shell.run(pipeline.c_command(link_args) <> " >/dev/null 2>&1")
+                      case link_code == 0:
+                        False ->
+                          BuildFailed(colors.red("build failed") <> ": linker failed")
+                        True ->
+                          let _ = shell.run(
+                            "command -v codesign >/dev/null 2>&1 && codesign --force -s - " <> out_path <> " >/dev/null 2>&1"
+                          )
+                          let _ = logger.ok("", time.now_us() - t0)
+                          BuildOk(True)
+
+fn qbe_missing_error() -> String:
+  let hint = colors.dim("  hint: install QBE and make sure qbe is in PATH")
+  colors.red("error") <> ": qbe not found\n" <> hint
+
+fn c_compiler_missing_error() -> String:
+  let hint = colors.dim("  hint: install clang/gcc or Zig, or set DONNA_CC")
+  colors.red("error") <> ": C compiler not found\n" <> hint
+
+fn compile_deps(
+  deps: List(dependencies.Dep),
+  build_dir: String,
+  iface_acc: List(#(String, typed_ast.ModuleInterface)),
+  ssa_acc: List(String),
+  obj_acc: List(String)
+) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), List(String), Bool), String):
+  case deps:
+    [] -> result.Ok(#(iface_acc, ssa_acc, obj_acc, False))
+    [dep, ..rest] ->
+      let pkg_dir = files.join(files.join(build_dir, "packages"), dependencies.dep_name(dep))
+      let art_dir = files.join(pkg_dir, "artifacts")
+      let _ = files.mkdir(files.join(build_dir, "packages"))
+      let _ = files.mkdir(pkg_dir)
+      let _ = files.mkdir(art_dir)
+      let src_dir = dependencies.dep_src_dir(dep)
+      case pipeline.compile_dir(
+        src_dir,
+        dependencies.dep_name(dep),
+        art_dir,
+        iface_acc,
+        False
+      ):
+        result.Error(e) -> result.Error(e)
+        result.Ok(#(new_ifaces, new_ssa, rebuilt)) ->
+          let new_objs = pipeline.compile_ffi(dependencies.dep_path(dep), art_dir)
+          let next_ifaces = list.append(iface_acc, new_ifaces)
+          let next_ssa = list.append(ssa_acc, new_ssa)
+          let next_objs = list.append(obj_acc, new_objs)
+          case compile_deps(rest, build_dir, next_ifaces, next_ssa, next_objs):
+            result.Error(e) -> result.Error(e)
+            result.Ok(#(ifaces2, ssa2, objs2, rest_rebuilt)) ->
+              let any_rebuilt = case rebuilt:
+                True -> True
+                False -> rest_rebuilt
+              result.Ok(#(ifaces2, ssa2, objs2, any_rebuilt))
+
+fn has_public_main(ifaces: List(#(String, typed_ast.ModuleInterface))) -> Bool:
+  case ifaces:
+    [] -> False
+    [#(_, iface), ..rest] ->
+      case iface_has_main(iface):
+        True -> True
+        False -> has_public_main(rest)
+
+fn iface_has_main(iface: typed_ast.ModuleInterface) -> Bool:
+  case iface:
+    typed_ast.ModuleInterface(bindings, _) -> bindings_have_main(bindings)
+
+fn bindings_have_main(bindings: List(#(String, types.Type))) -> Bool:
+  case bindings:
+    [] -> False
+    [#(name, _), ..rest] ->
+      case string.equal(name, "main"):
+        True -> True
+        False -> bindings_have_main(rest)
+
+fn linker_flags() -> List(String):
+  case shell.run("uname | grep -q '^Darwin$' >/dev/null 2>&1") == 0:
+    True -> ["-Wl,-stack_size,0x2000000"]
+    False -> ["-lm"]
+
+fn first_positional(args: List(#(String, String))) -> String:
+  case args:
+    [] -> "."
+    [#("", v), .._] -> v
+    [_, ..rest] -> first_positional(rest)

@@ -1,0 +1,100 @@
+//// ANSI color helpers.
+//// Centralizes terminal styling used by CLI output, diagnostics, logger lines,
+//// and generated help text.
+
+import donna/string
+
+/// ANSI reset sequence.
+pub const reset = "\u{001b}[0m"
+/// ANSI bold style sequence.
+pub const style_bold = "\u{001b}[1m"
+/// ANSI dim style sequence.
+pub const style_dim = "\u{001b}[2m"
+/// ANSI italic style sequence.
+pub const style_italic = "\u{001b}[3m"
+/// ANSI 256-color Donna orange sequence.
+pub const color_orange = "\u{001b}[38;5;208m"
+/// ANSI red foreground sequence.
+pub const color_red = "\u{001b}[31m"
+/// ANSI green foreground sequence.
+pub const color_green = "\u{001b}[32m"
+/// ANSI yellow foreground sequence.
+pub const color_yellow = "\u{001b}[33m"
+/// ANSI cyan foreground sequence.
+pub const color_cyan = "\u{001b}[36m"
+/// ANSI magenta foreground sequence.
+pub const color_magenta = "\u{001b}[35m"
+/// ANSI bold red sequence used for error headers.
+pub const bold_red = "\u{001b}[1;31m"
+/// ANSI bold yellow sequence used for warning headers.
+pub const bold_yellow = "\u{001b}[1;33m"
+
+/// Wrap text with an ANSI escape code and reset sequence.
+pub fn paint(code: String, text: String) -> String:
+  code <> text <> reset
+
+/// Render text as an error header.
+pub fn error_header(text: String) -> String:
+  paint(bold_red, text)
+
+/// Render text as a warning header.
+pub fn warning_header(text: String) -> String:
+  paint(bold_yellow, text)
+
+/// Render text in Donna orange.
+pub fn orange(text: String) -> String:
+  paint(color_orange, text)
+
+/// Render text in bold.
+pub fn bold(text: String) -> String:
+  paint(style_bold, text)
+
+/// Render text dimmed.
+pub fn dim(text: String) -> String:
+  paint(style_dim, text)
+
+/// Render text in italic.
+pub fn italic(text: String) -> String:
+  paint(style_italic, text)
+
+/// Render text in red.
+pub fn red(text: String) -> String:
+  paint(color_red, text)
+
+/// Render text in green.
+pub fn green(text: String) -> String:
+  paint(color_green, text)
+
+/// Render text in yellow.
+pub fn yellow(text: String) -> String:
+  paint(color_yellow, text)
+
+/// Render path-like text in cyan.
+pub fn path(text: String) -> String:
+  paint(color_cyan, text)
+
+/// Render text in magenta.
+pub fn magenta(text: String) -> String:
+  paint(color_magenta, text)
+
+/// Remove ANSI escape sequences from text.
+pub fn strip(text: String) -> String:
+  strip_ansi(text)
+
+/// Return the printable length of text after removing ANSI escapes.
+pub fn visible_length(text: String) -> Int:
+  string.length(strip(text))
+
+fn strip_ansi(text: String) -> String:
+  let esc = "\u{001b}["
+  case string.index_of(text, esc):
+    -1 -> text
+    i ->
+      let before = string.slice(text, 0, i)
+      let rest = string.slice(text, i + 2, string.length(text) - i - 2)
+      let m = string.index_of(rest, "m")
+      case m == -1:
+        True -> before
+        False ->
+          let after = string.slice(rest, m + 1, string.length(rest) - m - 1)
+          before <> strip_ansi(after)

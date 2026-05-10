@@ -1,0 +1,443 @@
+//// QBE intermediate language model.
+//// Defines values, instructions, blocks, functions, data definitions, and
+//// display helpers for emitting QBE-compatible textual IR.
+
+import donna/list
+import donna/option
+import donna/string
+import donna/int
+
+/// A QBE value operand.
+pub type Value:
+  Temporary(String)
+  Global(String)
+  Const(Int)
+  ConstBits(Int)
+  ConstFloat(String)
+
+/// QBE scalar type codes used by generated instructions.
+pub type ILType:
+  Word
+  Long
+  Single
+  Double
+  Zero
+  Byte
+
+/// QBE comparison operation names.
+pub type Comp:
+  Ceql
+  Cnel
+  Sltl
+  Slel
+  Sgtl
+  Sgel
+  Ceqw
+  Cnew
+  Sltw
+  Slew
+  Sgtw
+  Sgew
+  Ceqd
+  Cned
+  Cltd
+  Cled
+  Cgtd
+  Cged
+  Ceqs
+  Cnes
+  Clts
+  Cles
+  Cgts
+  Cges
+
+/// QBE instruction model used by Donna codegen.
+pub type Inst:
+  Add(Value, Value)
+  Sub(Value, Value)
+  Mul(Value, Value)
+  Div(Value, Value)
+  Rem(Value, Value)
+  Neg(Value)
+  And(Value, Value)
+  Or(Value, Value)
+  Xor(Value, Value)
+  Sar(Value, Value)
+  Shr(Value, Value)
+  Shl(Value, Value)
+  Cmp(ILType, Comp, Value, Value)
+  Alloc4(Value)
+  Alloc8(Value)
+  Alloc16(Value)
+  Storew(Value, Value)
+  Storel(Value, Value)
+  Stores(Value, Value)
+  Stored(Value, Value)
+  Storeb(Value, Value)
+  Storeh(Value, Value)
+  Loadw(Value)
+  Loadl(Value)
+  Loads(Value)
+  Loadd(Value)
+  Loadsb(Value)
+  Loadub(Value)
+  Loadsh(Value)
+  Loaduh(Value)
+  Loadsw(Value)
+  Loaduw(Value)
+  Extsw(Value)
+  Extuw(Value)
+  Extsb(Value)
+  Extub(Value)
+  Exts(Value)
+  Truncd(Value)
+  Stosi(Value)
+  Dtosi(Value)
+  Cast(Value)
+  Copy(Value)
+  Ret(option.Option(Value))
+  Jmp(String)
+  Jnz(Value, String, String)
+  Call(Value, List(#(ILType, Value)))
+  VaCall(Value, List(#(ILType, Value)), List(#(ILType, Value)))
+  Phi(List(#(String, Value)))
+
+/// A QBE statement, either assigning an instruction or emitting it for side effects.
+pub type Statement:
+  Assign(Value, ILType, Inst)
+  Volatile(Inst)
+
+/// A QBE basic block with a label and ordered statements.
+pub type Block:
+  Block(String, List(Statement))
+
+/// Linkage and optional section information for QBE definitions.
+pub type Linkage:
+  Public
+  Private
+  PublicSection(String)
+  PrivateSection(String)
+
+/// A QBE function definition.
+pub type Function:
+  Function(Linkage, String, List(#(ILType, Value)), option.Option(ILType), List(Block))
+
+/// One item inside a QBE data definition.
+pub type DataItem:
+  Symbol(String, option.Option(Int))
+  Str(String)
+  Constant(Int)
+  FloatConst(String)
+
+/// A QBE data definition.
+pub type DataDef:
+  DataDef(Linkage, String, option.Option(Int), List(#(ILType, DataItem)))
+
+/// A complete QBE module made of functions and data definitions.
+pub type ILModule:
+  ILModule(List(Function), List(DataDef))
+
+/// Create an empty QBE basic block with the given label.
+pub fn new_block(label: String) -> Block:
+  Block(label, [])
+
+/// Append a statement to a QBE block.
+pub fn add_stmt(b: Block, stmt: Statement) -> Block:
+  case b:
+    Block(label, stmts) -> Block(label, list.append(stmts, [stmt]))
+
+/// Append an assigning instruction to a QBE block.
+pub fn assign_inst(b: Block, val: Value, ty: ILType, inst: Inst) -> Block:
+  add_stmt(b, Assign(val, ty, inst))
+
+/// Append a side-effecting instruction to a QBE block.
+pub fn volatile_inst(b: Block, inst: Inst) -> Block:
+  add_stmt(b, Volatile(inst))
+
+/// Create an empty QBE module.
+pub fn new_module() -> ILModule:
+  ILModule([], [])
+
+/// Append a function definition to a QBE module.
+pub fn add_function(m: ILModule, f: Function) -> ILModule:
+  case m:
+    ILModule(fns, datas) -> ILModule(list.append(fns, [f]), datas)
+
+/// Append a data definition to a QBE module.
+pub fn add_data_def(m: ILModule, d: DataDef) -> ILModule:
+  case m:
+    ILModule(fns, datas) -> ILModule(fns, list.append(datas, [d]))
+
+/// Render a QBE value.
+pub fn display_value(v: Value) -> String:
+  case v:
+    Temporary(s) -> "%" <> s
+    Global(s) -> "$" <> s
+    Const(n) -> int.to_string(n)
+    ConstBits(n) -> int.to_string(n)
+    ConstFloat(f) -> "d_" <> f
+
+/// Render a QBE type code.
+pub fn display_type(ty: ILType) -> String:
+  case ty:
+    Word -> "w"
+    Long -> "l"
+    Single -> "s"
+    Double -> "d"
+    Zero -> "z"
+    Byte -> "b"
+
+/// Convert an internal type to the ABI type used in call signatures.
+pub fn into_abi(ty: ILType) -> String:
+  case ty:
+    Word -> "w"
+    Long -> "l"
+    Single -> "s"
+    Double -> "d"
+    Zero -> "w"
+    Byte -> "w"
+
+/// Render a QBE comparison opcode.
+pub fn display_comp(c: Comp) -> String:
+  case c:
+    Ceql -> "ceql"
+    Cnel -> "cnel"
+    Sltl -> "csltl"
+    Slel -> "cslel"
+    Sgtl -> "csgtl"
+    Sgel -> "csgel"
+    Ceqw -> "ceqw"
+    Cnew -> "cnew"
+    Sltw -> "csltw"
+    Slew -> "cslew"
+    Sgtw -> "csgtw"
+    Sgew -> "csgew"
+    Ceqd -> "ceqd"
+    Cned -> "cned"
+    Cltd -> "cltd"
+    Cled -> "cled"
+    Cgtd -> "cgtd"
+    Cged -> "cged"
+    Ceqs -> "ceqs"
+    Cnes -> "cnes"
+    Clts -> "clts"
+    Cles -> "cles"
+    Cgts -> "cgts"
+    Cges -> "cges"
+
+/// Render QBE linkage and section modifiers.
+pub fn display_linkage(lnk: Linkage) -> String:
+  case lnk:
+    Public -> "export "
+    Private -> ""
+    PublicSection(s) -> "section \"" <> s <> "\" export "
+    PrivateSection(s) -> "section \"" <> s <> "\" "
+
+/// Render a QBE instruction.
+pub fn display_inst(inst: Inst) -> String:
+  case inst:
+    Add(a, b) -> "add " <> display_value(a) <> ", " <> display_value(b)
+    Sub(a, b) -> "sub " <> display_value(a) <> ", " <> display_value(b)
+    Mul(a, b) -> "mul " <> display_value(a) <> ", " <> display_value(b)
+    Div(a, b) -> "div " <> display_value(a) <> ", " <> display_value(b)
+    Rem(a, b) -> "rem " <> display_value(a) <> ", " <> display_value(b)
+    Neg(a) -> "neg " <> display_value(a)
+    And(a, b) -> "and " <> display_value(a) <> ", " <> display_value(b)
+    Or(a, b) -> "or " <> display_value(a) <> ", " <> display_value(b)
+    Xor(a, b) -> "xor " <> display_value(a) <> ", " <> display_value(b)
+    Sar(a, b) -> "sar " <> display_value(a) <> ", " <> display_value(b)
+    Shr(a, b) -> "shr " <> display_value(a) <> ", " <> display_value(b)
+    Shl(a, b) -> "shl " <> display_value(a) <> ", " <> display_value(b)
+    Cmp(_, c, a, b) ->
+      display_comp(c) <> " " <> display_value(a) <> ", " <> display_value(b)
+    Alloc4(v) -> "alloc4 " <> display_value(v)
+    Alloc8(v) -> "alloc8 " <> display_value(v)
+    Alloc16(v) -> "alloc16 " <> display_value(v)
+    Storew(v, addr) ->
+      "storew " <> display_value(v) <> ", " <> display_value(addr)
+    Storel(v, addr) ->
+      "storel " <> display_value(v) <> ", " <> display_value(addr)
+    Stores(v, addr) ->
+      "stores " <> display_value(v) <> ", " <> display_value(addr)
+    Stored(v, addr) ->
+      "stored " <> display_value(v) <> ", " <> display_value(addr)
+    Storeb(v, addr) ->
+      "storeb " <> display_value(v) <> ", " <> display_value(addr)
+    Storeh(v, addr) ->
+      "storeh " <> display_value(v) <> ", " <> display_value(addr)
+    Loadw(addr) -> "loadw " <> display_value(addr)
+    Loadl(addr) -> "loadl " <> display_value(addr)
+    Loads(addr) -> "loads " <> display_value(addr)
+    Loadd(addr) -> "loadd " <> display_value(addr)
+    Loadsb(addr) -> "loadsb " <> display_value(addr)
+    Loadub(addr) -> "loadub " <> display_value(addr)
+    Loadsh(addr) -> "loadsh " <> display_value(addr)
+    Loaduh(addr) -> "loaduh " <> display_value(addr)
+    Loadsw(addr) -> "loadsw " <> display_value(addr)
+    Loaduw(addr) -> "loaduw " <> display_value(addr)
+    Extsw(v) -> "extsw " <> display_value(v)
+    Extuw(v) -> "extuw " <> display_value(v)
+    Extsb(v) -> "extsb " <> display_value(v)
+    Extub(v) -> "extub " <> display_value(v)
+    Exts(v) -> "exts " <> display_value(v)
+    Truncd(v) -> "truncd " <> display_value(v)
+    Stosi(v) -> "stosi " <> display_value(v)
+    Dtosi(v) -> "dtosi " <> display_value(v)
+    Cast(v) -> "cast " <> display_value(v)
+    Copy(v) -> "copy " <> display_value(v)
+    Ret(opt) ->
+      case opt:
+        option.None -> "ret"
+        option.Some(v) -> "ret " <> display_value(v)
+    Jmp(label) -> "jmp @" <> label
+    Jnz(v, t, f) ->
+      "jnz " <> display_value(v) <> ", @" <> t <> ", @" <> f
+    Call(fn_val, args) ->
+      "call " <> display_value(fn_val) <> "(" <> display_call_args(args) <> ")"
+    VaCall(fn_val, fixed, variadic) ->
+      let fixed_str = case list.is_empty(fixed):
+        True -> "..."
+        False -> display_call_args(fixed) <> ", ..."
+      let va_str = case list.is_empty(variadic):
+        True -> ""
+        False -> ", " <> display_call_args(variadic)
+      "call " <> display_value(fn_val) <> "(" <> fixed_str <> va_str <> ")"
+    Phi(preds) ->
+      "phi " <> display_phi_preds(preds)
+
+/// Render a QBE statement.
+pub fn display_statement(s: Statement) -> String:
+  case s:
+    Assign(val, ty, inst) ->
+      display_value(val) <> " =" <> display_type(ty) <> " " <> display_inst(inst)
+    Volatile(inst) ->
+      display_inst(inst)
+
+/// Render a QBE basic block.
+pub fn display_block(b: Block) -> String:
+  case b:
+    Block(label, stmts) ->
+      let stmt_lines = list.map(stmts, display_stmt_indented)
+      "@" <> label <> "\n" <> string.join(stmt_lines, "")
+
+/// Render a QBE function definition.
+pub fn display_function(f: Function) -> String:
+  case f:
+    Function(lnk, name, params, ret, blocks) ->
+      let link_str = display_linkage(lnk)
+      let ret_str = case ret:
+        option.None -> ""
+        option.Some(ty) -> display_type(ty) <> " "
+      let params_str = join_comma(list.map(params, display_param))
+      let block_strs = list.map(blocks, display_block)
+      link_str <> "function " <> ret_str <> "$" <> name <> "(" <> params_str <> ") {\n" <> string.join(block_strs, "") <> "}\n"
+
+/// Render one QBE data item.
+pub fn display_data_item(item: DataItem) -> String:
+  case item:
+    Symbol(s, opt_off) ->
+      case opt_off:
+        option.None -> "$" <> s
+        option.Some(n) -> "$" <> s <> " +" <> int.to_string(n)
+    Str(s) -> escape_str_for_qbe(s)
+    Constant(n) -> int.to_string(n)
+    FloatConst(f) -> "d_" <> f
+
+/// Render a QBE data definition.
+pub fn display_data_def(d: DataDef) -> String:
+  case d:
+    DataDef(lnk, name, align, items) ->
+      let link_str = display_linkage(lnk)
+      let align_str = case align:
+        option.None -> ""
+        option.Some(n) -> "align " <> int.to_string(n) <> " "
+      let items_str = join_comma(list.map(items, display_typed_item))
+      link_str <> "data $" <> name <> " = " <> align_str <> "{ " <> items_str <> " }\n"
+
+/// Render a complete QBE module.
+pub fn display_module(m: ILModule) -> String:
+  case m:
+    ILModule(fns, datas) ->
+      let data_strs = list.map(datas, display_data_def)
+      let fn_strs = list.map(fns, display_function)
+      string.join(list.append(data_strs, fn_strs), "")
+
+fn display_stmt_indented(s: Statement) -> String:
+  "\t" <> display_statement(s) <> "\n"
+
+fn display_param(p: #(ILType, Value)) -> String:
+  case p:
+    #(ty, val) -> into_abi(ty) <> " " <> display_value(val)
+
+fn display_call_arg(p: #(ILType, Value)) -> String:
+  case p:
+    #(ty, val) -> into_abi(ty) <> " " <> display_value(val)
+
+fn display_call_args(args: List(#(ILType, Value))) -> String:
+  join_comma(list.map(args, display_call_arg))
+
+fn display_phi_pred(p: #(String, Value)) -> String:
+  case p:
+    #(label, val) -> "@" <> label <> " " <> display_value(val)
+
+fn display_phi_preds(preds: List(#(String, Value))) -> String:
+  join_comma(list.map(preds, display_phi_pred))
+
+fn display_typed_item(p: #(ILType, DataItem)) -> String:
+  case p:
+    #(ty, item) -> display_type(ty) <> " " <> display_data_item(item)
+
+fn is_special_char(c: Int) -> Bool:
+  c == 34 || c == 92 || c == 10 || c == 13 || c < 32 || c > 126
+
+/// Escape a Donna string literal into the segmented string syntax QBE expects.
+pub fn escape_str_for_qbe(s: String) -> String:
+  let len = string.length(s)
+  escape_str_loop(s, 0, len, "", "")
+
+fn escape_str_loop(
+  s: String,
+  i: Int,
+  len: Int,
+  cur_seg: String,
+  result: String
+) -> String:
+  case i >= len:
+    True ->
+      case string.is_empty(cur_seg):
+        True ->
+          case string.is_empty(result):
+            True -> "\"\""
+            False -> result
+        False ->
+          let seg = "\"" <> cur_seg <> "\""
+          case string.is_empty(result):
+            True -> seg
+            False -> result <> ", b " <> seg
+    False ->
+      let c = string.char_at(s, i)
+      case is_special_char(c):
+        True ->
+          let byte_part = int.to_string(c)
+          let next = case string.is_empty(cur_seg):
+            True ->
+              case string.is_empty(result):
+                True -> byte_part
+                False -> result <> ", b " <> byte_part
+            False ->
+              let seg = "\"" <> cur_seg <> "\""
+              case string.is_empty(result):
+                True -> seg <> ", b " <> byte_part
+                False -> result <> ", b " <> seg <> ", b " <> byte_part
+          escape_str_loop(s, i + 1, len, "", next)
+        False ->
+          escape_str_loop(
+            s,
+            i + 1,
+            len,
+            cur_seg <> string.char_str(s, i),
+            result
+          )
+
+fn join_comma(items: List(String)) -> String:
+  string.join(items, ", ")

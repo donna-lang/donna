@@ -1,0 +1,77 @@
+//// Parameter parser.
+//// Parses function and lambda parameter lists with optional annotations.
+
+import compiler/lexer/token
+import utilities/location
+import errors/error
+import compiler/parser/ast
+import compiler/parser/parse_result
+import compiler/parser/parse_types
+import donna/list
+import donna/option
+
+/// Parse a parenthesized parameter list after the opening parenthesis.
+pub fn parse_params(
+  ps: List(#(token.Token, location.Span))
+) -> parse_result.ParseResult(List(ast.Param)):
+  let ps1 = parse_result.skip_newlines(ps)
+  case ps1:
+    [#(token.TokRParen, _), ..rest] ->
+      parse_result.POk([], rest)
+    _ ->
+      parse_param_list(ps1, [])
+
+fn parse_param_list(
+  ps: List(#(token.Token, location.Span)),
+  acc: List(ast.Param)
+) -> parse_result.ParseResult(List(ast.Param)):
+  case parse_param(ps):
+    parse_result.PErr(e) -> parse_result.PErr(e)
+    parse_result.POk(p, ps2) ->
+      case ps2:
+        [#(token.TokComma, _), ..ps3] ->
+          parse_param_list(parse_result.skip_newlines(ps3), [p, ..acc])
+        [#(token.TokRParen, _), ..rest] ->
+          parse_result.POk(list.reverse([p, ..acc]), rest)
+        [#(tok, sp), .._] ->
+          parse_result.PErr(
+            error.ParseUnexpectedToken(token.to_string(tok), ", or )", sp)
+          )
+        [] ->
+          parse_result.PErr(
+            error.ParseUnexpectedEof(")", location.zero("unknown"))
+          )
+
+fn parse_param(
+  ps: List(#(token.Token, location.Span))
+) -> parse_result.ParseResult(ast.Param):
+  let ps1 = parse_result.skip_newlines(ps)
+  case ps1:
+    [#(token.TokName(name), sp), ..rest] ->
+      parse_param_with_name(rest, sp, name)
+    [#(token.TokDiscard(""), sp), ..rest] ->
+      parse_param_with_name(rest, sp, "_")
+    [#(token.TokDiscard(n), sp), ..rest] ->
+      parse_param_with_name(rest, sp, "_" <> n)
+    [#(tok, sp), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "parameter name", sp)
+      )
+    [] ->
+      parse_result.PErr(
+        error.ParseUnexpectedEof("parameter name", location.zero("unknown"))
+      )
+
+fn parse_param_with_name(
+  ps: List(#(token.Token, location.Span)),
+  sp: location.Span,
+  name: String
+) -> parse_result.ParseResult(ast.Param):
+  case ps:
+    [#(token.TokColon, _), ..rest] ->
+      case parse_types.parse_type(rest):
+        parse_result.PErr(e) -> parse_result.PErr(e)
+        parse_result.POk(ann, ps2) ->
+          parse_result.POk(ast.Param(name, option.Some(ann), sp), ps2)
+    _ ->
+      parse_result.POk(ast.Param(name, option.None, sp), ps)

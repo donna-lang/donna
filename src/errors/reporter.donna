@@ -1,0 +1,62 @@
+//// Renders Donna errors and warnings with colored headers and source context.
+
+import errors/error
+import errors/messages
+import utilities/colors
+import utilities/location
+import donna/string
+import donna/int
+import donna/list
+
+/// Render a compiler error with source context.
+pub fn render_error(e: error.DonnaError, src: String) -> String:
+  let span = error.error_span(e)
+  let #(title, label, hint) = messages.error_message(e)
+  let header = colors.error_header("error") <> colors.bold(": " <> title)
+  render(header, label, hint, span, src, colors.error_header)
+
+/// Render a compiler warning with source context.
+pub fn render_warning(w: error.DonnaWarning, src: String) -> String:
+  let span = error.warning_span(w)
+  let #(title, label, hint) = messages.warning_message(w)
+  let header = colors.warning_header("warning") <> colors.bold(": " <> title)
+  render(header, label, hint, span, src, colors.yellow)
+
+fn render(
+  header: String,
+  label: String,
+  hint: String,
+  span: location.Span,
+  src: String,
+  color: fn(String) -> String
+) -> String:
+  let line_num = location.pos_line(location.span_start(span))
+  let col = location.pos_col(location.span_start(span))
+  let len = location.span_length(span)
+  let pad = string.repeat(" ", string.length(int.to_string(line_num)))
+  let gutter = colors.dim(pad <> " │")
+  let loc_line = pad <> " ┌─ " <> colors.dim(location.short_label(span))
+  let src_line = get_line(src, line_num)
+  let carets = string.repeat("^", len)
+  let pointer = string.repeat(" ", col - 1) <> color(carets <> " " <> label)
+  let code_row = colors.dim(int.to_string(line_num) <> " │") <> "  " <> src_line
+  let ptr_row = gutter <> "  " <> pointer
+  let hint_row = case string.is_empty(hint):
+    True -> ""
+    False -> "\n\nhint: " <> hint
+  string.join(
+    [header, loc_line, colors.dim(pad <> " │"), code_row, ptr_row],
+    "\n"
+  ) <> hint_row
+
+fn get_line(src: String, line_num: Int) -> String:
+  let lines = string.split(src, "\n")
+  nth_line(lines, line_num, 1)
+
+fn nth_line(lines: List(String), target: Int, current: Int) -> String:
+  case lines:
+    [] -> ""
+    [l, ..rest] ->
+      case current == target:
+        True -> l
+        False -> nth_line(rest, target, current + 1)

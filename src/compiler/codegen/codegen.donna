@@ -1,0 +1,2068 @@
+//// QBE code generator.
+//// Converts typed Donna modules into the internal QBE-flavored IL, including
+//// functions, constants, ADT constructors, strings, and control flow.
+
+import compiler/codegen/il
+import compiler/typesystem/types
+import compiler/typesystem/typed_ast
+import compiler/parser/ast
+import donna/string
+import donna/list
+import donna/option
+import donna/int
+
+/// Mutable code generation state threaded through expression and declaration lowering.
+pub type CgState:
+  CgState(List(il.DataDef), List(il.Block), List(String), List(#(String, String)), Int, List(#(String, Int)), List(#(String, List(types.Type))), List(il.Function), List(String), String, List(String))
+
+fn state_data_defs(s: CgState) -> List(il.DataDef):
+  case s:
+    CgState(x, _, _, _, _, _, _, _, _, _, _) -> x
+
+fn state_finished_blocks(s: CgState) -> List(il.Block):
+  case s:
+    CgState(_, x, _, _, _, _, _, _, _, _, _) -> x
+
+fn state_globals(s: CgState) -> List(String):
+  case s:
+    CgState(_, _, x, _, _, _, _, _, _, _, _) -> x
+
+fn state_extern_aliases(s: CgState) -> List(#(String, String)):
+  case s:
+    CgState(_, _, _, x, _, _, _, _, _, _, _) -> x
+
+fn state_counter(s: CgState) -> Int:
+  case s:
+    CgState(_, _, _, _, x, _, _, _, _, _, _) -> x
+
+fn state_ctor_tags(s: CgState) -> List(#(String, Int)):
+  case s:
+    CgState(_, _, _, _, _, x, _, _, _, _, _) -> x
+
+fn state_ctor_field_types(s: CgState) -> List(#(String, List(types.Type))):
+  case s:
+    CgState(_, _, _, _, _, _, x, _, _, _, _) -> x
+
+fn state_helper_fns(s: CgState) -> List(il.Function):
+  case s:
+    CgState(_, _, _, _, _, _, _, x, _, _, _) -> x
+
+fn state_emitted_helpers(s: CgState) -> List(String):
+  case s:
+    CgState(_, _, _, _, _, _, _, _, x, _, _) -> x
+
+fn state_fn_prefix(s: CgState) -> String:
+  case s:
+    CgState(_, _, _, _, _, _, _, _, _, x, _) -> x
+
+fn state_local_fn_names(s: CgState) -> List(String):
+  case s:
+    CgState(_, _, _, _, _, _, _, _, _, _, x) -> x
+
+fn set_data_defs(s: CgState, v: List(il.DataDef)) -> CgState:
+  case s:
+    CgState(_, b, g, ea, n, ct, cft, hf, eh, fp, lfn) ->
+      CgState(v, b, g, ea, n, ct, cft, hf, eh, fp, lfn)
+
+fn set_finished_blocks(s: CgState, v: List(il.Block)) -> CgState:
+  case s:
+    CgState(d, _, g, ea, n, ct, cft, hf, eh, fp, lfn) ->
+      CgState(d, v, g, ea, n, ct, cft, hf, eh, fp, lfn)
+
+fn set_counter(s: CgState, v: Int) -> CgState:
+  case s:
+    CgState(d, b, g, ea, _, ct, cft, hf, eh, fp, lfn) ->
+      CgState(d, b, g, ea, v, ct, cft, hf, eh, fp, lfn)
+
+fn set_ctor_tags(s: CgState, v: List(#(String, Int))) -> CgState:
+  case s:
+    CgState(d, b, g, ea, n, _, cft, hf, eh, fp, lfn) ->
+      CgState(d, b, g, ea, n, v, cft, hf, eh, fp, lfn)
+
+fn set_ctor_field_types(
+  s: CgState,
+  v: List(#(String, List(types.Type)))
+) -> CgState:
+  case s:
+    CgState(d, b, g, ea, n, ct, _, hf, eh, fp, lfn) ->
+      CgState(d, b, g, ea, n, ct, v, hf, eh, fp, lfn)
+
+fn set_helper_fns(s: CgState, v: List(il.Function)) -> CgState:
+  case s:
+    CgState(d, b, g, ea, n, ct, cft, _, eh, fp, lfn) ->
+      CgState(d, b, g, ea, n, ct, cft, v, eh, fp, lfn)
+
+fn set_emitted_helpers(s: CgState, v: List(String)) -> CgState:
+  case s:
+    CgState(d, b, g, ea, n, ct, cft, hf, _, fp, lfn) ->
+      CgState(d, b, g, ea, n, ct, cft, hf, v, fp, lfn)
+
+fn set_fn_prefix(s: CgState, v: String) -> CgState:
+  case s:
+    CgState(d, b, g, ea, n, ct, cft, hf, eh, _, lfn) ->
+      CgState(d, b, g, ea, n, ct, cft, hf, eh, v, lfn)
+
+fn set_local_fn_names(s: CgState, v: List(String)) -> CgState:
+  case s:
+    CgState(d, b, g, ea, n, ct, cft, hf, eh, fp, _) ->
+      CgState(d, b, g, ea, n, ct, cft, hf, eh, fp, v)
+
+fn set_globals(s: CgState, v: List(String)) -> CgState:
+  case s:
+    CgState(d, b, _, ea, n, ct, cft, hf, eh, fp, lfn) ->
+      CgState(d, b, v, ea, n, ct, cft, hf, eh, fp, lfn)
+
+fn set_extern_aliases(s: CgState, v: List(#(String, String))) -> CgState:
+  case s:
+    CgState(d, b, g, _, n, ct, cft, hf, eh, fp, lfn) ->
+      CgState(d, b, g, v, n, ct, cft, hf, eh, fp, lfn)
+
+fn add_data_def(s: CgState, d: il.DataDef) -> CgState:
+  set_data_defs(s, [d, ..state_data_defs(s)])
+
+fn push_block(s: CgState, b: il.Block) -> CgState:
+  set_finished_blocks(s, [b, ..state_finished_blocks(s)])
+
+fn new_state() -> CgState:
+  CgState([], [], [], [], 0, [], [], [], [], "", [])
+
+fn fresh_temp(s: CgState) -> #(String, CgState):
+  let n = state_counter(s)
+  #("t" <> int.to_string(n), set_counter(s, n + 1))
+
+fn fresh_label(s: CgState, prefix: String) -> #(String, CgState):
+  let n = state_counter(s)
+  #(prefix <> int.to_string(n), set_counter(s, n + 1))
+
+fn intern_string(s: CgState, text: String) -> #(String, CgState):
+  let n = state_counter(s)
+  let label = "str" <> int.to_string(n)
+  let data = il.DataDef(
+    il.Private,
+    label,
+    option.None,
+    [#(il.Byte, il.Str(text)), #(il.Byte, il.Constant(0))]
+  )
+  #(label, add_data_def(set_counter(s, n + 1), data))
+
+fn intern_string_nl(s: CgState, text: String) -> #(String, CgState):
+  let n = state_counter(s)
+  let label = "str" <> int.to_string(n)
+  let data = il.DataDef(
+    il.Private,
+    label,
+    option.None,
+    [
+      #(il.Byte, il.Str(text)),
+      #(il.Byte, il.Constant(10)),
+      #(il.Byte, il.Constant(0))
+    ]
+  )
+  #(label, add_data_def(set_counter(s, n + 1), data))
+
+fn list_length(lst: List(a)) -> Int:
+  case lst:
+    [] -> 0
+    [_, ..rest] -> 1 + list_length(rest)
+
+fn list_last_default(lst: List(a), default: a) -> a:
+  case lst:
+    [] -> default
+    [x] -> x
+    [_, ..rest] -> list_last_default(rest, default)
+
+fn lookup_alist(pairs: List(#(String, a)), key: String) -> option.Option(a):
+  case pairs:
+    [] -> option.None
+    [#(k, v), ..rest] ->
+      case string.equal(k, key):
+        True -> option.Some(v)
+        False -> lookup_alist(rest, key)
+
+fn block_jumps(b: il.Block) -> Bool:
+  case b:
+    il.Block(_, stmts) ->
+      let default = il.Volatile(il.Add(il.Const(0), il.Const(0)))
+      let last = list_last_default(stmts, default)
+      is_terminal_stmt(last)
+
+fn is_terminal_stmt(s: il.Statement) -> Bool:
+  case s:
+    il.Volatile(inst) -> is_terminal_inst(inst)
+    il.Assign(_, _, _) -> False
+
+fn is_terminal_inst(inst: il.Inst) -> Bool:
+  case inst:
+    il.Ret(_) -> True
+    il.Jmp(_) -> True
+    il.Jnz(_, _, _) -> True
+    _ -> False
+
+fn add_data_defs_list(datas: List(il.DataDef), s: CgState) -> CgState:
+  case datas:
+    [] -> s
+    [d, ..rest] -> add_data_defs_list(rest, add_data_def(s, d))
+
+fn module_qbe_prefix(module_name: String) -> String:
+  string.replace(module_name, "/", "_")
+
+fn ensure_nil_singleton(s: CgState) -> CgState:
+  case list.contains_str(state_emitted_helpers(s), "donna_nil"):
+    True -> s
+    False ->
+      let data = il.DataDef(
+        il.Private,
+        "donna_nil",
+        option.None,
+        [#(il.Long, il.Constant(0))]
+      )
+      let s2 = add_data_def(s, data)
+      set_emitted_helpers(s2, ["donna_nil", ..state_emitted_helpers(s2)])
+
+fn ensure_string_concat_helper(s: CgState) -> CgState:
+  case list.contains_str(state_emitted_helpers(s), "__rt_str_concat"):
+    True -> s
+    False ->
+      let b = il.new_block("start")
+      let b = il.assign_inst(
+        b,
+        il.Temporary("sca_la"),
+        il.Long,
+        il.Call(il.Global("strlen"), [#(il.Long, il.Temporary("a"))])
+      )
+      let b = il.assign_inst(
+        b,
+        il.Temporary("sca_lb"),
+        il.Long,
+        il.Call(il.Global("strlen"), [#(il.Long, il.Temporary("b"))])
+      )
+      let b = il.assign_inst(
+        b,
+        il.Temporary("sca_sz"),
+        il.Long,
+        il.Add(il.Temporary("sca_la"), il.Temporary("sca_lb"))
+      )
+      let b = il.assign_inst(
+        b,
+        il.Temporary("sca_sz1"),
+        il.Long,
+        il.Add(il.Temporary("sca_sz"), il.Const(1))
+      )
+      let b = il.assign_inst(
+        b,
+        il.Temporary("sca_buf"),
+        il.Long,
+        il.Call(il.Global("malloc"), [#(il.Long, il.Temporary("sca_sz1"))])
+      )
+      let b = il.volatile_inst(
+        b,
+        il.Call(
+          il.Global("strcpy"),
+          [#(il.Long, il.Temporary("sca_buf")), #(il.Long, il.Temporary("a"))]
+        )
+      )
+      let b = il.volatile_inst(
+        b,
+        il.Call(
+          il.Global("strcat"),
+          [#(il.Long, il.Temporary("sca_buf")), #(il.Long, il.Temporary("b"))]
+        )
+      )
+      let b = il.volatile_inst(b, il.Ret(option.Some(il.Temporary("sca_buf"))))
+      let f = il.Function(
+        il.Private,
+        "__rt_str_concat",
+        [#(il.Long, il.Temporary("a")), #(il.Long, il.Temporary("b"))],
+        option.Some(il.Long),
+        [b]
+      )
+      let s2 = set_helper_fns(s, [f, ..state_helper_fns(s)])
+      set_emitted_helpers(s2, ["__rt_str_concat", ..state_emitted_helpers(s2)])
+
+fn ensure_int_to_string_helper(s: CgState) -> CgState:
+  case list.contains_str(state_emitted_helpers(s), "__rt_int_to_str"):
+    True -> s
+    False ->
+      let fmt_data = il.DataDef(
+        il.Private,
+        "__rt_fmt_ld",
+        option.None,
+        [#(il.Byte, il.Str("%ld")), #(il.Byte, il.Constant(0))]
+      )
+      let b = il.new_block("start")
+      let b = il.assign_inst(
+        b,
+        il.Temporary("its_buf"),
+        il.Long,
+        il.Call(il.Global("malloc"), [#(il.Long, il.Const(32))])
+      )
+      let b = il.volatile_inst(
+        b,
+        il.VaCall(
+          il.Global("sprintf"),
+          [
+            #(il.Long, il.Temporary("its_buf")),
+            #(il.Long, il.Global("__rt_fmt_ld"))
+          ],
+          [#(il.Long, il.Temporary("n"))]
+        )
+      )
+      let b = il.volatile_inst(b, il.Ret(option.Some(il.Temporary("its_buf"))))
+      let f = il.Function(
+        il.Private,
+        "__rt_int_to_str",
+        [#(il.Long, il.Temporary("n"))],
+        option.Some(il.Long),
+        [b]
+      )
+      let s2 = add_data_def(s, fmt_data)
+      let s3 = set_helper_fns(s2, [f, ..state_helper_fns(s2)])
+      set_emitted_helpers(s3, ["__rt_int_to_str", ..state_emitted_helpers(s3)])
+
+fn ensure_print_str_helper(s: CgState) -> CgState:
+  case list.contains_str(state_emitted_helpers(s), "__rt_print_str"):
+    True -> s
+    False ->
+      let fmt_data = il.DataDef(
+        il.Private,
+        "__rt_fmt_pct_s",
+        option.None,
+        [#(il.Byte, il.Str("%s")), #(il.Byte, il.Constant(0))]
+      )
+      let b = il.new_block("start")
+      let b = il.volatile_inst(
+        b,
+        il.VaCall(
+          il.Global("printf"),
+          [#(il.Long, il.Global("__rt_fmt_pct_s"))],
+          [#(il.Long, il.Temporary("ps"))]
+        )
+      )
+      let b = il.volatile_inst(b, il.Ret(option.Some(il.Const(0))))
+      let f = il.Function(
+        il.Private,
+        "__rt_print_str",
+        [#(il.Long, il.Temporary("ps"))],
+        option.Some(il.Word),
+        [b]
+      )
+      let s2 = add_data_def(s, fmt_data)
+      let s3 = set_helper_fns(s2, [f, ..state_helper_fns(s2)])
+      set_emitted_helpers(s3, ["__rt_print_str", ..state_emitted_helpers(s3)])
+
+/// Generate QBE SSA text for a fully typed Donna module.
+pub fn generate(m: typed_ast.TypedModule) -> String:
+  case m:
+    typed_ast.TypedModule(mod_name, fns, consts, type_defs, ctor_info) ->
+      let fn_prefix = module_qbe_prefix(mod_name)
+      let ctor_names = collect_ctor_names(type_defs, [])
+      let const_names = collect_const_names(consts, [])
+      let all_globals = list.append(ctor_names, const_names)
+      let local_fn_names = collect_local_fn_names(fns, [])
+      let ctor_tags = extract_ctor_tags(ctor_info, [])
+      let ctor_fts = extract_ctor_field_types(ctor_info, [])
+      let extern_aliases = collect_extern_aliases(fns, [])
+      let state0 = new_state()
+      let state0 = set_fn_prefix(state0, fn_prefix)
+      let state0 = set_local_fn_names(state0, local_fn_names)
+      let state0 = set_ctor_tags(state0, ctor_tags)
+      let state0 = set_ctor_field_types(state0, ctor_fts)
+      let state0 = set_globals(state0, all_globals)
+      let state0 = set_extern_aliases(state0, extern_aliases)
+      let #(il_ctor_fns, state1) = gen_type_defs(type_defs, fn_prefix, state0, [])
+      let #(il_fns, state2) = gen_functions(fns, fn_prefix, state1, [])
+      let state3 = gen_constants(consts, fn_prefix, state2)
+      let all_data = list.reverse(state_data_defs(state3))
+      let all_fn_fns = list.append(list.reverse(il_ctor_fns), list.reverse(il_fns))
+      let all_fn_fns = list.append(all_fn_fns, list.reverse(state_helper_fns(state3)))
+      let il_mod = il.ILModule(all_fn_fns, all_data)
+      il.display_module(il_mod)
+
+fn collect_ctor_names(
+  type_defs: List(typed_ast.TypedTypeDef),
+  acc: List(String)
+) -> List(String):
+  case type_defs:
+    [] -> list.reverse(acc)
+    [typed_ast.TypedTypeDef(_, _, ctors), ..rest] ->
+      let names = collect_ctor_name_list(ctors, [])
+      collect_ctor_names(rest, list.append(list.reverse(names), acc))
+
+fn collect_ctor_name_list(
+  ctors: List(typed_ast.TypedConstructor),
+  acc: List(String)
+) -> List(String):
+  case ctors:
+    [] -> list.reverse(acc)
+    [typed_ast.TypedConstructor(name, _, _), ..rest] ->
+      collect_ctor_name_list(rest, [name, ..acc])
+
+fn collect_const_names(
+  consts: List(typed_ast.TypedConstant),
+  acc: List(String)
+) -> List(String):
+  case consts:
+    [] -> list.reverse(acc)
+    [typed_ast.TypedConstant(name, _, _, _), ..rest] ->
+      collect_const_names(rest, [name, ..acc])
+
+fn collect_local_fn_names(
+  fns: List(typed_ast.TypedFunction),
+  acc: List(String)
+) -> List(String):
+  case fns:
+    [] -> list.reverse(acc)
+    [typed_ast.TypedFunction(name, _, _, _, _, ext, _), ..rest] ->
+      case ext:
+        option.Some(_) -> collect_local_fn_names(rest, acc)
+        option.None -> collect_local_fn_names(rest, [name, ..acc])
+
+fn collect_extern_aliases(
+  fns: List(typed_ast.TypedFunction),
+  acc: List(#(String, String))
+) -> List(#(String, String)):
+  case fns:
+    [] -> list.reverse(acc)
+    [typed_ast.TypedFunction(name, _, _, _, _, ext, _), ..rest] ->
+      case ext:
+        option.None -> collect_extern_aliases(rest, acc)
+        option.Some(#(_, sym)) ->
+          collect_extern_aliases(rest, [#(name, sym), ..acc])
+
+fn extract_ctor_tags(
+  ctor_info: List(#(String, #(String, List(types.Type), Int))),
+  acc: List(#(String, Int))
+) -> List(#(String, Int)):
+  case ctor_info:
+    [] -> list.reverse(acc)
+    [#(name, #(_, _, tag)), ..rest] ->
+      extract_ctor_tags(rest, [#(name, tag), ..acc])
+
+fn extract_ctor_field_types(
+  ctor_info: List(#(String, #(String, List(types.Type), Int))),
+  acc: List(#(String, List(types.Type)))
+) -> List(#(String, List(types.Type))):
+  case ctor_info:
+    [] -> list.reverse(acc)
+    [#(name, #(_, fields, _)), ..rest] ->
+      extract_ctor_field_types(rest, [#(name, fields), ..acc])
+
+fn gen_type_defs(
+  type_defs: List(typed_ast.TypedTypeDef),
+  fn_prefix: String,
+  state: CgState,
+  acc: List(il.Function)
+) -> #(List(il.Function), CgState):
+  case type_defs:
+    [] -> #(acc, state)
+    [td, ..rest] ->
+      let #(new_fns, state2) = gen_type_def(td, fn_prefix, state)
+      gen_type_defs(rest, fn_prefix, state2, list.append(new_fns, acc))
+
+fn gen_type_def(
+  td: typed_ast.TypedTypeDef,
+  fn_prefix: String,
+  state: CgState
+) -> #(List(il.Function), CgState):
+  case td:
+    typed_ast.TypedTypeDef(_, _, ctors) ->
+      let state2 = register_ctors(ctors, state)
+      gen_constructors(ctors, fn_prefix, state2, [])
+
+fn register_ctors(
+  ctors: List(typed_ast.TypedConstructor),
+  state: CgState
+) -> CgState:
+  case ctors:
+    [] -> state
+    [typed_ast.TypedConstructor(name, fields, tag), ..rest] ->
+      let s2 = set_ctor_tags(state, [#(name, tag), ..state_ctor_tags(state)])
+      let s3 = set_ctor_field_types(s2, [#(name, fields), ..state_ctor_field_types(s2)])
+      register_ctors(rest, s3)
+
+fn gen_constructors(
+  ctors: List(typed_ast.TypedConstructor),
+  fn_prefix: String,
+  state: CgState,
+  acc: List(il.Function)
+) -> #(List(il.Function), CgState):
+  case ctors:
+    [] -> #(acc, state)
+    [ctor, ..rest] ->
+      let #(opt_fn, state2) = gen_constructor(ctor, fn_prefix, state)
+      let new_acc = case opt_fn:
+        option.None -> acc
+        option.Some(f) -> [f, ..acc]
+      gen_constructors(rest, fn_prefix, state2, new_acc)
+
+fn gen_constructor(
+  ctor: typed_ast.TypedConstructor,
+  fn_prefix: String,
+  state: CgState
+) -> #(option.Option(il.Function), CgState):
+  case ctor:
+    typed_ast.TypedConstructor(name, fields, tag) ->
+      let qbe_name = case string.is_empty(fn_prefix):
+        True -> name
+        False -> fn_prefix <> "_" <> name
+      case fields:
+        [] ->
+          let data = il.DataDef(
+            il.Public,
+            qbe_name,
+            option.None,
+            [#(il.Long, il.Constant(tag))]
+          )
+          #(option.None, add_data_def(state, data))
+        _ ->
+          let n_fields = list_length(fields)
+          let struct_size = n_fields * 8 + 8
+          let params = build_ctor_params(fields, 0, [])
+          let entry = il.new_block("start")
+          let saved_blocks = state_finished_blocks(state)
+          let state2 = set_finished_blocks(state, [])
+          let #(ptr_t, state3) = fresh_temp(state2)
+          let entry = il.assign_inst(
+            entry,
+            il.Temporary(ptr_t),
+            il.Long,
+            il.Call(il.Global("malloc"), [#(il.Long, il.Const(struct_size))])
+          )
+          let entry = il.volatile_inst(entry, il.Storel(il.Const(tag), il.Temporary(ptr_t)))
+          let #(entry, state4) = gen_field_stores(fields, il.Temporary(ptr_t), 0, entry, state3)
+          let entry = il.volatile_inst(entry, il.Ret(option.Some(il.Temporary(ptr_t))))
+          let f = il.Function(
+            il.Public,
+            qbe_name,
+            params,
+            option.Some(il.Long),
+            [entry]
+          )
+          let state5 = set_finished_blocks(state4, saved_blocks)
+          #(option.Some(f), state5)
+
+fn build_ctor_params(
+  fields: List(types.Type),
+  idx: Int,
+  acc: List(#(il.ILType, il.Value))
+) -> List(#(il.ILType, il.Value)):
+  case fields:
+    [] -> list.reverse(acc)
+    [ft, ..rest] ->
+      let name = "a" <> int.to_string(idx)
+      build_ctor_params(
+        rest,
+        idx + 1,
+        [#(donna_type_to_qbe(ft), il.Temporary(name)), ..acc]
+      )
+
+fn gen_field_stores(
+  fields: List(types.Type),
+  ptr: il.Value,
+  idx: Int,
+  block: il.Block,
+  state: CgState
+) -> #(il.Block, CgState):
+  case fields:
+    [] -> #(block, state)
+    [ft, ..rest] ->
+      let offset = 8 + 8 * idx
+      let param_name = "a" <> int.to_string(idx)
+      let #(fptr, state2) = fresh_temp(state)
+      let block2 = il.assign_inst(
+        block,
+        il.Temporary(fptr),
+        il.Long,
+        il.Add(ptr, il.Const(offset))
+      )
+      let block3 = il.volatile_inst(
+        block2,
+        il.Storel(il.Temporary(param_name), il.Temporary(fptr))
+      )
+      gen_field_stores(rest, ptr, idx + 1, block3, state2)
+
+fn gen_functions(
+  fns: List(typed_ast.TypedFunction),
+  fn_prefix: String,
+  state: CgState,
+  acc: List(il.Function)
+) -> #(List(il.Function), CgState):
+  case fns:
+    [] -> #(acc, state)
+    [f, ..rest] ->
+      case f:
+        typed_ast.TypedFunction(_, _, _, _, _, option.Some(_), _) ->
+          gen_functions(rest, fn_prefix, state, acc)
+        typed_ast.TypedFunction(_, _, _, _, _, option.None, _) ->
+          let #(il_fn, state2) = gen_function(f, fn_prefix, state)
+          gen_functions(rest, fn_prefix, state2, [il_fn, ..acc])
+
+fn gen_function(
+  f: typed_ast.TypedFunction,
+  fn_prefix: String,
+  state: CgState
+) -> #(il.Function, CgState):
+  case f:
+    typed_ast.TypedFunction(name, is_pub, params, ret_type, body, _, _) ->
+      let linkage = case is_pub:
+        True -> il.Public
+        False -> il.Private
+      let qbe_name = case string.equal(name, "main"):
+        True -> "donna_program_main"
+        False ->
+          case string.is_empty(fn_prefix):
+            True -> name
+            False -> fn_prefix <> "_" <> name
+      let arguments = build_fn_params(params, [])
+      let return_ty = case ret_type:
+        types.TNil -> option.Some(il.Word)
+        t -> option.Some(donna_type_to_qbe(t))
+      let entry = il.new_block("start")
+      let saved_blocks = state_finished_blocks(state)
+      let state2 = set_finished_blocks(state, [])
+      let #(ret_val, body_block, state3) = gen_expr(body, entry, state2)
+      let body_block2 = case block_jumps(body_block):
+        True -> body_block
+        False ->
+          case ret_type:
+            types.TNil ->
+              il.volatile_inst(body_block, il.Ret(option.Some(il.Const(0))))
+            _ -> il.volatile_inst(body_block, il.Ret(option.Some(ret_val)))
+      let all_blocks = list.append(list.reverse(state_finished_blocks(state3)), [body_block2])
+      let il_fn = il.Function(linkage, qbe_name, arguments, return_ty, all_blocks)
+      let state4 = set_finished_blocks(state3, saved_blocks)
+      #(il_fn, state4)
+
+fn build_fn_params(
+  params: List(#(String, types.Type)),
+  acc: List(#(il.ILType, il.Value))
+) -> List(#(il.ILType, il.Value)):
+  case params:
+    [] -> list.reverse(acc)
+    [#(name, t), ..rest] ->
+      build_fn_params(
+        rest,
+        [#(donna_type_to_qbe(t), il.Temporary(name)), ..acc]
+      )
+
+fn gen_constants(
+  consts: List(typed_ast.TypedConstant),
+  fn_prefix: String,
+  state: CgState
+) -> CgState:
+  case consts:
+    [] -> state
+    [c, ..rest] ->
+      let state2 = gen_constant(c, fn_prefix, state)
+      gen_constants(rest, fn_prefix, state2)
+
+fn gen_constant(
+  c: typed_ast.TypedConstant,
+  fn_prefix: String,
+  state: CgState
+) -> CgState:
+  case c:
+    typed_ast.TypedConstant(name, is_pub, _, value) ->
+      let linkage = case is_pub:
+        True -> il.Public
+        False -> il.Private
+      let qbe_name = case string.is_empty(fn_prefix):
+        True -> name
+        False -> fn_prefix <> "_" <> name
+      case value:
+        types.TEStringLit(s, _) ->
+          let data = il.DataDef(
+            linkage,
+            qbe_name,
+            option.None,
+            [#(il.Byte, il.Str(s)), #(il.Byte, il.Constant(0))]
+          )
+          add_data_def(state, data)
+        types.TEIntLit(v, _) ->
+          let n = case int.parse(v):
+            option.None -> 0
+            option.Some(n) -> n
+          let data = il.DataDef(
+            linkage,
+            qbe_name,
+            option.None,
+            [#(il.Long, il.Constant(n))]
+          )
+          add_data_def(state, data)
+        types.TEFloatLit(v, _) ->
+          let data = il.DataDef(
+            linkage,
+            qbe_name,
+            option.None,
+            [#(il.Double, il.FloatConst(v))]
+          )
+          add_data_def(state, data)
+        _ -> state
+
+fn gen_expr(
+  expr: types.TypedExpr,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case expr:
+    types.TEIntLit(v, _) ->
+      let n = case int.parse(v):
+        option.None -> 0
+        option.Some(n) -> n
+      #(il.Const(n), block, state)
+    types.TEFloatLit(v, _) ->
+      #(il.ConstFloat(v), block, state)
+    types.TEStringLit(s, _) ->
+      let #(label, state2) = intern_string(state, s)
+      #(il.Global(label), block, state2)
+    types.TEBoolLit(value, _) ->
+      case value:
+        True -> #(il.Const(1), block, state)
+        False -> #(il.Const(0), block, state)
+    types.TEVar(name, ty) ->
+      case string.equal(name, "Nil"):
+        True -> #(il.Const(0), block, state)
+        False ->
+          case lookup_alist(state_extern_aliases(state), name):
+            option.Some(sym) -> #(il.Global(sym), block, state)
+            option.None ->
+              let prefix = state_fn_prefix(state)
+              case list.contains_str(state_globals(state), name):
+                True ->
+                  let qbe_name = case string.is_empty(prefix):
+                    True -> name
+                    False -> prefix <> "_" <> name
+                  case ty:
+                    types.TInt ->
+                      let #(temp, state2) = fresh_temp(state)
+                      let block2 = il.assign_inst(
+                        block,
+                        il.Temporary(temp),
+                        il.Long,
+                        il.Loadl(il.Global(qbe_name))
+                      )
+                      #(il.Temporary(temp), block2, state2)
+                    types.TFloat ->
+                      let #(temp, state2) = fresh_temp(state)
+                      let block2 = il.assign_inst(
+                        block,
+                        il.Temporary(temp),
+                        il.Double,
+                        il.Loadd(il.Global(qbe_name))
+                      )
+                      #(il.Temporary(temp), block2, state2)
+                    types.TBool ->
+                      let #(temp, state2) = fresh_temp(state)
+                      let block2 = il.assign_inst(
+                        block,
+                        il.Temporary(temp),
+                        il.Long,
+                        il.Loadl(il.Global(qbe_name))
+                      )
+                      #(il.Temporary(temp), block2, state2)
+                    _ ->
+                      #(il.Global(qbe_name), block, state)
+                False ->
+                  case list.contains_str(state_local_fn_names(state), name):
+                    True ->
+                      let qbe_name = case string.is_empty(prefix):
+                        True -> name
+                        False -> prefix <> "_" <> name
+                      #(il.Global(qbe_name), block, state)
+                    False -> #(il.Temporary(name), block, state)
+    types.TEFieldAccess(_, field, module_path, ty) ->
+      let qbe_name = case string.is_empty(module_path):
+        True -> field
+        False -> string.replace(module_path, "/", "_") <> "_" <> field
+      case ty:
+        types.TInt ->
+          let #(temp, state2) = fresh_temp(state)
+          let block2 = il.assign_inst(
+            block,
+            il.Temporary(temp),
+            il.Long,
+            il.Loadl(il.Global(qbe_name))
+          )
+          #(il.Temporary(temp), block2, state2)
+        types.TFloat ->
+          let #(temp, state2) = fresh_temp(state)
+          let block2 = il.assign_inst(
+            block,
+            il.Temporary(temp),
+            il.Double,
+            il.Loadd(il.Global(qbe_name))
+          )
+          #(il.Temporary(temp), block2, state2)
+        types.TBool ->
+          let #(temp, state2) = fresh_temp(state)
+          let block2 = il.assign_inst(
+            block,
+            il.Temporary(temp),
+            il.Long,
+            il.Loadl(il.Global(qbe_name))
+          )
+          #(il.Temporary(temp), block2, state2)
+        _ ->
+          #(il.Global(qbe_name), block, state)
+    types.TECall(fn_expr, args, ret_type) ->
+      case fn_expr:
+        types.TEVar("char_at", _) -> gen_builtin_char_at(args, block, state)
+        types.TEVar("string_equal", _) ->
+          gen_builtin_string_equal(args, block, state)
+        types.TEVar("substring", _) -> gen_builtin_substring(args, block, state)
+        types.TEVar("int_to_string", _) ->
+          gen_builtin_int_to_string(args, block, state)
+        types.TEVar("print_str", _) -> gen_builtin_print_str(args, block, state)
+        _ ->
+          let #(fn_val, block2, state2) = gen_call_target(fn_expr, block, state)
+          let #(arg_vals, block3, state3) = gen_args(args, block2, state2, [])
+          case ret_type:
+            types.TNil ->
+              let block4 = il.volatile_inst(block3, il.Call(fn_val, arg_vals))
+              #(il.Const(0), block4, state3)
+            _ ->
+              let #(temp, state4) = fresh_temp(state3)
+              let block4 = il.assign_inst(
+                block3,
+                il.Temporary(temp),
+                donna_type_to_qbe(ret_type),
+                il.Call(fn_val, arg_vals)
+              )
+              #(il.Temporary(temp), block4, state4)
+    types.TEBinOp(op, left, right, result_type) ->
+      case op:
+        ast.BConcat ->
+          let #(lv, block2, state2) = gen_expr(left, block, state)
+          let #(rv, block3, state3) = gen_expr(right, block2, state2)
+          let state4 = ensure_string_concat_helper(state3)
+          let #(temp, state5) = fresh_temp(state4)
+          let block4 = il.assign_inst(
+            block3,
+            il.Temporary(temp),
+            il.Long,
+            il.Call(
+              il.Global("__rt_str_concat"),
+              [#(il.Long, lv), #(il.Long, rv)]
+            )
+          )
+          #(il.Temporary(temp), block4, state5)
+        _ ->
+          let #(lv, block2, state2) = gen_expr(left, block, state)
+          let #(rv, block3, state3) = gen_expr(right, block2, state2)
+          let #(temp, state4) = fresh_temp(state3)
+          case is_string_eq_op(
+            types.typed_expr_type(left),
+            types.typed_expr_type(right),
+            op
+          ):
+            True ->
+              let #(cmp_t, state5) = fresh_temp(state4)
+              let block4 = il.assign_inst(
+                block3,
+                il.Temporary(cmp_t),
+                il.Long,
+                il.Call(il.Global("strcmp"), [#(il.Long, lv), #(il.Long, rv)])
+              )
+              let cmp_inst = case op:
+                ast.BEq ->
+                  il.Cmp(il.Long, il.Ceql, il.Temporary(cmp_t), il.Const(0))
+                _ -> il.Cmp(il.Long, il.Cnel, il.Temporary(cmp_t), il.Const(0))
+              let block5 = il.assign_inst(block4, il.Temporary(temp), il.Long, cmp_inst)
+              #(il.Temporary(temp), block5, state5)
+            False ->
+              case is_float_eq_op(
+                types.typed_expr_type(left),
+                types.typed_expr_type(right),
+                op
+              ):
+                True ->
+                  let cmp_inst = case op:
+                    ast.BEq -> il.Cmp(il.Double, il.Ceqd, lv, rv)
+                    _ -> il.Cmp(il.Double, il.Cned, lv, rv)
+                  let block4 = il.assign_inst(block3, il.Temporary(temp), il.Long, cmp_inst)
+                  #(il.Temporary(temp), block4, state4)
+                False ->
+                  let #(inst, t) = binop_to_qbe(op, result_type, lv, rv)
+                  let block4 = il.assign_inst(block3, il.Temporary(temp), t, inst)
+                  #(il.Temporary(temp), block4, state4)
+    types.TEUnaryOp(op, operand, _) ->
+      let #(iv, block2, state2) = gen_expr(operand, block, state)
+      let #(temp, state3) = fresh_temp(state2)
+      case op:
+        ast.UNeg ->
+          let t = case types.typed_expr_type(operand):
+            types.TFloat -> il.Double
+            _ -> il.Long
+          let block3 = il.assign_inst(block2, il.Temporary(temp), t, il.Neg(iv))
+          #(il.Temporary(temp), block3, state3)
+        ast.UNot ->
+          let block3 = il.assign_inst(
+            block2,
+            il.Temporary(temp),
+            il.Long,
+            il.Xor(iv, il.Const(1))
+          )
+          #(il.Temporary(temp), block3, state3)
+    types.TECase(subject, clauses, result_type) ->
+      let #(subj_val, block2, state2) = gen_expr(subject, block, state)
+      gen_case(
+        subj_val,
+        types.typed_expr_type(subject),
+        clauses,
+        result_type,
+        block2,
+        state2
+      )
+    types.TETuple(elements, _) ->
+      gen_tuple(elements, block, state)
+    types.TEList(elements, _) ->
+      gen_list(elements, block, state)
+    types.TEListSpread(elements, tail, _) ->
+      gen_list_spread(elements, tail, block, state)
+    types.TEBlock(stmts, _) ->
+      gen_block_as_expr(stmts, block, state)
+    types.TEEcho(inner, _) ->
+      let #(val, block2, state2) = gen_expr(inner, block, state)
+      let inner_type = types.typed_expr_type(inner)
+      let #(fmt_str, arg_type) = case inner_type:
+        types.TFloat -> #("%f", il.Double)
+        types.TString -> #("%s", il.Long)
+        _ -> #("%ld", il.Long)
+      let #(fmt_name, state3) = intern_string_nl(state2, fmt_str)
+      let block3 = il.volatile_inst(
+        block2,
+        il.VaCall(
+          il.Global("printf"),
+          [#(il.Long, il.Global(fmt_name))],
+          [#(arg_type, val)]
+        )
+      )
+      #(il.Const(0), block3, state3)
+    types.TELambda(params, body, fn_type) ->
+      let #(lambda_name, state2) = fresh_label(state, "__lambda_")
+      let return_type = case fn_type:
+        types.TFnType(_, ret) -> ret
+        _ -> types.TNil
+      let arguments = build_fn_params(params, [])
+      let ret_qbe = case return_type:
+        types.TNil -> option.Some(il.Word)
+        t -> option.Some(donna_type_to_qbe(t))
+      let entry = il.new_block("start")
+      let saved_blocks = state_finished_blocks(state2)
+      let state3 = set_finished_blocks(state2, [])
+      let #(ret_val, body_block, state4) = gen_expr(body, entry, state3)
+      let body_block2 = case block_jumps(body_block):
+        True -> body_block
+        False ->
+          case return_type:
+            types.TNil ->
+              il.volatile_inst(body_block, il.Ret(option.Some(il.Const(0))))
+            _ -> il.volatile_inst(body_block, il.Ret(option.Some(ret_val)))
+      let all_blocks = list.append(list.reverse(state_finished_blocks(state4)), [body_block2])
+      let lambda_fn = il.Function(il.Private, lambda_name, arguments, ret_qbe, all_blocks)
+      let state5 = set_finished_blocks(state4, saved_blocks)
+      let state6 = set_helper_fns(state5, [lambda_fn, ..state_helper_fns(state5)])
+      #(il.Global(lambda_name), block, state6)
+    types.TEPanic(inner, _) ->
+      let #(msg_val, block2, state2) = gen_expr(inner, block, state)
+      let #(fmt_name, state3) = intern_string(state2, "%s\n")
+      let block3 = il.volatile_inst(
+        block2,
+        il.VaCall(
+          il.Global("fprintf"),
+          [#(il.Long, il.Global("stderr")), #(il.Long, il.Global(fmt_name))],
+          [#(il.Long, msg_val)]
+        )
+      )
+      let block4 = il.volatile_inst(block3, il.Call(il.Global("abort"), []))
+      let block5 = il.volatile_inst(block4, il.Ret(option.Some(il.Const(0))))
+      #(il.Const(0), block5, state3)
+    types.TETodo(_) ->
+      let #(msg_name, state2) = intern_string(state, "not yet implemented")
+      let block2 = il.volatile_inst(
+        block,
+        il.Call(il.Global("puts"), [#(il.Long, il.Global(msg_name))])
+      )
+      let block3 = il.volatile_inst(block2, il.Call(il.Global("abort"), []))
+      let block4 = il.volatile_inst(block3, il.Ret(option.Some(il.Const(0))))
+      #(il.Const(0), block4, state2)
+
+fn gen_block_as_expr(
+  stmts: List(types.TypedStatement),
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case stmts:
+    [] -> #(il.Const(0), block, state)
+    _ ->
+      let n = list_length(stmts)
+      let init = list.take(stmts, n - 1)
+      let last_stmt = list_last_default(
+        stmts,
+        types.TStmtExpr(types.TNil, types.TEIntLit("0", types.TInt))
+      )
+      let #(block2, state2) = gen_stmts_no_ret(init, block, state)
+      case last_stmt:
+        types.TStmtExpr(_, expr_val) -> gen_expr(expr_val, block2, state2)
+        types.TStmtLet(name, _, value) ->
+          let #(val, block3, state3) = gen_expr(value, block2, state2)
+          let t = donna_type_to_qbe(types.typed_expr_type(value))
+          let block4 = il.assign_inst(block3, il.Temporary(name), t, il.Copy(val))
+          #(il.Temporary(name), block4, state3)
+        types.TStmtLetPat(pat, value) ->
+          let #(val, block3, state3) = gen_expr(value, block2, state2)
+          let #(block4, state4) = emit_pattern_bindings(pat, val, block3, state3)
+          #(val, block4, state4)
+
+fn gen_stmts_no_ret(
+  stmts: List(types.TypedStatement),
+  block: il.Block,
+  state: CgState
+) -> #(il.Block, CgState):
+  case stmts:
+    [] -> #(block, state)
+    [stmt, ..rest] ->
+      let #(block2, state2) = gen_stmt_no_ret(stmt, block, state)
+      gen_stmts_no_ret(rest, block2, state2)
+
+fn gen_stmt_no_ret(
+  stmt: types.TypedStatement,
+  block: il.Block,
+  state: CgState
+) -> #(il.Block, CgState):
+  case stmt:
+    types.TStmtLet(name, _, value) ->
+      let #(val, block2, state2) = gen_expr(value, block, state)
+      let t = donna_type_to_qbe(types.typed_expr_type(value))
+      let block3 = il.assign_inst(block2, il.Temporary(name), t, il.Copy(val))
+      #(block3, state2)
+    types.TStmtLetPat(pat, value) ->
+      let #(val, block2, state2) = gen_expr(value, block, state)
+      emit_pattern_bindings(pat, val, block2, state2)
+    types.TStmtExpr(_, expr_val) ->
+      let #(_, block2, state2) = gen_expr(expr_val, block, state)
+      #(block2, state2)
+
+fn gen_case(
+  subj_val: il.Value,
+  subj_type: types.Type,
+  clauses: List(types.TypedClause),
+  result_type: types.Type,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  let #(end_label, state2) = fresh_label(state, "case_end")
+  let #(slot_temp, state3) = fresh_temp(state2)
+  let block1 = il.assign_inst(
+    block,
+    il.Temporary(slot_temp),
+    il.Long,
+    il.Alloc8(il.Const(8))
+  )
+  let is_float_res = case result_type:
+    types.TFloat -> True
+    _ -> False
+  let #(end_block, state4) = gen_case_clauses(
+    clauses,
+    subj_val,
+    subj_type,
+    il.Temporary(slot_temp),
+    end_label,
+    block1,
+    state3,
+    is_float_res
+  )
+  let #(result_temp, state5) = fresh_temp(state4)
+  let result_qbe_t = case is_float_res:
+    True -> il.Double
+    False -> il.Long
+  let load_inst = case is_float_res:
+    True -> il.Loadd(il.Temporary(slot_temp))
+    False -> il.Loadl(il.Temporary(slot_temp))
+  let end_block2 = il.assign_inst(end_block, il.Temporary(result_temp), result_qbe_t, load_inst)
+  #(il.Temporary(result_temp), end_block2, state5)
+
+fn store_result(val: il.Value, slot: il.Value, is_float: Bool) -> il.Inst:
+  case is_float:
+    True -> il.Stored(val, slot)
+    False -> il.Storel(val, slot)
+
+fn gen_case_clauses(
+  clauses: List(types.TypedClause),
+  subj: il.Value,
+  subj_type: types.Type,
+  slot: il.Value,
+  end_label: String,
+  block: il.Block,
+  state: CgState,
+  is_float_res: Bool
+) -> #(il.Block, CgState):
+  case clauses:
+    [] ->
+      let end_block = il.new_block(end_label)
+      #(end_block, state)
+    [types.TypedClause(pattern, guard, body, _), ..rest] ->
+      case rest:
+        [] ->
+          case guard:
+            option.None ->
+              let #(block1, state1) = emit_pattern_bindings(pattern, subj, block, state)
+              let #(body_val, block2, state2) = gen_expr(body, block1, state1)
+              let block3 = il.volatile_inst(
+                block2,
+                store_result(body_val, slot, is_float_res)
+              )
+              let block4 = il.volatile_inst(block3, il.Jmp(end_label))
+              let state3 = push_block(state2, block4)
+              let end_block = il.new_block(end_label)
+              #(end_block, state3)
+            option.Some(guard_expr) ->
+              let #(check_val, block1, state1) = gen_pattern_check(pattern, subj, subj_type, block, state)
+              let #(guard_val, block2, state2) = gen_expr(guard_expr, block1, state1)
+              let #(comb_t, state3) = fresh_temp(state2)
+              let block3 = il.assign_inst(
+                block2,
+                il.Temporary(comb_t),
+                il.Long,
+                il.And(check_val, guard_val)
+              )
+              let #(then_label, state4) = fresh_label(state3, "case_then")
+              let block4 = il.volatile_inst(
+                block3,
+                il.Jnz(il.Temporary(comb_t), then_label, end_label)
+              )
+              let state5 = push_block(state4, block4)
+              let then_block = il.new_block(then_label)
+              let #(then_block1, state6) = emit_pattern_bindings(pattern, subj, then_block, state5)
+              let #(body_val, then_block2, state7) = gen_expr(body, then_block1, state6)
+              let then_block3 = il.volatile_inst(
+                then_block2,
+                store_result(body_val, slot, is_float_res)
+              )
+              let then_block4 = il.volatile_inst(then_block3, il.Jmp(end_label))
+              let state8 = push_block(state7, then_block4)
+              let end_block = il.new_block(end_label)
+              #(end_block, state8)
+        _ ->
+          let #(check_val, block1, state1) = gen_pattern_check(pattern, subj, subj_type, block, state)
+          let #(final_check, block2, state2) = case guard:
+            option.None -> #(check_val, block1, state1)
+            option.Some(guard_expr) ->
+              let #(guard_val, block_g, state_g) = gen_expr(guard_expr, block1, state1)
+              let #(comb_t, state_g2) = fresh_temp(state_g)
+              let block_g2 = il.assign_inst(
+                block_g,
+                il.Temporary(comb_t),
+                il.Long,
+                il.And(check_val, guard_val)
+              )
+              #(il.Temporary(comb_t), block_g2, state_g2)
+          let #(next_label, state3) = fresh_label(state2, "case_next")
+          let #(then_label, state4) = fresh_label(state3, "case_then")
+          let block3 = il.volatile_inst(block2, il.Jnz(final_check, then_label, next_label))
+          let state5 = push_block(state4, block3)
+          let then_block = il.new_block(then_label)
+          let #(then_block1, state6) = emit_pattern_bindings(pattern, subj, then_block, state5)
+          let #(body_val, then_block2, state7) = gen_expr(body, then_block1, state6)
+          let then_block3 = il.volatile_inst(
+            then_block2,
+            store_result(body_val, slot, is_float_res)
+          )
+          let then_block4 = il.volatile_inst(then_block3, il.Jmp(end_label))
+          let state8 = push_block(state7, then_block4)
+          let next_block = il.new_block(next_label)
+          gen_case_clauses(
+            rest,
+            subj,
+            subj_type,
+            slot,
+            end_label,
+            next_block,
+            state8,
+            is_float_res
+          )
+
+fn emit_pattern_bindings(
+  pat: ast.Pattern,
+  subj: il.Value,
+  block: il.Block,
+  state: CgState
+) -> #(il.Block, CgState):
+  case pat:
+    ast.PVar(name, _) ->
+      let block2 = il.assign_inst(block, il.Temporary(name), il.Long, il.Copy(subj))
+      #(block2, state)
+    ast.PCons(_, name, args, _) ->
+      let field_types = case lookup_alist(state_ctor_field_types(state), name):
+        option.None -> []
+        option.Some(t) -> t
+      emit_constructor_field_bindings(args, field_types, 0, subj, block, state)
+    ast.PList(elems, rest_name, _) ->
+      emit_list_bindings(elems, rest_name, subj, block, state)
+    ast.PTuple(elems, _) ->
+      emit_tuple_bindings(elems, subj, 0, block, state)
+    _ -> #(block, state)
+
+fn emit_constructor_field_bindings(
+  arg_pats: List(ast.Pattern),
+  field_types: List(types.Type),
+  idx: Int,
+  ptr: il.Value,
+  block: il.Block,
+  state: CgState
+) -> #(il.Block, CgState):
+  case arg_pats:
+    [] -> #(block, state)
+    [pat, ..rest_pats] ->
+      let offset = 8 + 8 * idx
+      let ft = case field_types:
+        [t, .._] -> t
+        [] -> types.TInt
+      let rest_fts = case field_types:
+        [_, ..r] -> r
+        [] -> []
+      let #(fptr, state2) = fresh_temp(state)
+      let block2 = il.assign_inst(
+        block,
+        il.Temporary(fptr),
+        il.Long,
+        il.Add(ptr, il.Const(offset))
+      )
+      let #(fval, state3) = fresh_temp(state2)
+      let block3 = il.assign_inst(
+        block2,
+        il.Temporary(fval),
+        donna_type_to_qbe(ft),
+        il.Loadl(il.Temporary(fptr))
+      )
+      let #(block4, state4) = emit_pattern_bindings(pat, il.Temporary(fval), block3, state3)
+      emit_constructor_field_bindings(
+        rest_pats,
+        rest_fts,
+        idx + 1,
+        ptr,
+        block4,
+        state4
+      )
+
+fn emit_list_bindings(
+  elems: List(ast.Pattern),
+  rest_name: option.Option(String),
+  subj: il.Value,
+  block: il.Block,
+  state: CgState
+) -> #(il.Block, CgState):
+  case elems:
+    [] ->
+      case rest_name:
+        option.None -> #(block, state)
+        option.Some(name) ->
+          case string.equal(name, "_"):
+            True -> #(block, state)
+            False ->
+              let block2 = il.assign_inst(block, il.Temporary(name), il.Long, il.Copy(subj))
+              #(block2, state)
+    [pat, ..rest_elems] ->
+      let #(head_ptr, state2) = fresh_temp(state)
+      let block2 = il.assign_inst(
+        block,
+        il.Temporary(head_ptr),
+        il.Long,
+        il.Add(subj, il.Const(8))
+      )
+      let #(head_val, state3) = fresh_temp(state2)
+      let block3 = il.assign_inst(
+        block2,
+        il.Temporary(head_val),
+        il.Long,
+        il.Loadl(il.Temporary(head_ptr))
+      )
+      let #(tail_ptr, state4) = fresh_temp(state3)
+      let block4 = il.assign_inst(
+        block3,
+        il.Temporary(tail_ptr),
+        il.Long,
+        il.Add(subj, il.Const(16))
+      )
+      let #(tail_val, state5) = fresh_temp(state4)
+      let block5 = il.assign_inst(
+        block4,
+        il.Temporary(tail_val),
+        il.Long,
+        il.Loadl(il.Temporary(tail_ptr))
+      )
+      let #(block6, state6) = emit_pattern_bindings(pat, il.Temporary(head_val), block5, state5)
+      emit_list_bindings(
+        rest_elems,
+        rest_name,
+        il.Temporary(tail_val),
+        block6,
+        state6
+      )
+
+fn emit_tuple_bindings(
+  elems: List(ast.Pattern),
+  ptr: il.Value,
+  idx: Int,
+  block: il.Block,
+  state: CgState
+) -> #(il.Block, CgState):
+  case elems:
+    [] -> #(block, state)
+    [pat, ..rest] ->
+      let offset = idx * 8
+      let #(fptr, state2) = fresh_temp(state)
+      let block2 = il.assign_inst(
+        block,
+        il.Temporary(fptr),
+        il.Long,
+        il.Add(ptr, il.Const(offset))
+      )
+      let #(fval, state3) = fresh_temp(state2)
+      let block3 = il.assign_inst(
+        block2,
+        il.Temporary(fval),
+        il.Long,
+        il.Loadl(il.Temporary(fptr))
+      )
+      let #(block4, state4) = emit_pattern_bindings(pat, il.Temporary(fval), block3, state3)
+      emit_tuple_bindings(rest, ptr, idx + 1, block4, state4)
+
+fn gen_pattern_check(
+  pat: ast.Pattern,
+  subj: il.Value,
+  subj_type: types.Type,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case pat:
+    ast.PWild(_) -> #(il.Const(1), block, state)
+    ast.PDiscard(_, _) -> #(il.Const(1), block, state)
+    ast.PVar(_, _) -> #(il.Const(1), block, state)
+    ast.PInt(v, _) ->
+      let n = case int.parse(v):
+        option.None -> 0
+        option.Some(n) -> n
+      let #(temp, state2) = fresh_temp(state)
+      let block2 = il.assign_inst(
+        block,
+        il.Temporary(temp),
+        il.Long,
+        il.Cmp(il.Long, il.Ceql, subj, il.Const(n))
+      )
+      #(il.Temporary(temp), block2, state2)
+    ast.PBool(value, _) ->
+      let n = case value:
+        True -> 1
+        False -> 0
+      let #(temp, state2) = fresh_temp(state)
+      let block2 = il.assign_inst(
+        block,
+        il.Temporary(temp),
+        il.Long,
+        il.Cmp(il.Long, il.Ceql, subj, il.Const(n))
+      )
+      #(il.Temporary(temp), block2, state2)
+    ast.PFloat(v, _) ->
+      let #(temp, state2) = fresh_temp(state)
+      let block2 = il.assign_inst(
+        block,
+        il.Temporary(temp),
+        il.Long,
+        il.Cmp(il.Double, il.Ceqd, subj, il.ConstFloat(v))
+      )
+      #(il.Temporary(temp), block2, state2)
+    ast.PString(value, _) ->
+      let #(str_name, state2) = intern_string(state, value)
+      let #(cmp_t, state3) = fresh_temp(state2)
+      let block2 = il.assign_inst(
+        block,
+        il.Temporary(cmp_t),
+        il.Long,
+        il.Call(
+          il.Global("strcmp"),
+          [#(il.Long, subj), #(il.Long, il.Global(str_name))]
+        )
+      )
+      let #(eq_t, state4) = fresh_temp(state3)
+      let block3 = il.assign_inst(
+        block2,
+        il.Temporary(eq_t),
+        il.Long,
+        il.Cmp(il.Long, il.Ceql, il.Temporary(cmp_t), il.Const(0))
+      )
+      #(il.Temporary(eq_t), block3, state4)
+    ast.PCons(_, name, args, _) ->
+      let expected_tag = case lookup_alist(state_ctor_tags(state), name):
+        option.None -> -1
+        option.Some(t) -> t
+      let #(tag_t, state2) = fresh_temp(state)
+      let block2 = il.assign_inst(block, il.Temporary(tag_t), il.Long, il.Loadl(subj))
+      let #(cmp_t, state3) = fresh_temp(state2)
+      let block3 = il.assign_inst(
+        block2,
+        il.Temporary(cmp_t),
+        il.Long,
+        il.Cmp(il.Long, il.Ceql, il.Temporary(tag_t), il.Const(expected_tag))
+      )
+      let field_types = case lookup_alist(state_ctor_field_types(state3), name):
+        option.None -> []
+        option.Some(f) -> f
+      check_nested_patterns(
+        args,
+        field_types,
+        0,
+        subj,
+        il.Temporary(cmp_t),
+        block3,
+        state3
+      )
+    ast.PList(elems, rest_name, _) ->
+      gen_list_pattern_check(elems, rest_name, subj, block, state)
+    ast.PTuple(elems, _) ->
+      gen_tuple_pattern_check(elems, subj, block, state)
+    _ ->
+      let _ = subj_type
+      #(il.Const(1), block, state)
+
+fn check_nested_patterns(
+  arg_pats: List(ast.Pattern),
+  field_types: List(types.Type),
+  idx: Int,
+  ptr: il.Value,
+  acc_cmp: il.Value,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case arg_pats:
+    [] -> #(acc_cmp, block, state)
+    [pat, ..rest_pats] ->
+      let ft = case field_types:
+        [t, .._] -> t
+        [] -> types.TInt
+      let rest_fts = case field_types:
+        [_, ..r] -> r
+        [] -> []
+      case pat:
+        ast.PWild(_) ->
+          check_nested_patterns(
+            rest_pats,
+            rest_fts,
+            idx + 1,
+            ptr,
+            acc_cmp,
+            block,
+            state
+          )
+        ast.PVar(_, _) ->
+          check_nested_patterns(
+            rest_pats,
+            rest_fts,
+            idx + 1,
+            ptr,
+            acc_cmp,
+            block,
+            state
+          )
+        ast.PDiscard(_, _) ->
+          check_nested_patterns(
+            rest_pats,
+            rest_fts,
+            idx + 1,
+            ptr,
+            acc_cmp,
+            block,
+            state
+          )
+        _ ->
+          let #(inner_label, state1) = fresh_label(state, "npat_inner")
+          let #(skip_label, state2) = fresh_label(state1, "npat_skip")
+          let #(merge_label, state3) = fresh_label(state2, "npat_merge")
+          let #(slot_t, state4) = fresh_temp(state3)
+          let block1 = il.assign_inst(
+            block,
+            il.Temporary(slot_t),
+            il.Long,
+            il.Alloc8(il.Const(8))
+          )
+          let block2 = il.volatile_inst(block1, il.Jnz(acc_cmp, inner_label, skip_label))
+          let state5 = push_block(state4, block2)
+          let inner = il.new_block(inner_label)
+          let offset = 8 + 8 * idx
+          let #(fptr, state6) = fresh_temp(state5)
+          let inner = il.assign_inst(
+            inner,
+            il.Temporary(fptr),
+            il.Long,
+            il.Add(ptr, il.Const(offset))
+          )
+          let #(fval, state7) = fresh_temp(state6)
+          let inner = il.assign_inst(
+            inner,
+            il.Temporary(fval),
+            donna_type_to_qbe(ft),
+            il.Loadl(il.Temporary(fptr))
+          )
+          let #(sub_cmp, inner, state8) = gen_pattern_check(pat, il.Temporary(fval), ft, inner, state7)
+          let #(and_t, state9) = fresh_temp(state8)
+          let inner = il.assign_inst(
+            inner,
+            il.Temporary(and_t),
+            il.Long,
+            il.And(acc_cmp, sub_cmp)
+          )
+          let inner = il.volatile_inst(
+            inner,
+            il.Storel(il.Temporary(and_t), il.Temporary(slot_t))
+          )
+          let inner = il.volatile_inst(inner, il.Jmp(merge_label))
+          let state10 = push_block(state9, inner)
+          let skip = il.new_block(skip_label)
+          let skip = il.volatile_inst(skip, il.Storel(il.Const(0), il.Temporary(slot_t)))
+          let skip = il.volatile_inst(skip, il.Jmp(merge_label))
+          let state11 = push_block(state10, skip)
+          let merge = il.new_block(merge_label)
+          let #(result_t, state12) = fresh_temp(state11)
+          let merge = il.assign_inst(
+            merge,
+            il.Temporary(result_t),
+            il.Long,
+            il.Loadl(il.Temporary(slot_t))
+          )
+          check_nested_patterns(
+            rest_pats,
+            rest_fts,
+            idx + 1,
+            ptr,
+            il.Temporary(result_t),
+            merge,
+            state12
+          )
+
+fn gen_list_pattern_check(
+  elems: List(ast.Pattern),
+  rest_name: option.Option(String),
+  subj: il.Value,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case elems:
+    [] ->
+      case rest_name:
+        option.None ->
+          let #(tag_t, state2) = fresh_temp(state)
+          let block2 = il.assign_inst(block, il.Temporary(tag_t), il.Long, il.Loadl(subj))
+          let #(cmp_t, state3) = fresh_temp(state2)
+          let block3 = il.assign_inst(
+            block2,
+            il.Temporary(cmp_t),
+            il.Long,
+            il.Cmp(il.Long, il.Ceql, il.Temporary(tag_t), il.Const(0))
+          )
+          #(il.Temporary(cmp_t), block3, state3)
+        option.Some(_) ->
+          #(il.Const(1), block, state)
+    [pat, ..rest_elems] ->
+      let #(tag_t, state2) = fresh_temp(state)
+      let block2 = il.assign_inst(block, il.Temporary(tag_t), il.Long, il.Loadl(subj))
+      let #(is_cons, state3) = fresh_temp(state2)
+      let block3 = il.assign_inst(
+        block2,
+        il.Temporary(is_cons),
+        il.Long,
+        il.Cmp(il.Long, il.Ceql, il.Temporary(tag_t), il.Const(1))
+      )
+      let #(inner_label, state4) = fresh_label(state3, "lp_inner")
+      let #(skip_label, state5) = fresh_label(state4, "lp_skip")
+      let #(merge_label, state6) = fresh_label(state5, "lp_merge")
+      let #(slot_t, state7) = fresh_temp(state6)
+      let block4 = il.assign_inst(
+        block3,
+        il.Temporary(slot_t),
+        il.Long,
+        il.Alloc8(il.Const(8))
+      )
+      let block5 = il.volatile_inst(
+        block4,
+        il.Jnz(il.Temporary(is_cons), inner_label, skip_label)
+      )
+      let state8 = push_block(state7, block5)
+      let inner = il.new_block(inner_label)
+      let #(head_ptr, state9) = fresh_temp(state8)
+      let inner = il.assign_inst(
+        inner,
+        il.Temporary(head_ptr),
+        il.Long,
+        il.Add(subj, il.Const(8))
+      )
+      let #(head_val, state10) = fresh_temp(state9)
+      let inner = il.assign_inst(
+        inner,
+        il.Temporary(head_val),
+        il.Long,
+        il.Loadl(il.Temporary(head_ptr))
+      )
+      let #(tail_ptr, state11) = fresh_temp(state10)
+      let inner = il.assign_inst(
+        inner,
+        il.Temporary(tail_ptr),
+        il.Long,
+        il.Add(subj, il.Const(16))
+      )
+      let #(tail_val, state12) = fresh_temp(state11)
+      let inner = il.assign_inst(
+        inner,
+        il.Temporary(tail_val),
+        il.Long,
+        il.Loadl(il.Temporary(tail_ptr))
+      )
+      let #(head_cmp, inner, state13) = gen_pattern_check(pat, il.Temporary(head_val), types.TInt, inner, state12)
+      let #(tail_cmp, inner, state14) = gen_list_pattern_check(
+        rest_elems,
+        rest_name,
+        il.Temporary(tail_val),
+        inner,
+        state13
+      )
+      let #(combined, state15) = fresh_temp(state14)
+      let inner = il.assign_inst(
+        inner,
+        il.Temporary(combined),
+        il.Long,
+        il.And(head_cmp, tail_cmp)
+      )
+      let inner = il.volatile_inst(
+        inner,
+        il.Storel(il.Temporary(combined), il.Temporary(slot_t))
+      )
+      let inner = il.volatile_inst(inner, il.Jmp(merge_label))
+      let state16 = push_block(state15, inner)
+      let skip = il.new_block(skip_label)
+      let skip = il.volatile_inst(skip, il.Storel(il.Const(0), il.Temporary(slot_t)))
+      let skip = il.volatile_inst(skip, il.Jmp(merge_label))
+      let state17 = push_block(state16, skip)
+      let merge = il.new_block(merge_label)
+      let #(result_t, state18) = fresh_temp(state17)
+      let merge = il.assign_inst(
+        merge,
+        il.Temporary(result_t),
+        il.Long,
+        il.Loadl(il.Temporary(slot_t))
+      )
+      #(il.Temporary(result_t), merge, state18)
+
+fn gen_tuple_pattern_check(
+  elems: List(ast.Pattern),
+  subj: il.Value,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  gen_tuple_elem_checks(elems, subj, 0, il.Const(1), block, state)
+
+fn gen_tuple_elem_checks(
+  elems: List(ast.Pattern),
+  ptr: il.Value,
+  idx: Int,
+  acc: il.Value,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case elems:
+    [] -> #(acc, block, state)
+    [pat, ..rest] ->
+      case pat:
+        ast.PWild(_) ->
+          gen_tuple_elem_checks(rest, ptr, idx + 1, acc, block, state)
+        ast.PVar(_, _) ->
+          gen_tuple_elem_checks(rest, ptr, idx + 1, acc, block, state)
+        ast.PDiscard(_, _) ->
+          gen_tuple_elem_checks(rest, ptr, idx + 1, acc, block, state)
+        _ ->
+          let offset = idx * 8
+          let #(fptr, state2) = fresh_temp(state)
+          let block2 = il.assign_inst(
+            block,
+            il.Temporary(fptr),
+            il.Long,
+            il.Add(ptr, il.Const(offset))
+          )
+          let #(fval, state3) = fresh_temp(state2)
+          let block3 = il.assign_inst(
+            block2,
+            il.Temporary(fval),
+            il.Long,
+            il.Loadl(il.Temporary(fptr))
+          )
+          let #(cmp, block4, state4) = gen_pattern_check(pat, il.Temporary(fval), types.TInt, block3, state3)
+          let #(combined, state5) = fresh_temp(state4)
+          let block5 = il.assign_inst(
+            block4,
+            il.Temporary(combined),
+            il.Long,
+            il.And(acc, cmp)
+          )
+          gen_tuple_elem_checks(
+            rest,
+            ptr,
+            idx + 1,
+            il.Temporary(combined),
+            block5,
+            state5
+          )
+
+fn gen_call_target(
+  fn_expr: types.TypedExpr,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case fn_expr:
+    types.TEVar(name, _) ->
+      case name:
+        "print" -> #(il.Global("puts"), block, state)
+        "string_length" -> #(il.Global("strlen"), block, state)
+        "string_to_int" -> #(il.Global("atoi"), block, state)
+        _ ->
+          case lookup_alist(state_extern_aliases(state), name):
+            option.Some(sym) -> #(il.Global(sym), block, state)
+            option.None ->
+              let prefix = state_fn_prefix(state)
+              case list.contains_str(state_globals(state), name):
+                True ->
+                  let qbe_name = case string.is_empty(prefix):
+                    True -> name
+                    False -> prefix <> "_" <> name
+                  #(il.Global(qbe_name), block, state)
+                False ->
+                  case list.contains_str(state_local_fn_names(state), name):
+                    True ->
+                      let qbe_name = case string.is_empty(prefix):
+                        True -> name
+                        False -> prefix <> "_" <> name
+                      #(il.Global(qbe_name), block, state)
+                    False ->
+                      #(il.Temporary(name), block, state)
+    types.TEFieldAccess(_, field, module_path, _) ->
+      let qbe_name = case field:
+        "println" -> "puts"
+        "print" -> "printf"
+        _ ->
+          case string.is_empty(module_path):
+            True -> field
+            False -> string.replace(module_path, "/", "_") <> "_" <> field
+      #(il.Global(qbe_name), block, state)
+    other ->
+      gen_expr(other, block, state)
+
+fn gen_args(
+  args: List(types.TypedExpr),
+  block: il.Block,
+  state: CgState,
+  acc: List(#(il.ILType, il.Value))
+) -> #(List(#(il.ILType, il.Value)), il.Block, CgState):
+  case args:
+    [] -> #(list.reverse(acc), block, state)
+    [arg, ..rest] ->
+      let #(val, block2, state2) = gen_expr(arg, block, state)
+      let t = donna_type_to_qbe(types.typed_expr_type(arg))
+      gen_args(rest, block2, state2, [#(t, val), ..acc])
+
+fn gen_list(
+  elements: List(types.TypedExpr),
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  let state2 = ensure_nil_singleton(state)
+  gen_list_elements(
+    list.reverse(elements),
+    il.Global("donna_nil"),
+    block,
+    state2
+  )
+
+fn gen_list_spread(
+  elements: List(types.TypedExpr),
+  tail: types.TypedExpr,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  let state2 = ensure_nil_singleton(state)
+  let #(tail_val, block2, state3) = gen_expr(tail, block, state2)
+  gen_list_elements(list.reverse(elements), tail_val, block2, state3)
+
+fn gen_list_elements(
+  rev_elems: List(types.TypedExpr),
+  acc: il.Value,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case rev_elems:
+    [] -> #(acc, block, state)
+    [elem, ..rest] ->
+      let #(elem_val, block2, state2) = gen_expr(elem, block, state)
+      let #(ptr, state3) = fresh_temp(state2)
+      let block3 = il.assign_inst(
+        block2,
+        il.Temporary(ptr),
+        il.Long,
+        il.Call(il.Global("malloc"), [#(il.Long, il.Const(24))])
+      )
+      let block4 = il.volatile_inst(block3, il.Storel(il.Const(1), il.Temporary(ptr)))
+      let #(head_ptr, state4) = fresh_temp(state3)
+      let block5 = il.assign_inst(
+        block4,
+        il.Temporary(head_ptr),
+        il.Long,
+        il.Add(il.Temporary(ptr), il.Const(8))
+      )
+      let block6 = il.volatile_inst(block5, il.Storel(elem_val, il.Temporary(head_ptr)))
+      let #(tail_ptr, state5) = fresh_temp(state4)
+      let block7 = il.assign_inst(
+        block6,
+        il.Temporary(tail_ptr),
+        il.Long,
+        il.Add(il.Temporary(ptr), il.Const(16))
+      )
+      let block8 = il.volatile_inst(block7, il.Storel(acc, il.Temporary(tail_ptr)))
+      gen_list_elements(rest, il.Temporary(ptr), block8, state5)
+
+fn gen_tuple(
+  elements: List(types.TypedExpr),
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case elements:
+    [] -> #(il.Const(0), block, state)
+    _ ->
+      let n = list_length(elements)
+      let size = n * 8
+      let #(vals, block2, state2) = gen_exprs_list(elements, block, state, [])
+      let #(ptr, state3) = fresh_temp(state2)
+      let block3 = il.assign_inst(
+        block2,
+        il.Temporary(ptr),
+        il.Long,
+        il.Call(il.Global("malloc"), [#(il.Long, il.Const(size))])
+      )
+      let #(block4, state4) = store_tuple_fields(vals, il.Temporary(ptr), 0, block3, state3)
+      #(il.Temporary(ptr), block4, state4)
+
+fn gen_exprs_list(
+  exprs: List(types.TypedExpr),
+  block: il.Block,
+  state: CgState,
+  acc: List(il.Value)
+) -> #(List(il.Value), il.Block, CgState):
+  case exprs:
+    [] -> #(list.reverse(acc), block, state)
+    [e, ..rest] ->
+      let #(v, block2, state2) = gen_expr(e, block, state)
+      gen_exprs_list(rest, block2, state2, [v, ..acc])
+
+fn store_tuple_fields(
+  vals: List(il.Value),
+  ptr: il.Value,
+  idx: Int,
+  block: il.Block,
+  state: CgState
+) -> #(il.Block, CgState):
+  case vals:
+    [] -> #(block, state)
+    [v, ..rest] ->
+      let offset = idx * 8
+      let #(fptr, state2) = fresh_temp(state)
+      let block2 = il.assign_inst(
+        block,
+        il.Temporary(fptr),
+        il.Long,
+        il.Add(ptr, il.Const(offset))
+      )
+      let block3 = il.volatile_inst(block2, il.Storel(v, il.Temporary(fptr)))
+      store_tuple_fields(rest, ptr, idx + 1, block3, state2)
+
+fn donna_type_to_qbe(t: types.Type) -> il.ILType:
+  case t:
+    types.TInt -> il.Long
+    types.TFloat -> il.Double
+    types.TString -> il.Long
+    types.TBool -> il.Long
+    types.TNil -> il.Word
+    types.TListType(_) -> il.Long
+    types.TTupleType(_) -> il.Long
+    types.TFnType(_, _) -> il.Long
+    types.TNamedType(_, _) -> il.Long
+    types.TTypeVar(_) -> il.Long
+
+fn is_string_eq_op(lt: types.Type, rt: types.Type, op: ast.BinOpKind) -> Bool:
+  case op:
+    ast.BEq ->
+      case lt:
+        types.TString -> True
+        _ ->
+          case rt:
+            types.TString -> True
+            _ -> False
+    ast.BNotEq ->
+      case lt:
+        types.TString -> True
+        _ ->
+          case rt:
+            types.TString -> True
+            _ -> False
+    _ -> False
+
+fn is_float_eq_op(lt: types.Type, rt: types.Type, op: ast.BinOpKind) -> Bool:
+  case op:
+    ast.BEq ->
+      case lt:
+        types.TFloat -> True
+        _ ->
+          case rt:
+            types.TFloat -> True
+            _ -> False
+    ast.BNotEq ->
+      case lt:
+        types.TFloat -> True
+        _ ->
+          case rt:
+            types.TFloat -> True
+            _ -> False
+    _ -> False
+
+fn binop_to_qbe(
+  op: ast.BinOpKind,
+  result_type: types.Type,
+  left: il.Value,
+  right: il.Value
+) -> #(il.Inst, il.ILType):
+  let t = donna_type_to_qbe(result_type)
+  let inst = case op:
+    ast.BAdd -> il.Add(left, right)
+    ast.BSub -> il.Sub(left, right)
+    ast.BMul -> il.Mul(left, right)
+    ast.BDiv -> il.Div(left, right)
+    ast.BMod -> il.Rem(left, right)
+    ast.BAddDot -> il.Add(left, right)
+    ast.BSubDot -> il.Sub(left, right)
+    ast.BMulDot -> il.Mul(left, right)
+    ast.BDivDot -> il.Div(left, right)
+    ast.BEq -> il.Cmp(il.Long, il.Ceql, left, right)
+    ast.BNotEq -> il.Cmp(il.Long, il.Cnel, left, right)
+    ast.BLt -> il.Cmp(il.Long, il.Sltl, left, right)
+    ast.BGt -> il.Cmp(il.Long, il.Sgtl, left, right)
+    ast.BLtEq -> il.Cmp(il.Long, il.Slel, left, right)
+    ast.BGtEq -> il.Cmp(il.Long, il.Sgel, left, right)
+    ast.BLtDot -> il.Cmp(il.Double, il.Cltd, left, right)
+    ast.BGtDot -> il.Cmp(il.Double, il.Cgtd, left, right)
+    ast.BLtEqDot -> il.Cmp(il.Double, il.Cled, left, right)
+    ast.BGtEqDot -> il.Cmp(il.Double, il.Cged, left, right)
+    ast.BAnd -> il.And(left, right)
+    ast.BOr -> il.Or(left, right)
+    ast.BConcat -> il.Copy(left)
+  #(inst, t)
+
+fn gen_builtin_char_at(
+  args: List(types.TypedExpr),
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case args:
+    [str_e, idx_e, .._] ->
+      let #(sv, b1, s1) = gen_expr(str_e, block, state)
+      let #(iv, b2, s2) = gen_expr(idx_e, b1, s1)
+      let #(ptr_t, s3) = fresh_temp(s2)
+      let b3 = il.assign_inst(b2, il.Temporary(ptr_t), il.Long, il.Add(sv, iv))
+      let #(char_t, s4) = fresh_temp(s3)
+      let b4 = il.assign_inst(
+        b3,
+        il.Temporary(char_t),
+        il.Long,
+        il.Loadub(il.Temporary(ptr_t))
+      )
+      #(il.Temporary(char_t), b4, s4)
+    _ -> #(il.Const(0), block, state)
+
+fn gen_builtin_string_equal(
+  args: List(types.TypedExpr),
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case args:
+    [a_e, b_e, .._] ->
+      let #(av, b1, s1) = gen_expr(a_e, block, state)
+      let #(bv, b2, s2) = gen_expr(b_e, b1, s1)
+      let #(cmp_t, s3) = fresh_temp(s2)
+      let b3 = il.assign_inst(
+        b2,
+        il.Temporary(cmp_t),
+        il.Long,
+        il.Call(il.Global("strcmp"), [#(il.Long, av), #(il.Long, bv)])
+      )
+      let #(eq_t, s4) = fresh_temp(s3)
+      let b4 = il.assign_inst(
+        b3,
+        il.Temporary(eq_t),
+        il.Long,
+        il.Cmp(il.Long, il.Ceql, il.Temporary(cmp_t), il.Const(0))
+      )
+      #(il.Temporary(eq_t), b4, s4)
+    _ -> #(il.Const(0), block, state)
+
+fn gen_builtin_substring(
+  args: List(types.TypedExpr),
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case args:
+    [s_e, start_e, len_e, .._] ->
+      let #(sv, b1, s1) = gen_expr(s_e, block, state)
+      let #(startv, b2, s2) = gen_expr(start_e, b1, s1)
+      let #(lenv, b3, s3) = gen_expr(len_e, b2, s2)
+      let #(ptr_t, s4) = fresh_temp(s3)
+      let b4 = il.assign_inst(b3, il.Temporary(ptr_t), il.Long, il.Add(sv, startv))
+      let #(res_t, s5) = fresh_temp(s4)
+      let b5 = il.assign_inst(
+        b4,
+        il.Temporary(res_t),
+        il.Long,
+        il.Call(
+          il.Global("strndup"),
+          [#(il.Long, il.Temporary(ptr_t)), #(il.Long, lenv)]
+        )
+      )
+      #(il.Temporary(res_t), b5, s5)
+    _ -> #(il.Const(0), block, state)
+
+fn gen_builtin_int_to_string(
+  args: List(types.TypedExpr),
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case args:
+    [n_e, .._] ->
+      let s1 = ensure_int_to_string_helper(state)
+      let #(nv, b1, s2) = gen_expr(n_e, block, s1)
+      let #(res_t, s3) = fresh_temp(s2)
+      let b2 = il.assign_inst(
+        b1,
+        il.Temporary(res_t),
+        il.Long,
+        il.Call(il.Global("__rt_int_to_str"), [#(il.Long, nv)])
+      )
+      #(il.Temporary(res_t), b2, s3)
+    _ -> #(il.Const(0), block, state)
+
+fn gen_builtin_print_str(
+  args: List(types.TypedExpr),
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  case args:
+    [s_e, .._] ->
+      let s1 = ensure_print_str_helper(state)
+      let #(sv, b1, s2) = gen_expr(s_e, block, s1)
+      let b2 = il.volatile_inst(
+        b1,
+        il.Call(il.Global("__rt_print_str"), [#(il.Long, sv)])
+      )
+      #(il.Const(0), b2, s2)
+    _ -> #(il.Const(0), block, state)

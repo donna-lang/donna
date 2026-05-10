@@ -1,0 +1,116 @@
+//// Parsed Donna abstract syntax tree.
+//// The AST keeps source spans on declarations, expressions, statements, types,
+//// and patterns so later compiler phases can produce useful diagnostics.
+
+import utilities/location
+import donna/option
+
+/// A parsed Donna module.
+pub type Module:
+  Module(List(String), List(Import), List(Const), List(TypeDef), List(Function))
+
+/// A top-level import with its module path, alias, and source span.
+pub type Import:
+  Import(List(String), String, location.Span)
+
+/// A top-level constant declaration.
+pub type Const:
+  Const(String, Bool, option.Option(TypeAnnotation), Expr, location.Span)
+
+/// A normal or external function declaration, or a section comment between declarations.
+pub type Function:
+  Function(String, Bool, List(Param), option.Option(TypeAnnotation), Expr, location.Span)
+  ExternalFn(String, Bool, List(Param), option.Option(TypeAnnotation), String, String, location.Span)
+
+/// A function or lambda parameter.
+pub type Param:
+  Param(String, option.Option(TypeAnnotation), location.Span)
+
+/// A top-level algebraic data type declaration.
+pub type TypeDef:
+  TypeDef(String, Bool, Bool, List(String), List(ConstructorDef), location.Span)
+
+/// A constructor inside a type declaration.
+pub type ConstructorDef:
+  ConstructorDef(String, List(String), List(TypeAnnotation), location.Span)
+
+/// A parsed type annotation.
+pub type TypeAnnotation:
+  TyName(String, List(TypeAnnotation), location.Span)
+  TyTuple(List(TypeAnnotation), location.Span)
+  TyFn(List(TypeAnnotation), TypeAnnotation, location.Span)
+
+/// A parsed expression.
+pub type Expr:
+  IntLit(String, location.Span)
+  FloatLit(String, location.Span)
+  StringLit(String, location.Span)
+  BoolLit(Bool, location.Span)
+  Var(String, location.Span)
+  FieldAccess(Expr, String, location.Span)
+  Tuple(List(Expr), location.Span)
+  EList(List(Expr), location.Span)
+  ListSpread(List(Expr), Expr, location.Span)
+  Call(Expr, List(Expr), location.Span)
+  BinOp(BinOpKind, Expr, Expr, location.Span)
+  UnaryOp(UnaryKind, Expr, location.Span)
+  Case(Expr, List(CaseClause), location.Span)
+  Block(List(Stmt), location.Span)
+  Pipe(Expr, Expr, location.Span)
+  Lambda(List(Param), Expr, location.Span)
+  Echo(Expr, location.Span)
+  Panic(Expr, location.Span)
+  Todo(location.Span)
+
+/// A statement inside an indented block.
+pub type Stmt:
+  LetStmt(String, option.Option(TypeAnnotation), Expr, location.Span)
+  LetPatStmt(Pattern, Expr, location.Span)
+  ExprStmt(Expr, location.Span)
+
+/// One `case` arm with pattern, optional guard, and body.
+pub type CaseClause:
+  CaseClause(Pattern, option.Option(Expr), Expr, location.Span)
+
+/// A pattern used by `case` or destructuring `let`.
+pub type Pattern:
+  PWild(location.Span)
+  PDiscard(String, location.Span)
+  PVar(String, location.Span)
+  PInt(String, location.Span)
+  PFloat(String, location.Span)
+  PString(String, location.Span)
+  PBool(Bool, location.Span)
+  PTuple(List(Pattern), location.Span)
+  PList(List(Pattern), option.Option(String), location.Span)
+  PCons(option.Option(String), String, List(Pattern), location.Span)
+
+/// Binary operators supported by Donna expressions.
+pub type BinOpKind:
+  BAdd
+  BSub
+  BMul
+  BDiv
+  BMod
+  BAddDot
+  BSubDot
+  BMulDot
+  BDivDot
+  BEq
+  BNotEq
+  BLt
+  BLtEq
+  BGt
+  BGtEq
+  BLtDot
+  BLtEqDot
+  BGtDot
+  BGtEqDot
+  BAnd
+  BOr
+  BConcat
+
+/// Unary operators supported by Donna expressions.
+pub type UnaryKind:
+  UNeg
+  UNot

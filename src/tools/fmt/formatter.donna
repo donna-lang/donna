@@ -1,0 +1,647 @@
+//// Donna source formatter.
+//// Parses source text and renders it back in the canonical Donna style while
+//// preserving doc comments.
+
+import compiler/lexer/lexer
+import compiler/parser/parser
+import compiler/parser/ast
+import utilities/location
+import donna/string
+import donna/list
+import donna/option
+import donna/result
+
+/// Preferred formatter line width.
+pub const max_width = 80
+/// Number of spaces in one formatter indentation step.
+pub const step = 2
+
+/// Format raw Donna source text.
+pub fn format_source(
+  src: String,
+  path: String
+) -> result.Result(String, String):
+  case lexer.lex(src, path):
+    lexer.LexErrors(_) -> result.Error("cannot format: lex error")
+    lexer.LexOk(toks) ->
+      case parser.parse(toks):
+        parser.ParseErrors(_) -> result.Error("cannot format: parse error")
+        parser.ParseOk(module) ->
+          result.Ok(format_module(module, src))
+
+/// Format a parsed Donna module while preserving source comments.
+pub fn format_module(m: ast.Module, src: String) -> String:
+  case m:
+    ast.Module(doc_comments, imports, consts, type_defs, fns) ->
+      let secs = collect_sections(doc_comments, imports, consts, type_defs, fns, src)
+      string.join(secs, "\n\n") <> "\n"
+
+fn collect_sections(
+  doc_comments: List(String),
+  imports: List(ast.Import),
+  consts: List(ast.Const),
+  type_defs: List(ast.TypeDef),
+  fns: List(ast.Function),
+  src: String
+) -> List(String):
+  let acc = []
+  let acc = case list.is_empty(fns):
+    True -> acc
+    False -> [format_functions(fns, src), ..acc]
+  let acc = case list.is_empty(type_defs):
+    True -> acc
+    False -> [format_type_defs(type_defs, src), ..acc]
+  let acc = case list.is_empty(consts):
+    True -> acc
+    False -> [format_consts(consts, src), ..acc]
+  let acc = case list.is_empty(imports):
+    True -> acc
+    False -> [format_imports(imports), ..acc]
+  case list.is_empty(doc_comments):
+    True -> acc
+    False -> [format_doc_block(doc_comments), ..acc]
+
+fn format_doc_block(lines: List(String)) -> String:
+  string.join(format_doc_lines(lines, []), "\n")
+
+fn format_doc_lines(lines: List(String), acc: List(String)) -> List(String):
+  case lines:
+    [] -> list.reverse(acc)
+    [l, ..rest] -> format_doc_lines(rest, [format_doc_line(l), ..acc])
+
+fn format_doc_line(text: String) -> String:
+  case string.equal(text, ""):
+    True -> "////"
+    False -> "//// " <> text
+
+fn format_imports(imports: List(ast.Import)) -> String:
+  string.join(format_import_list(imports, []), "\n")
+
+fn format_import_list(
+  imports: List(ast.Import),
+  acc: List(String)
+) -> List(String):
+  case imports:
+    [] -> list.reverse(acc)
+    [i, ..rest] -> format_import_list(rest, [format_import(i), ..acc])
+
+fn format_import(imp: ast.Import) -> String:
+  case imp:
+    ast.Import(path, alias, _) ->
+      let path_str = string.join(path, "/")
+      let last = path_last(path, alias)
+      let as_str = case string.equal(alias, last):
+        True -> ""
+        False -> " as " <> alias
+      "import " <> path_str <> as_str
+
+fn path_last(parts: List(String), fallback: String) -> String:
+  case parts:
+    [] -> fallback
+    [x] -> x
+    [_, ..rest] -> path_last(rest, fallback)
+
+fn format_consts(consts: List(ast.Const), src: String) -> String:
+  string.join(format_const_list(consts, src, []), "\n")
+
+fn format_const_list(
+  consts: List(ast.Const),
+  src: String,
+  acc: List(String)
+) -> List(String):
+  case consts:
+    [] -> list.reverse(acc)
+    [c, ..rest] -> format_const_list(rest, src, [format_const(c, src), ..acc])
+
+fn format_const(c: ast.Const, src: String) -> String:
+  case c:
+    ast.Const(name, is_pub, ann_opt, value, sp) ->
+      let doc = preceding_doc(src, location.pos_line(location.span_start(sp)))
+      let pub_str = case is_pub:
+        True -> "pub "
+        False -> ""
+      let ann_str = case ann_opt:
+        option.None -> ""
+        option.Some(ann) -> ": " <> format_type_ann(ann)
+      doc <> pub_str <> "const " <> name <> ann_str <> " = " <> format_expr(value, 0)
+
+fn format_type_defs(tds: List(ast.TypeDef), src: String) -> String:
+  string.join(format_type_def_list(tds, src, []), "\n\n")
+
+fn format_type_def_list(
+  tds: List(ast.TypeDef),
+  src: String,
+  acc: List(String)
+) -> List(String):
+  case tds:
+    [] -> list.reverse(acc)
+    [td, ..rest] ->
+      format_type_def_list(rest, src, [format_type_def(td, src), ..acc])
+
+fn format_type_def(td: ast.TypeDef, src: String) -> String:
+  case td:
+    ast.TypeDef(name, is_pub, is_opaque, type_params, ctors, sp) ->
+      let doc = preceding_doc(src, location.pos_line(location.span_start(sp)))
+      let pub_str = case is_pub:
+        True -> "pub "
+        False -> ""
+      let opaque_str = case is_opaque:
+        True -> "opaque "
+        False -> ""
+      let params_str = case list.is_empty(type_params):
+        True -> ""
+        False -> "(" <> string.join(type_params, ", ") <> ")"
+      let header = pub_str <> opaque_str <> "type " <> name <> params_str <> ":"
+      let ctor_strs = format_ctor_list(ctors, [])
+      doc <> header <> "\n" <> string.join(ctor_strs, "\n")
+
+fn format_ctor_list(
+  ctors: List(ast.ConstructorDef),
+  acc: List(String)
+) -> List(String):
+  case ctors:
+    [] -> list.reverse(acc)
+    [c, ..rest] -> format_ctor_list(rest, [format_ctor_def(c), ..acc])
+
+fn format_ctor_def(ctor: ast.ConstructorDef) -> String:
+  case ctor:
+    ast.ConstructorDef(name, field_names, fields, _) ->
+      case list.is_empty(fields):
+        True -> ind(step) <> name
+        False ->
+          let field_strs = format_ctor_fields(field_names, fields, [])
+          ind(step) <> name <> "(" <> string.join(field_strs, ", ") <> ")"
+
+fn format_ctor_fields(
+  names: List(String),
+  types: List(ast.TypeAnnotation),
+  acc: List(String)
+) -> List(String):
+  case names:
+    [] -> list.reverse(acc)
+    [name, ..rest_names] ->
+      case types:
+        [] -> list.reverse(acc)
+        [t, ..rest_types] ->
+          let field_str = case string.equal(name, ""):
+            True -> format_type_ann(t)
+            False -> name <> ": " <> format_type_ann(t)
+          format_ctor_fields(rest_names, rest_types, [field_str, ..acc])
+
+fn format_functions(fns: List(ast.Function), src: String) -> String:
+  string.join(format_fn_list(fns, src, []), "\n\n")
+
+fn format_fn_list(
+  fns: List(ast.Function),
+  src: String,
+  acc: List(String)
+) -> List(String):
+  case fns:
+    [] -> list.reverse(acc)
+    [f, ..rest] -> format_fn_list(rest, src, [format_function(f, src), ..acc])
+
+fn format_function(f: ast.Function, src: String) -> String:
+  case f:
+    ast.ExternalFn(name, is_pub, params, ret_ann, lang, symbol, sp) ->
+      let doc = preceding_doc(src, location.pos_line(location.span_start(sp)))
+      let pub_str = case is_pub:
+        True -> "pub "
+        False -> ""
+      let attr = "@external(\"" <> lang <> "\", \"" <> symbol <> "\")\n"
+      doc <> attr <> pub_str <> "fn " <> name <> format_params_inline(params) <> format_ret_ann(ret_ann)
+    ast.Function(name, is_pub, params, ret_ann, body, sp) ->
+      let doc = preceding_doc(src, location.pos_line(location.span_start(sp)))
+      let pub_str = case is_pub:
+        True -> "pub "
+        False -> ""
+      let prefix = pub_str <> "fn " <> name
+      let ret_str = format_ret_ann(ret_ann)
+      let inline_sig = prefix <> format_params_inline(params) <> ret_str <> ":"
+      let sig = case fits(inline_sig, 0):
+        True -> inline_sig
+        False ->
+          let param_lines = format_params_multiline(params, step, [])
+          prefix <> "(\n" <> string.join(param_lines, ",\n") <> "\n)" <> ret_str <> ":"
+      doc <> sig <> "\n" <> format_body(body, step)
+
+fn format_params_inline(params: List(ast.Param)) -> String:
+  "(" <> string.join(format_param_list(params, []), ", ") <> ")"
+
+fn format_param_list(
+  params: List(ast.Param),
+  acc: List(String)
+) -> List(String):
+  case params:
+    [] -> list.reverse(acc)
+    [p, ..rest] -> format_param_list(rest, [format_param(p), ..acc])
+
+fn format_params_multiline(
+  params: List(ast.Param),
+  indent: Int,
+  acc: List(String)
+) -> List(String):
+  case params:
+    [] -> list.reverse(acc)
+    [p, ..rest] ->
+      format_params_multiline(
+        rest,
+        indent,
+        [ind(indent) <> format_param(p), ..acc]
+      )
+
+fn format_param(p: ast.Param) -> String:
+  case p:
+    ast.Param(name, ann_opt, _) ->
+      case ann_opt:
+        option.None -> name
+        option.Some(ann) -> name <> ": " <> format_type_ann(ann)
+
+fn format_ret_ann(ret_ann: option.Option(ast.TypeAnnotation)) -> String:
+  case ret_ann:
+    option.None -> ""
+    option.Some(ann) -> " -> " <> format_type_ann(ann)
+
+fn format_body(body: ast.Expr, indent: Int) -> String:
+  case body:
+    ast.Block(stmts, _) ->
+      string.join(format_stmts_list(stmts, indent, []), "\n")
+    _ ->
+      ind(indent) <> format_expr(body, indent)
+
+fn format_stmts_list(
+  stmts: List(ast.Stmt),
+  indent: Int,
+  acc: List(String)
+) -> List(String):
+  case stmts:
+    [] -> list.reverse(acc)
+    [s, ..rest] ->
+      format_stmts_list(rest, indent, [format_stmt(s, indent), ..acc])
+
+fn format_stmt(stmt: ast.Stmt, indent: Int) -> String:
+  case stmt:
+    ast.LetStmt(name, ann_opt, value, _) ->
+      let ann_str = case ann_opt:
+        option.None -> ""
+        option.Some(ann) -> ": " <> format_type_ann(ann)
+      ind(indent) <> "let " <> name <> ann_str <> " = " <> format_expr(value, indent)
+    ast.LetPatStmt(pat, value, _) ->
+      ind(indent) <> "let " <> format_pattern(pat) <> " = " <> format_expr(value, indent)
+    ast.ExprStmt(expr, _) ->
+      ind(indent) <> format_expr(expr, indent)
+
+/// Format a Donna expression.
+pub fn format_expr(expr: ast.Expr, indent: Int) -> String:
+  case expr:
+    ast.IntLit(v, _) -> v
+    ast.FloatLit(v, _) -> v
+    ast.StringLit(v, _) -> "\"" <> escape_string(v) <> "\""
+    ast.BoolLit(True, _) -> "True"
+    ast.BoolLit(False, _) -> "False"
+    ast.Var(name, _) -> name
+    ast.FieldAccess(obj, field, _) ->
+      format_expr(obj, indent) <> "." <> field
+    ast.Call(fn_expr, args, _) ->
+      format_call(fn_expr, args, indent)
+    ast.BinOp(op, left, right, _) ->
+      let prec = binop_prec(op)
+      let ls = format_binop_left(left, prec, indent)
+      let rs = format_binop_right(right, prec, indent)
+      ls <> " " <> binop_str(op) <> " " <> rs
+    ast.UnaryOp(op, operand, _) ->
+      let op_str = case op:
+        ast.UNeg -> "-"
+        ast.UNot -> "!"
+      case operand:
+        ast.BinOp(_, _, _, _) ->
+          op_str <> "(" <> format_expr(operand, indent) <> ")"
+        _ -> op_str <> format_expr(operand, indent)
+    ast.Pipe(_, _, _) ->
+      format_pipe(expr, indent)
+    ast.Case(subj, clauses, _) ->
+      format_case(subj, clauses, indent)
+    ast.Block(stmts, _) ->
+      string.join(format_stmts_list(stmts, indent, []), "\n")
+    ast.Tuple(elems, _) ->
+      let inline = "#(" <> format_exprs_inline(elems, indent) <> ")"
+      case fits(inline, indent):
+        True -> inline
+        False ->
+          let lines = format_args_multiline(elems, indent + step, [])
+          "#(\n" <> string.join(lines, ",\n") <> "\n" <> ind(indent) <> ")"
+    ast.EList(elems, _) ->
+      case list.is_empty(elems):
+        True -> "[]"
+        False ->
+          let inline = "[" <> format_exprs_inline(elems, indent) <> "]"
+          case fits(inline, indent):
+            True -> inline
+            False ->
+              let lines = format_args_multiline(elems, indent + step, [])
+              "[\n" <> string.join(lines, ",\n") <> "\n" <> ind(indent) <> "]"
+    ast.ListSpread(elems, tail, _) ->
+      let tail_str = ".." <> format_expr(tail, indent)
+      case list.is_empty(elems):
+        True -> "[" <> tail_str <> "]"
+        False ->
+          let inline = "[" <> format_exprs_inline(elems, indent) <> ", " <> tail_str <> "]"
+          case fits(inline, indent):
+            True -> inline
+            False ->
+              let lines = format_args_multiline(elems, indent + step, [])
+              "[\n" <> string.join(lines, ",\n") <> ",\n" <> ind(indent + step) <> tail_str <> "\n" <> ind(indent) <> "]"
+    ast.Lambda(params, body, _) ->
+      "fn" <> format_params_inline(params) <> " -> " <> format_expr(body, indent)
+    ast.Echo(inner, _) ->
+      "echo " <> format_expr(inner, indent)
+    ast.Panic(inner, _) ->
+      "panic " <> format_expr(inner, indent)
+    ast.Todo(_) ->
+      "todo"
+
+fn format_call(fn_expr: ast.Expr, args: List(ast.Expr), indent: Int) -> String:
+  let fn_str = format_expr(fn_expr, indent)
+  case list.is_empty(args):
+    True -> fn_str <> "()"
+    False ->
+      let inline = fn_str <> "(" <> format_exprs_inline(args, indent) <> ")"
+      case fits(inline, indent):
+        True -> inline
+        False ->
+          let lines = format_args_multiline(args, indent + step, [])
+          fn_str <> "(\n" <> string.join(lines, ",\n") <> "\n" <> ind(indent) <> ")"
+
+fn format_exprs_inline(exprs: List(ast.Expr), indent: Int) -> String:
+  string.join(format_exprs_loop(exprs, indent, []), ", ")
+
+fn format_exprs_loop(
+  exprs: List(ast.Expr),
+  indent: Int,
+  acc: List(String)
+) -> List(String):
+  case exprs:
+    [] -> list.reverse(acc)
+    [e, ..rest] ->
+      format_exprs_loop(rest, indent, [format_expr(e, indent), ..acc])
+
+fn format_args_multiline(
+  args: List(ast.Expr),
+  indent: Int,
+  acc: List(String)
+) -> List(String):
+  case args:
+    [] -> list.reverse(acc)
+    [a, ..rest] ->
+      format_args_multiline(
+        rest,
+        indent,
+        [ind(indent) <> format_expr(a, indent), ..acc]
+      )
+
+fn format_pipe(expr: ast.Expr, indent: Int) -> String:
+  let parts = flatten_pipe(expr, [])
+  format_pipe_chain(parts, indent)
+
+fn flatten_pipe(expr: ast.Expr, acc: List(ast.Expr)) -> List(ast.Expr):
+  case expr:
+    ast.Pipe(left, right, _) -> flatten_pipe(left, [right, ..acc])
+    _ -> [expr, ..acc]
+
+fn format_pipe_chain(parts: List(ast.Expr), indent: Int) -> String:
+  case parts:
+    [] -> ""
+    [single] -> format_expr(single, indent)
+    [first, ..rest] ->
+      let first_str = format_expr(first, indent)
+      let pipe_strs = format_pipe_rest(rest, indent, [])
+      first_str <> "\n" <> string.join(pipe_strs, "\n")
+
+fn format_pipe_rest(
+  parts: List(ast.Expr),
+  indent: Int,
+  acc: List(String)
+) -> List(String):
+  case parts:
+    [] -> list.reverse(acc)
+    [e, ..rest] ->
+      let line = ind(indent) <> "|> " <> format_expr(e, indent)
+      format_pipe_rest(rest, indent, [line, ..acc])
+
+fn format_case(
+  subj: ast.Expr,
+  clauses: List(ast.CaseClause),
+  indent: Int
+) -> String:
+  let subj_str = format_expr(subj, indent)
+  let clause_strs = format_clauses_list(clauses, indent + step, [])
+  "case " <> subj_str <> ":\n" <> string.join(clause_strs, "\n")
+
+fn format_clauses_list(
+  clauses: List(ast.CaseClause),
+  indent: Int,
+  acc: List(String)
+) -> List(String):
+  case clauses:
+    [] -> list.reverse(acc)
+    [c, ..rest] ->
+      format_clauses_list(rest, indent, [format_clause(c, indent), ..acc])
+
+fn format_clause(clause: ast.CaseClause, indent: Int) -> String:
+  case clause:
+    ast.CaseClause(pat, guard_opt, body, _) ->
+      let pat_str = format_pattern(pat)
+      let guard_str = case guard_opt:
+        option.None -> ""
+        option.Some(g) -> " if " <> format_expr(g, indent)
+      let prefix = ind(indent) <> pat_str <> guard_str <> " ->"
+      format_clause_body(body, prefix, indent)
+
+fn format_clause_body(body: ast.Expr, prefix: String, indent: Int) -> String:
+  let body_indent = indent + step
+  case body:
+    ast.Block(stmts, _) ->
+      let stmt_strs = format_stmts_list(stmts, body_indent, [])
+      prefix <> "\n" <> string.join(stmt_strs, "\n")
+    _ ->
+      let body_str = format_expr(body, body_indent)
+      let inline = prefix <> " " <> body_str
+      case fits(inline, 0):
+        True -> inline
+        False -> prefix <> "\n" <> ind(body_indent) <> body_str
+
+fn format_binop_left(expr: ast.Expr, parent_prec: Int, indent: Int) -> String:
+  case expr:
+    ast.BinOp(op, _, _, _) ->
+      case binop_prec(op) < parent_prec:
+        True -> "(" <> format_expr(expr, indent) <> ")"
+        False -> format_expr(expr, indent)
+    _ -> format_expr(expr, indent)
+
+fn format_binop_right(expr: ast.Expr, parent_prec: Int, indent: Int) -> String:
+  case expr:
+    ast.BinOp(op, _, _, _) ->
+      case binop_prec(op) <= parent_prec:
+        True -> "(" <> format_expr(expr, indent) <> ")"
+        False -> format_expr(expr, indent)
+    _ -> format_expr(expr, indent)
+
+fn binop_str(op: ast.BinOpKind) -> String:
+  case op:
+    ast.BAdd -> "+"
+    ast.BSub -> "-"
+    ast.BMul -> "*"
+    ast.BDiv -> "/"
+    ast.BMod -> "%"
+    ast.BAddDot -> "+."
+    ast.BSubDot -> "-."
+    ast.BMulDot -> "*."
+    ast.BDivDot -> "/."
+    ast.BEq -> "=="
+    ast.BNotEq -> "!="
+    ast.BLt -> "<"
+    ast.BLtEq -> "<="
+    ast.BGt -> ">"
+    ast.BGtEq -> ">="
+    ast.BLtDot -> "<."
+    ast.BLtEqDot -> "<=."
+    ast.BGtDot -> ">."
+    ast.BGtEqDot -> ">=."
+    ast.BAnd -> "&&"
+    ast.BOr -> "||"
+    ast.BConcat -> "<>"
+
+fn binop_prec(op: ast.BinOpKind) -> Int:
+  case op:
+    ast.BMul -> 7
+    ast.BDiv -> 7
+    ast.BMod -> 7
+    ast.BMulDot -> 7
+    ast.BDivDot -> 7
+    ast.BAdd -> 6
+    ast.BSub -> 6
+    ast.BAddDot -> 6
+    ast.BSubDot -> 6
+    ast.BLt -> 5
+    ast.BLtEq -> 5
+    ast.BGt -> 5
+    ast.BGtEq -> 5
+    ast.BLtDot -> 5
+    ast.BLtEqDot -> 5
+    ast.BGtDot -> 5
+    ast.BGtEqDot -> 5
+    ast.BEq -> 4
+    ast.BNotEq -> 4
+    ast.BAnd -> 3
+    ast.BOr -> 2
+    ast.BConcat -> 1
+
+/// Format a Donna pattern.
+pub fn format_pattern(pat: ast.Pattern) -> String:
+  case pat:
+    ast.PWild(_) -> "_"
+    ast.PDiscard(name, _) -> "_" <> name
+    ast.PVar(name, _) -> name
+    ast.PInt(v, _) -> v
+    ast.PFloat(v, _) -> v
+    ast.PString(v, _) -> "\"" <> escape_string(v) <> "\""
+    ast.PBool(True, _) -> "True"
+    ast.PBool(False, _) -> "False"
+    ast.PTuple(elems, _) ->
+      "#(" <> string.join(format_pattern_list(elems, []), ", ") <> ")"
+    ast.PList(elems, rest_opt, _) ->
+      let elem_strs = format_pattern_list(elems, [])
+      case rest_opt:
+        option.None -> "[" <> string.join(elem_strs, ", ") <> "]"
+        option.Some("_") ->
+          let base = string.join(elem_strs, ", ")
+          case string.is_empty(base):
+            True -> "[.._]"
+            False -> "[" <> base <> ", .._]"
+        option.Some(name) ->
+          let base = string.join(elem_strs, ", ")
+          case string.is_empty(base):
+            True -> "[.." <> name <> "]"
+            False -> "[" <> base <> ", .." <> name <> "]"
+    ast.PCons(mod_opt, name, args, _) ->
+      let prefix = case mod_opt:
+        option.None -> name
+        option.Some(m) -> m <> "." <> name
+      case list.is_empty(args):
+        True -> prefix
+        False ->
+          prefix <> "(" <> string.join(format_pattern_list(args, []), ", ") <> ")"
+
+fn format_pattern_list(
+  pats: List(ast.Pattern),
+  acc: List(String)
+) -> List(String):
+  case pats:
+    [] -> list.reverse(acc)
+    [p, ..rest] -> format_pattern_list(rest, [format_pattern(p), ..acc])
+
+/// Format a Donna type annotation.
+pub fn format_type_ann(ann: ast.TypeAnnotation) -> String:
+  case ann:
+    ast.TyName(name, [], _) -> name
+    ast.TyName(name, args, _) ->
+      name <> "(" <> string.join(format_type_ann_list(args, []), ", ") <> ")"
+    ast.TyTuple(elems, _) ->
+      "#(" <> string.join(format_type_ann_list(elems, []), ", ") <> ")"
+    ast.TyFn(params, ret, _) ->
+      "fn(" <> string.join(format_type_ann_list(params, []), ", ") <> ") -> " <> format_type_ann(ret)
+
+fn format_type_ann_list(
+  anns: List(ast.TypeAnnotation),
+  acc: List(String)
+) -> List(String):
+  case anns:
+    [] -> list.reverse(acc)
+    [a, ..rest] -> format_type_ann_list(rest, [format_type_ann(a), ..acc])
+
+fn escape_string(s: String) -> String:
+  escape_chars(s, 0, string.length(s), "")
+
+fn escape_chars(s: String, i: Int, n: Int, acc: String) -> String:
+  case i >= n:
+    True -> acc
+    False ->
+      let c = string.char_at(s, i)
+      let chunk = case c:
+        34 -> "\\\""
+        92 -> "\\\\"
+        10 -> "\\n"
+        9 -> "\\t"
+        13 -> "\\r"
+        27 -> "\\u{001b}"
+        _ -> string.char_str(s, i)
+      escape_chars(s, i + 1, n, acc <> chunk)
+
+fn ind(n: Int) -> String:
+  string.repeat(" ", n)
+
+fn fits(s: String, col: Int) -> Bool:
+  col + string.length(s) <= max_width
+
+fn preceding_doc(src: String, line: Int) -> String:
+  let lines = string.split(src, "\n")
+  let comments = collect_item_doc(lines, line - 2, [])
+  case list.is_empty(comments):
+    True -> ""
+    False -> string.join(comments, "\n") <> "\n"
+
+fn collect_item_doc(
+  lines: List(String),
+  idx: Int,
+  acc: List(String)
+) -> List(String):
+  case idx < 0:
+    True -> acc
+    False ->
+      let line_text = list.nth(lines, idx, "")
+      let trimmed = string.trim(line_text)
+      case string.starts_with(trimmed, "///"):
+        False -> acc
+        True ->
+          case string.starts_with(trimmed, "////"):
+            True -> acc
+            False -> collect_item_doc(lines, idx - 1, [trimmed, ..acc])

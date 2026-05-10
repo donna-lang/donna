@@ -1,0 +1,105 @@
+//// Source location data.
+//// Defines spans used across lexer, parser, typechecker, analyzer, and
+//// diagnostic rendering.
+
+import donna/string
+import donna/int
+
+/// A source position using one-based line and column plus byte offset.
+pub type Position:
+  Position(line: Int, col: Int, byte_offset: Int)
+
+/// A source span between two positions in one file.
+pub type Span:
+  Span(file: String, start: Position, end_: Position)
+
+/// Return a zero-length span at the start of a file.
+pub fn zero(file: String) -> Span:
+  let pos = Position(1, 1, 0)
+  Span(file, pos, pos)
+
+/// Build a span from explicit start and end positions.
+pub fn from_positions(file: String, start: Position, end_: Position) -> Span:
+  Span(file, start, end_)
+
+/// Return the line number from a position.
+pub fn pos_line(pos: Position) -> Int:
+  case pos:
+    Position(line, _, _) -> line
+
+/// Return the column number from a position.
+pub fn pos_col(pos: Position) -> Int:
+  case pos:
+    Position(_, col, _) -> col
+
+/// Return the byte offset from a position.
+pub fn pos_offset(pos: Position) -> Int:
+  case pos:
+    Position(_, _, offset) -> offset
+
+/// Return the file path from a span.
+pub fn span_file(span: Span) -> String:
+  case span:
+    Span(file, _, _) -> file
+
+/// Return the start position from a span.
+pub fn span_start(span: Span) -> Position:
+  case span:
+    Span(_, start, _) -> start
+
+/// Return the end position from a span.
+pub fn span_end(span: Span) -> Position:
+  case span:
+    Span(_, _, end) -> end
+
+/// Return the column length covered by a span.
+pub fn span_length(span: Span) -> Int:
+  pos_col(span_end(span)) - pos_col(span_start(span)) + 1
+
+/// Render a full `file:line:column` label for a span.
+pub fn label(span: Span) -> String:
+  let s = span_start(span)
+  span_file(span) <> ":" <> int.to_string(pos_line(s)) <> ":" <> int.to_string(pos_col(s))
+
+/// Render a compact `file:line:column` label for a span.
+pub fn short_label(span: Span) -> String:
+  let s = span_start(span)
+  strip_src_prefix(span_file(span)) <> ":" <> int.to_string(pos_line(s)) <> ":" <> int.to_string(pos_col(s))
+
+/// Merge two spans into one span from the first start to the second end.
+pub fn merge(a: Span, b: Span) -> Span:
+  Span(span_file(a), span_start(a), span_end(b))
+
+/// Compute a line and column position for a byte offset in source text.
+pub fn position_at(src: String, offset: Int, file: String) -> Position:
+  scan_pos(src, 0, 1, 1, offset)
+
+fn scan_pos(
+  src: String,
+  pos: Int,
+  line: Int,
+  col: Int,
+  target: Int
+) -> Position:
+  case pos >= target:
+    True -> Position(line, col, target)
+    False ->
+      case pos >= string.length(src):
+        True -> Position(line, col, target)
+        False ->
+          let ch = string.char_at(src, pos)
+          case ch == "\n":
+            True -> scan_pos(src, pos + 1, line + 1, 1, target)
+            False -> scan_pos(src, pos + 1, line, col + 1, target)
+
+fn strip_src_prefix(path: String) -> String:
+  let marker = "src/"
+  let i = string.index_of(path, marker)
+  case i == -1:
+    True -> path
+    False ->
+      let after_marker = i + 4
+      let rest = string.slice(path, after_marker, string.length(path) - after_marker)
+      case string.index_of(rest, marker):
+        -1 -> string.slice(path, i, string.length(path) - i)
+        _ -> strip_src_prefix(rest)

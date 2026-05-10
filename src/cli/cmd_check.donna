@@ -1,0 +1,170 @@
+//// `donna check` command.
+//// Parses and typechecks a project entry module without producing build
+//// artifacts, then reports errors and warnings with source context.
+
+import donna/files
+import donna/list
+import donna/int
+import donna/string
+import utilities/colors
+import utilities/logger
+import builder/scanner
+import builder/pipeline
+import builder/dependencies
+import compiler/lexer/lexer
+import compiler/parser/parser
+import compiler/typesystem/checker
+import compiler/typesystem/typed_ast
+import compiler/analysis/analyser
+import errors/error
+import errors/reporter
+import donna/result
+import donna/time
+
+/// Run `donna check` for a project directory and return CLI output.
+pub fn run(args: List(#(String, String))) -> String:
+  let dir = first_positional(args)
+  case scanner.scan(dir):
+    scanner.ScanErr(msg) ->
+      colors.red("error") <> ": " <> msg
+    scanner.ScanOk(project) ->
+      let name = scanner.project_name(project)
+      let src_dir = scanner.project_src_dir(project)
+      let entry = files.join(src_dir, name <> ".donna")
+      case files.exists(entry):
+        False ->
+          colors.red("error") <> ": entry point not found: " <> colors.dim(entry)
+        True ->
+          check_project(dir, project)
+
+fn check_project(dir: String, project: scanner.Project) -> String:
+  let t0 = time.now_us()
+  let name = scanner.project_name(project)
+  let build_dir = scanner.project_build_dir(project)
+  let dev_dir = scanner.project_dev_dir(project)
+  let artifacts_dir = scanner.project_dev_artifacts_dir(project)
+  let _ = files.mkdir(build_dir)
+  let _ = files.mkdir(dev_dir)
+  let _ = files.mkdir(artifacts_dir)
+  let _ = logger.checking(name)
+  let toml_path = files.join(dir, "donna.toml")
+  let deps = dependencies.resolve_deps(toml_path, dir)
+  case compile_deps(deps, build_dir, []):
+    result.Error(e) -> colors.red("error") <> ": " <> e
+    result.Ok(dep_ifaces) ->
+      case pipeline.compile_dir(scanner.project_src_dir(project), "", artifacts_dir, dep_ifaces, False):
+        result.Error(e) -> colors.red("error") <> ": " <> e
+        result.Ok(_) ->
+          let elapsed = time.now_us() - t0
+          let _ = logger.check_ok(elapsed)
+          colors.green("check ok") <> colors.dim("  no errors")
+
+fn compile_deps(
+  deps: List(dependencies.Dep),
+  build_dir: String,
+  iface_acc: List(#(String, typed_ast.ModuleInterface))
+) -> result.Result(List(#(String, typed_ast.ModuleInterface)), String):
+  case deps:
+    [] -> result.Ok(iface_acc)
+    [dep, ..rest] ->
+      let pkg_dir = files.join(files.join(build_dir, "packages"), dependencies.dep_name(dep))
+      let art_dir = files.join(pkg_dir, "artifacts")
+      let _ = files.mkdir(files.join(build_dir, "packages"))
+      let _ = files.mkdir(pkg_dir)
+      let _ = files.mkdir(art_dir)
+      case pipeline.compile_dir(
+        dependencies.dep_src_dir(dep),
+        dependencies.dep_name(dep),
+        art_dir,
+        iface_acc,
+        False
+      ):
+        result.Error(e) -> result.Error(e)
+        result.Ok(#(new_ifaces, _, _)) ->
+          compile_deps(rest, build_dir, list.append(iface_acc, new_ifaces))
+
+fn check_file(name: String, path: String) -> String:
+  let src = files.read(path)
+  let t0 = time.now_us()
+  let _ = logger.checking(name)
+  case lexer.lex(src, path):
+    lexer.LexErrors(errs) ->
+      render_phase_errors(errs, src, "lex")
+    lexer.LexOk(toks) ->
+      case parser.parse(toks):
+        parser.ParseErrors(errs) ->
+          render_phase_errors(errs, src, "parse")
+        parser.ParseOk(module) ->
+          let warnings = analyser.analyse(module)
+          case checker.check_module(module, name):
+            result.Error(errs) ->
+              render_errors_and_warnings(errs, warnings, src)
+            result.Ok(_) ->
+              let elapsed = time.now_us() - t0
+              let _ = logger.check_ok(elapsed)
+              render_check_ok(warnings, src)
+
+fn render_check_ok(warnings: List(error.DonnaWarning), src: String) -> String:
+  case list.is_empty(warnings):
+    True ->
+      colors.green("check ok") <> colors.dim("  no errors or warnings")
+    False ->
+      let rendered = render_warnings(warnings, src, [])
+      let count = list.length(warnings)
+      let summary = colors.yellow("warning") <> colors.bold(": " <> int.to_string(count) <> " warning(s)")
+      string.join(rendered, "\n\n") <> "\n\n" <> summary
+
+fn render_errors_and_warnings(
+  errs: List(error.DonnaError),
+  warnings: List(error.DonnaWarning),
+  src: String
+) -> String:
+  let rendered_errs = render_errors(errs, src, [])
+  let rendered_warns = render_warnings(warnings, src, [])
+  let all_rendered = list.append(rendered_errs, rendered_warns)
+  let err_count = list.length(errs)
+  let warn_count = list.length(warnings)
+  let summary = case warn_count == 0:
+    True ->
+      colors.error_header("error") <> colors.bold(": found " <> int.to_string(err_count) <> " error(s)")
+    False ->
+      colors.error_header("error") <> colors.bold(
+        ": found " <> int.to_string(err_count) <> " error(s), " <> int.to_string(warn_count) <> " warning(s)"
+      )
+  string.join(all_rendered, "\n\n") <> "\n\n" <> summary
+
+fn render_phase_errors(
+  errs: List(error.DonnaError),
+  src: String,
+  phase: String
+) -> String:
+  let rendered = render_errors(errs, src, [])
+  let count = list.length(errs)
+  let summary = colors.error_header("error") <> colors.bold(": found " <> int.to_string(count) <> " " <> phase <> " error(s)")
+  string.join(rendered, "\n\n") <> "\n\n" <> summary
+
+fn render_errors(
+  errs: List(error.DonnaError),
+  src: String,
+  acc: List(String)
+) -> List(String):
+  case errs:
+    [] -> list.reverse(acc)
+    [e, ..rest] ->
+      render_errors(rest, src, [reporter.render_error(e, src), ..acc])
+
+fn render_warnings(
+  warnings: List(error.DonnaWarning),
+  src: String,
+  acc: List(String)
+) -> List(String):
+  case warnings:
+    [] -> list.reverse(acc)
+    [w, ..rest] ->
+      render_warnings(rest, src, [reporter.render_warning(w, src), ..acc])
+
+fn first_positional(args: List(#(String, String))) -> String:
+  case args:
+    [] -> "."
+    [#("", v), .._] -> v
+    [_, ..rest] -> first_positional(rest)

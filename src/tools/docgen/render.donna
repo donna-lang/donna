@@ -1,0 +1,403 @@
+//// Renders extracted Donna documentation and package metadata into the generated HTML docs site.
+
+import tools/docgen/extractor
+import tools/docgen/assets
+import builder/scanner
+import markdown/markdown
+import donna/string
+import donna/list
+
+/// Render the package documentation landing page.
+pub fn render_index(meta: scanner.ProjectMeta, readme: String) -> String:
+  let name = scanner.meta_name(meta)
+  let version = scanner.meta_version(meta)
+  let description = scanner.meta_description(meta)
+  let authors = scanner.meta_authors(meta)
+  let licence = scanner.meta_licence(meta)
+  let repository = scanner.meta_repository(meta)
+  let headings = collect_headings(string.split(readme, "\n"), [])
+  let readme_html = markdown.to_html(readme)
+  let extra_links = scanner.meta_links(meta)
+  let sidebar = render_index_sidebar(name, version, headings, repository, extra_links)
+  let main_html = render_index_main(name, description, authors, licence, repository, readme_html)
+  let body = theme_button() <> sidebar_burger() <> "<div class=\"pkg-layout\">" <> sidebar <> "<div class=\"pkg-spacer\" aria-hidden=\"true\"></div>" <> main_html <> "</div>"
+  html_page(name <> " - Docs", "page-package", body)
+
+/// Render the package API documentation page.
+pub fn render_docs(
+  meta: scanner.ProjectMeta,
+  modules: List(extractor.DocModule)
+) -> String:
+  let name = scanner.meta_name(meta)
+  let version = scanner.meta_version(meta)
+  let description = scanner.meta_description(meta)
+  let authors = scanner.meta_authors(meta)
+  let licence = scanner.meta_licence(meta)
+  let repository = scanner.meta_repository(meta)
+  let sidebar = render_docs_sidebar(name, version, modules)
+  let main_html = render_docs_main(name, version, description, authors, licence, repository, modules)
+  let body = theme_button() <> sidebar_burger() <> "<div class=\"layout\">" <> sidebar <> "<div class=\"spacer\" aria-hidden=\"true\"></div>" <> main_html <> "</div>"
+  html_page(name <> " - API", "page-package-docs", body)
+
+fn theme_button() -> String:
+  "<div class=\"theme-corner\"><button type=\"button\" class=\"theme-toggle\" data-theme-toggle aria-label=\"Switch to light theme\"><span class=\"theme-toggle-icon\" aria-hidden=\"true\"></span></button></div>"
+
+fn sidebar_burger() -> String:
+  "<button class=\"sidebar-burger\" id=\"sidebar-burger\" aria-label=\"Menu\"><span></span><span></span><span></span></button>"
+
+fn render_index_sidebar(
+  name: String,
+  version: String,
+  headings: List(#(Int, String)),
+  repository: String,
+  extra_links: List(#(String, String))
+) -> String:
+  let toc_items = render_toc_nav_items(headings, "")
+  let toc_section = case string.is_empty(toc_items):
+    True -> ""
+    False ->
+      "<div class=\"sidebar-section-label\">On this page</div><ul class=\"sidebar-nav\">" <> toc_items <> "</ul>"
+  let repo_link = case string.is_empty(repository):
+    True -> ""
+    False -> "<li><a href=\"" <> h(repository) <> "\">GitHub &rarr;</a></li>"
+  let extra_items = render_extra_links(extra_links, "")
+  let links_section = "<div class=\"sidebar-section-label\">Links</div><ul class=\"sidebar-nav\"><li><a href=\"docs.html\">Documentation &rarr;</a></li>" <> repo_link <> extra_items <> "</ul>"
+  "<aside class=\"pkg-sidebar\" id=\"page-sidebar\">" <> "<div class=\"sidebar-pkg-name\">" <> h(name) <> "</div>" <> "<div class=\"sidebar-pkg-ver\">v" <> h(version) <> "</div>" <> toc_section <> links_section <> "</aside>"
+
+fn render_extra_links(links: List(#(String, String)), acc: String) -> String:
+  case links:
+    [] -> acc
+    [#(title, href), ..rest] ->
+      let item = case string.is_empty(href):
+        True -> ""
+        False ->
+          "<li><a href=\"" <> h(href) <> "\">" <> h(title) <> " &rarr;</a></li>"
+      render_extra_links(rest, acc <> item)
+
+fn render_toc_nav_items(headings: List(#(Int, String)), acc: String) -> String:
+  case headings:
+    [] -> acc
+    [#(level, text), ..rest] ->
+      let skip = level <= 1
+      let item = case skip:
+        True -> ""
+        False ->
+          let id = string.to_slug(text)
+          "<li><a href=\"#" <> id <> "\">" <> h(text) <> "</a></li>"
+      render_toc_nav_items(rest, acc <> item)
+
+fn render_index_main(
+  name: String,
+  description: String,
+  authors: List(String),
+  licence: String,
+  repository: String,
+  readme_html: String
+) -> String:
+  let breadcrumb = "<div class=\"breadcrumb\"><span>" <> h(name) <> "</span></div>"
+  let pkg_header = render_pkg_header(name, description, authors, licence, repository)
+  "<main class=\"pkg-main\">" <> breadcrumb <> pkg_header <> "<div class=\"readme\">" <> readme_html <> "</div>" <> "</main>"
+
+fn render_pkg_header(
+  name: String,
+  description: String,
+  authors: List(String),
+  licence: String,
+  repository: String
+) -> String:
+  let tagline = case string.is_empty(description):
+    True -> ""
+    False -> "<p class=\"pkg-tagline\">" <> h(description) <> "</p>"
+  let licence_badge = case string.is_empty(licence):
+    True -> ""
+    False -> "<span class=\"badge-item\">" <> h(licence) <> "</span>"
+  let authors_badge = render_authors_badge(authors)
+  let badges_html = authors_badge <> licence_badge
+  let badges = case string.is_empty(badges_html):
+    True -> ""
+    False -> "<div class=\"pkg-badges\">" <> badges_html <> "</div>"
+  let repo_btn = case string.is_empty(repository):
+    True -> ""
+    False ->
+      "<a href=\"" <> h(repository) <> "\" class=\"btn btn-ghost\">GitHub &rarr;</a>"
+  let actions = "<div class=\"pkg-actions\"><a href=\"docs.html\" class=\"btn btn-primary\">View Docs</a>" <> repo_btn <> "</div>"
+  "<div class=\"pkg-header\">" <> "<div class=\"pkg-header-left\">" <> "<div class=\"pkg-title\"><span>" <> h(name) <> "</span></div>" <> tagline <> badges <> "</div>" <> actions <> "</div>"
+
+fn collect_headings(
+  lines: List(String),
+  acc: List(#(Int, String))
+) -> List(#(Int, String)):
+  case lines:
+    [] -> list.reverse(acc)
+    [line, ..rest] ->
+      case string.starts_with(line, "#"):
+        False -> collect_headings(rest, acc)
+        True ->
+          let #(level, text) = parse_heading(line)
+          let skip = string.is_empty(text) || level <= 1
+          case skip:
+            True -> collect_headings(rest, acc)
+            False -> collect_headings(rest, [#(level, text), ..acc])
+
+fn parse_heading(line: String) -> #(Int, String):
+  count_hashes(line, 0, string.length(line))
+
+fn count_hashes(line: String, i: Int, n: Int) -> #(Int, String):
+  case i >= n:
+    True -> #(i, "")
+    False ->
+      case string.char_str(line, i):
+        "#" -> count_hashes(line, i + 1, n)
+        " " ->
+          let text = string.trim(string.slice(line, i + 1, n - i - 1))
+          #(i, text)
+        _ -> #(i, "")
+
+fn render_docs_sidebar(
+  name: String,
+  version: String,
+  modules: List(extractor.DocModule)
+) -> String:
+  let modules_nav = render_docs_sidebar_modules(modules, "")
+  "<aside class=\"sidebar\" id=\"page-sidebar\">" <> "<a href=\"index.html\" class=\"sidebar-back\">&larr; Package overview</a>" <> "<div class=\"sidebar-pkg\">" <> "<div class=\"sidebar-pkg-name\">" <> h(name) <> "</div>" <> "<div class=\"sidebar-pkg-ver\">v" <> h(version) <> " &middot; API Reference</div>" <> "</div>" <> modules_nav <> "</aside>"
+
+fn render_docs_sidebar_modules(
+  modules: List(extractor.DocModule),
+  acc: String
+) -> String:
+  case modules:
+    [] -> acc
+    [m, ..rest] ->
+      let section = render_docs_sidebar_module(m)
+      render_docs_sidebar_modules(rest, acc <> section)
+
+fn render_docs_sidebar_module(m: extractor.DocModule) -> String:
+  case m:
+    extractor.DocModule(name, _, types, fns, consts, ext_fns) ->
+      let type_links = render_docs_sidebar_group(types, "Types")
+      let fn_links = render_docs_sidebar_group(fns, "Functions")
+      let const_links = render_docs_sidebar_group(consts, "Constants")
+      let ext_links = render_docs_sidebar_group(ext_fns, "External functions")
+      "<div class=\"sidebar-section-label\">" <> h(name) <> "</div>" <> type_links <> fn_links <> const_links <> ext_links
+
+fn render_docs_sidebar_group(
+  items: List(extractor.DocItem),
+  label: String
+) -> String:
+  case items:
+    [] -> ""
+    _ ->
+      let links = render_docs_sidebar_items(items, "")
+      "<p class=\"sidebar-subcat\">" <> label <> "</p><ul class=\"sidebar-nav\">" <> links <> "</ul>"
+
+fn render_docs_sidebar_items(
+  items: List(extractor.DocItem),
+  acc: String
+) -> String:
+  case items:
+    [] -> acc
+    [item, ..rest] ->
+      let name = doc_item_name(item)
+      let link = "<li><a href=\"#" <> h(name) <> "\" class=\"fn-link\">" <> h(name) <> "</a></li>"
+      render_docs_sidebar_items(rest, acc <> link)
+
+fn doc_item_name(item: extractor.DocItem) -> String:
+  case item:
+    extractor.DocFn(name, _, _, _) -> name
+    extractor.DocExternalFn(name, _, _, _) -> name
+    extractor.DocType(name, _, _, _, _) -> name
+    extractor.DocConst(name, _, _, _) -> name
+
+fn render_docs_main(
+  name: String,
+  version: String,
+  description: String,
+  authors: List(String),
+  licence: String,
+  repository: String,
+  modules: List(extractor.DocModule)
+) -> String:
+  let breadcrumb = "<div class=\"breadcrumb\"><a href=\"index.html\">" <> h(name) <> "</a><span>/</span><span>Docs</span></div>"
+  let page_head = render_page_head(name, version, description, authors, licence, repository)
+  let modules_html = render_all_modules(modules, "")
+  "<main class=\"main\">" <> breadcrumb <> page_head <> modules_html <> "</main>"
+
+fn render_page_head(
+  name: String,
+  version: String,
+  description: String,
+  authors: List(String),
+  licence: String,
+  repository: String
+) -> String:
+  let desc_p = case string.is_empty(description):
+    True -> ""
+    False -> "<p>" <> h(description) <> "</p>"
+  let version_chip = case string.is_empty(version):
+    True -> ""
+    False -> "<span class=\"ver-chip current\">v" <> h(version) <> "</span>"
+  let licence_chip = case string.is_empty(licence):
+    True -> ""
+    False -> "<span class=\"ver-chip\">" <> h(licence) <> "</span>"
+  let authors_chip = render_authors_chip(authors)
+  let repo_chip = case string.is_empty(repository):
+    True -> ""
+    False ->
+      "<a href=\"" <> h(repository) <> "\" class=\"ver-chip ver-chip-link\">Repository &rarr;</a>"
+  let has_chips = string.is_empty(version_chip) && string.is_empty(authors_chip) && string.is_empty(licence_chip) && string.is_empty(repo_chip)
+  let ver_row = case has_chips:
+    True -> ""
+    False ->
+      "<div class=\"ver-row\">" <> version_chip <> authors_chip <> licence_chip <> repo_chip <> "</div>"
+  "<div class=\"page-head\">" <> "<h1><span>" <> h(name) <> "</span> &mdash; API Reference</h1>" <> desc_p <> ver_row <> "</div>"
+
+fn render_authors_badge(authors: List(String)) -> String:
+  case list.is_empty(authors):
+    True -> ""
+    False -> "<span class=\"badge-item\">By " <> h(string.join(authors, ", ")) <> "</span>"
+
+fn render_authors_chip(authors: List(String)) -> String:
+  case list.is_empty(authors):
+    True -> ""
+    False -> "<span class=\"ver-chip\">By " <> h(string.join(authors, ", ")) <> "</span>"
+
+fn render_all_modules(
+  modules: List(extractor.DocModule),
+  acc: String
+) -> String:
+  case modules:
+    [] -> acc
+    [m, ..rest] -> render_all_modules(rest, acc <> render_module(m))
+
+fn render_module(m: extractor.DocModule) -> String:
+  case m:
+    extractor.DocModule(name, module_doc, types, fns, consts, ext_fns) ->
+      let doc_html = case string.is_empty(module_doc):
+        True -> ""
+        False ->
+          "<div class=\"module-doc\">" <> markdown.to_html(module_doc) <> "</div>"
+      let types_html = render_items_section(types, "Types", render_type_cards)
+      let fns_html = render_items_section(fns, "Functions", render_fn_cards)
+      let consts_html = render_items_section(consts, "Constants", render_const_cards)
+      let ext_fns_html = render_items_section(ext_fns, "External functions", render_fn_cards)
+      "<section class=\"module-section\" id=\"" <> h(name) <> "\">" <> "<h2>" <> h(name) <> "</h2>" <> doc_html <> types_html <> fns_html <> consts_html <> ext_fns_html <> "</section>"
+
+fn render_items_section(
+  items: List(extractor.DocItem),
+  label: String,
+  render_fn: fn(List(extractor.DocItem)) -> String
+) -> String:
+  case items:
+    [] -> ""
+    _ ->
+      "<div class=\"items-section\"><h3>" <> label <> "</h3>" <> render_fn(items) <> "</div>"
+
+fn render_type_cards(items: List(extractor.DocItem)) -> String:
+  render_type_cards_loop(items, "")
+
+fn render_type_cards_loop(
+  items: List(extractor.DocItem),
+  acc: String
+) -> String:
+  case items:
+    [] -> acc
+    [item, ..rest] ->
+      render_type_cards_loop(rest, acc <> render_type_card(item))
+
+fn render_fn_cards(items: List(extractor.DocItem)) -> String:
+  render_fn_cards_loop(items, "")
+
+fn render_fn_cards_loop(items: List(extractor.DocItem), acc: String) -> String:
+  case items:
+    [] -> acc
+    [item, ..rest] -> render_fn_cards_loop(rest, acc <> render_fn_card(item))
+
+fn render_const_cards(items: List(extractor.DocItem)) -> String:
+  render_const_cards_loop(items, "")
+
+fn render_const_cards_loop(
+  items: List(extractor.DocItem),
+  acc: String
+) -> String:
+  case items:
+    [] -> acc
+    [item, ..rest] ->
+      render_const_cards_loop(rest, acc <> render_const_card(item))
+
+fn sig_code_block(sig: String) -> String:
+  "<div class=\"code-block\"><div class=\"code-bar\"><div class=\"dot dot-r\"></div><div class=\"dot dot-y\"></div><div class=\"dot dot-g\"></div><button type=\"button\" class=\"copy-code\" aria-label=\"Copy code\">Copy</button></div><pre><code class=\"language-donna\">" <> h(sig) <> "</code></pre></div>"
+
+fn render_type_card(item: extractor.DocItem) -> String:
+  case item:
+    extractor.DocType(name, _, type_params, ctors, doc) ->
+      let params_str = case type_params:
+        [] -> ""
+        _ -> "(" <> string.join(type_params, ", ") <> ")"
+      let sig = "pub type " <> name <> params_str
+      let doc_html = render_card_doc(doc)
+      let ctors_html = render_ctor_list(ctors)
+      let has_body = string.is_empty(doc_html) && string.is_empty(ctors_html)
+      let body = case has_body:
+        True -> ""
+        False ->
+          "<div class=\"fn-card-body\">" <> doc_html <> ctors_html <> "</div>"
+      "<div class=\"fn-card\" id=\"" <> h(name) <> "\">" <> sig_code_block(sig) <> body <> "</div>"
+    _ -> ""
+
+fn render_fn_card(item: extractor.DocItem) -> String:
+  case item:
+    extractor.DocFn(name, _, sig, doc) ->
+      let doc_html = render_card_doc(doc)
+      "<div class=\"fn-card\" id=\"" <> h(name) <> "\">" <> sig_code_block(sig) <> doc_html <> "</div>"
+    extractor.DocExternalFn(name, _, sig, doc) ->
+      let doc_html = render_card_doc(doc)
+      "<div class=\"fn-card\" id=\"" <> h(name) <> "\">" <> sig_code_block(sig) <> doc_html <> "</div>"
+    _ -> ""
+
+fn render_const_card(item: extractor.DocItem) -> String:
+  case item:
+    extractor.DocConst(name, _, type_ann, doc) ->
+      let sig = case string.is_empty(type_ann):
+        True -> "pub const " <> name
+        False -> "pub const " <> name <> ": " <> type_ann
+      let doc_html = render_card_doc(doc)
+      "<div class=\"fn-card\" id=\"" <> h(name) <> "\">" <> sig_code_block(sig) <> doc_html <> "</div>"
+    _ -> ""
+
+fn render_card_doc(doc: String) -> String:
+  case string.is_empty(doc):
+    True -> ""
+    False -> "<div class=\"fn-desc\">" <> markdown.to_html(doc) <> "</div>"
+
+fn render_ctor_list(ctors: List(extractor.DocCtor)) -> String:
+  case ctors:
+    [] -> ""
+    _ -> "<div class=\"ctor-list\">" <> render_ctor_items(ctors, "") <> "</div>"
+
+fn render_ctor_items(ctors: List(extractor.DocCtor), acc: String) -> String:
+  case ctors:
+    [] -> acc
+    [extractor.DocCtor(name, doc, fields), ..rest] ->
+      let fields_str = case fields:
+        [] -> ""
+        _ -> "(" <> string.join(fields, ", ") <> ")"
+      let sig = name <> fields_str
+      let doc_html = case string.is_empty(doc):
+        True -> ""
+        False -> "<span class=\"ctor-doc\">" <> h(doc) <> "</span>"
+      let item = "<div class=\"ctor-item\"><code class=\"ctor-sig\">" <> h(sig) <> "</code>" <> doc_html <> "</div>"
+      render_ctor_items(rest, acc <> item)
+
+fn html_page(title: String, body_class: String, body: String) -> String:
+  "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n" <> "<meta charset=\"UTF-8\">\n" <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n" <> "<title>" <> h(title) <> "</title>\n" <> "<style>" <> assets.css() <> "</style>\n" <> "</head>\n<body class=\"" <> h(body_class) <> "\">\n" <> body <> "\n<footer class=\"site-footer\">Generated by <a href=\"https://github.com/donna-lang/donna\">Donna</a></footer>" <> "\n<script>" <> assets.js() <> "</script>\n<script>" <> assets.codeblock_js() <> "</script>\n" <> "</body>\n</html>"
+
+fn h(s: String) -> String:
+  string.replace(
+    string.replace(
+      string.replace(string.replace(s, "&", "&amp;"), "<", "&lt;"),
+      ">",
+      "&gt;"
+    ),
+    "\"",
+    "&quot;"
+  )

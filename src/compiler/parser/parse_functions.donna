@@ -1,0 +1,124 @@
+//// Function declaration parser.
+//// Parses normal and external functions, including visibility, parameters,
+//// optional return annotations, and function bodies.
+
+import compiler/lexer/token
+import utilities/location
+import errors/error
+import compiler/parser/ast
+import compiler/parser/parse_result
+import compiler/parser/parse_types
+import compiler/parser/parse_params
+import compiler/parser/parse_exprs
+import donna/option
+
+/// Parse a normal top-level function declaration.
+pub fn parse_function(
+  ps: List(#(token.Token, location.Span))
+) -> parse_result.ParseResult(ast.Function):
+  let #(is_pub, ps1) = parse_pub(ps)
+  case ps1:
+    [#(token.TokFn, sp), #(token.TokName(name), name_sp), #(token.TokLParen, _), ..rest] ->
+      case parse_params.parse_params(rest):
+        parse_result.PErr(e) -> parse_result.PErr(e)
+        parse_result.POk(params, ps2) ->
+          let #(ret, ps3) = parse_optional_return(ps2)
+          case ps3:
+            [#(token.TokColon, _), ..ps4] ->
+              case parse_exprs.parse_block(ps4):
+                parse_result.PErr(e) -> parse_result.PErr(e)
+                parse_result.POk(body, ps5) ->
+                  parse_result.POk(
+                    ast.Function(name, is_pub, params, ret, body, name_sp),
+                    ps5
+                  )
+            [#(tok, sp2), .._] ->
+              parse_result.PErr(error.ParseMissingColon(sp2))
+            [] ->
+              parse_result.PErr(error.ParseUnexpectedEof(":", sp))
+    [#(token.TokFn, _), #(token.TokUpperName(name), sp2), .._] ->
+      parse_result.PErr(error.ParseUppercaseFnName(name, sp2))
+    [#(token.TokFn, _), #(tok, sp2), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "function name", sp2)
+      )
+    [#(token.TokFn, sp), .._] ->
+      parse_result.PErr(error.ParseUnexpectedEof("function name", sp))
+    [#(tok, sp), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "fn", sp)
+      )
+    [] ->
+      parse_result.PErr(
+        error.ParseUnexpectedEof("fn", location.zero("unknown"))
+      )
+
+/// Parse an `@external` function declaration.
+pub fn parse_external_fn(
+  ps: List(#(token.Token, location.Span))
+) -> parse_result.ParseResult(ast.Function):
+  case ps:
+    [#(token.TokAt, sp), #(token.TokExternal, _), #(token.TokLParen, _), ..rest] ->
+      case rest:
+        [#(token.TokString(lang), _), #(token.TokComma, _), #(token.TokString(symbol), _), #(token.TokRParen, _), ..ps2] ->
+          let ps3 = parse_result.skip_newlines(ps2)
+          let #(is_pub, ps4) = parse_pub(ps3)
+          case ps4:
+            [#(token.TokFn, _), #(token.TokName(name), _), #(token.TokLParen, _), ..rest2] ->
+              case parse_params.parse_params(rest2):
+                parse_result.PErr(e) -> parse_result.PErr(e)
+                parse_result.POk(params, ps5) ->
+                  let #(ret, ps6) = parse_optional_return(ps5)
+                  let ps7 = parse_result.skip_newlines(ps6)
+                  parse_result.POk(
+                    ast.ExternalFn(name, is_pub, params, ret, lang, symbol, sp),
+                    ps7
+                  )
+            [#(tok, sp2), .._] ->
+              parse_result.PErr(
+                error.ParseUnexpectedToken(token.to_string(tok), "fn", sp2)
+              )
+            [] ->
+              parse_result.PErr(error.ParseUnexpectedEof("fn", sp))
+        [#(tok, sp2), .._] ->
+          parse_result.PErr(
+            error.ParseUnexpectedToken(
+              token.to_string(tok),
+              "string literal in @external(\"lang\", \"symbol\")",
+              sp2
+            )
+          )
+        [] ->
+          parse_result.PErr(
+            error.ParseUnexpectedEof("@external(\"lang\", \"symbol\")", sp)
+          )
+    [#(token.TokAt, sp), #(tok, sp2), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "external", sp2)
+      )
+    [#(token.TokAt, sp), .._] ->
+      parse_result.PErr(error.ParseUnexpectedEof("external", sp))
+    [#(tok, sp), .._] ->
+      parse_result.PErr(
+        error.ParseUnexpectedToken(token.to_string(tok), "@", sp)
+      )
+    [] ->
+      parse_result.PErr(error.ParseUnexpectedEof("@", location.zero("unknown")))
+
+fn parse_pub(
+  ps: List(#(token.Token, location.Span))
+) -> #(Bool, List(#(token.Token, location.Span))):
+  case ps:
+    [#(token.TokPub, _), ..rest] -> #(True, rest)
+    _ -> #(False, ps)
+
+fn parse_optional_return(
+  ps: List(#(token.Token, location.Span))
+) -> #(option.Option(ast.TypeAnnotation), List(#(token.Token, location.Span))):
+  case ps:
+    [#(token.TokArrow, _), ..rest] ->
+      case parse_types.parse_type(rest):
+        parse_result.PErr(_) -> #(option.None, ps)
+        parse_result.POk(ty, ps2) -> #(option.Some(ty), ps2)
+    _ ->
+      #(option.None, ps)
