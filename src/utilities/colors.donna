@@ -22,6 +22,8 @@ pub const color_green = "\u{001b}[32m"
 pub const color_yellow = "\u{001b}[33m"
 /// ANSI cyan foreground sequence.
 pub const color_cyan = "\u{001b}[36m"
+/// ANSI light blue sequence used for diagnostic gutters and locations.
+pub const color_light_blue = "\u{001b}[38;5;111m"
 /// ANSI magenta foreground sequence.
 pub const color_magenta = "\u{001b}[35m"
 /// ANSI bold red sequence used for error headers.
@@ -72,6 +74,10 @@ pub fn yellow(text: String) -> String:
 /// Render path-like text in cyan.
 pub fn path(text: String) -> String:
   paint(color_cyan, text)
+
+/// Render text in light blue.
+pub fn light_blue(text: String) -> String:
+  paint(color_light_blue, text)
 
 /// Render text in magenta.
 pub fn magenta(text: String) -> String:

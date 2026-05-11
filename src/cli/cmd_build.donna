@@ -51,11 +51,11 @@ pub fn build_project(dir: String, project: scanner.Project) -> BuildOutcome:
   let all_deps = dependencies.resolve_deps(toml_path, dir)
   let proj_ffi_objs = pipeline.compile_ffi(dir, artifacts_dir)
   case compile_deps(all_deps, build_dir, [], [], proj_ffi_objs):
-    result.Error(e) -> BuildFailed(colors.red("error") <> ": " <> e)
+    result.Error(e) -> BuildFailed(e)
     result.Ok(#(dep_ifaces, dep_ssa, dep_objs, deps_rebuilt)) ->
       let src_dir = scanner.project_src_dir(project)
       case pipeline.compile_dir(src_dir, "", artifacts_dir, dep_ifaces, deps_rebuilt):
-        result.Error(e) -> BuildFailed(colors.red("error") <> ": " <> e)
+        result.Error(e) -> BuildFailed(e)
         result.Ok(#(src_ifaces, src_ssa, _)) ->
           case has_public_main(src_ifaces):
             False ->

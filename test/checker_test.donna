@@ -821,6 +821,15 @@ pub fn check_bool_op_on_int_error_test() -> String:
     result.Error(_) -> ""
     result.Ok(_) -> should.fail("should have rejected non-bool in &&")
 
+pub fn check_missing_module_import_error_test() -> String:
+  case check_src("fn f() -> String:\n  string.to_slug(\"Language Tour\")"):
+    result.Error(errs) ->
+      case errs:
+        [error.TypeUndefinedModule(name, _), ..] ->
+          name |> should.equal_string("string")
+        _ -> should.fail("expected undefined module error")
+    result.Ok(_) -> should.fail("should have rejected module call without import")
+
 // ── Generic functions ─────────────────────────────────────────────────────────
 
 pub fn check_generic_identity_ret_type_test() -> String:

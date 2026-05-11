@@ -8,10 +8,13 @@ All notable changes to `donna` will be documented in this file.
 
 - Generated project GitHub Actions now install QBE using Donna's maintained `install-qbe` script before running `donna format`, `donna check`, and `donna test`.
 - `donna check` now works for multi-module libraries without requiring a root `src/<name>.donna` file.
+- Type diagnostics from `donna check`, `donna build`, and `donna test` no longer get wrapped with an extra `error: type error in ...` prefix.
+- Missing module calls such as `string.to_slug(...)` without `import donna/string` are covered by a regression test and report `undefined module` with a source span and hint.
 
-### Enhancemets
+### Enhancements
 
 - `donna clean` now supports `--docs`, `--lock`, and `--all` for removing generated docs and lockfiles explicitly.
+- Compiler diagnostics now use light-blue gutter/source-location styling and an orange `hint:` label to match the website error style.
 
 ## [0.1.0] — 2026-05-10
 

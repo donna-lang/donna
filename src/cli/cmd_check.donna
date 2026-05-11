@@ -43,7 +43,7 @@ fn check_project(dir: String, project: scanner.Project) -> String:
   let toml_path = files.join(dir, "donna.toml")
   let deps = dependencies.resolve_deps(toml_path, dir)
   case compile_deps(deps, build_dir, []):
-    result.Error(e) -> colors.red("error") <> ": " <> e
+    result.Error(e) -> e
     result.Ok(dep_ifaces) ->
       case pipeline.compile_dir(
         scanner.project_src_dir(project),
@@ -52,7 +52,7 @@ fn check_project(dir: String, project: scanner.Project) -> String:
         dep_ifaces,
         False
       ):
-        result.Error(e) -> colors.red("error") <> ": " <> e
+        result.Error(e) -> e
         result.Ok(_) ->
           let elapsed = time.now_us() - t0
           let _ = logger.check_ok(elapsed)

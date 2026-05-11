@@ -34,18 +34,18 @@ fn render(
   let col = location.pos_col(location.span_start(span))
   let len = location.span_length(span)
   let pad = string.repeat(" ", string.length(int.to_string(line_num)))
-  let gutter = colors.dim(pad <> " │")
-  let loc_line = pad <> " ┌─ " <> colors.dim(location.short_label(span))
+  let gutter = colors.light_blue(pad <> " │")
+  let loc_line = colors.light_blue(pad <> " ┌─ ") <> colors.light_blue(location.short_label(span))
   let src_line = get_line(src, line_num)
   let carets = string.repeat("^", len)
   let pointer = string.repeat(" ", col - 1) <> color(carets <> " " <> label)
-  let code_row = colors.dim(int.to_string(line_num) <> " │") <> "  " <> src_line
+  let code_row = colors.light_blue(int.to_string(line_num) <> " │") <> "  " <> src_line
   let ptr_row = gutter <> "  " <> pointer
   let hint_row = case string.is_empty(hint):
     True -> ""
-    False -> "\n\nhint: " <> hint
+    False -> "\n\n" <> colors.orange("hint:") <> " " <> hint
   string.join(
-    [header, loc_line, colors.dim(pad <> " │"), code_row, ptr_row],
+    [header, loc_line, colors.light_blue(pad <> " │"), code_row, ptr_row],
     "\n"
   ) <> hint_row
 

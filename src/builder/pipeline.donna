@@ -49,9 +49,7 @@ pub fn compile_module(
           case checker.check_module_with_imports(module, mod_name, ifaces):
             result.Error(errs) ->
               let msgs = render_errors(errs, src, [])
-              result.Error(
-                "type error in " <> path <> ":\n" <> string.join(msgs, "\n")
-              )
+              result.Error(string.join(msgs, "\n"))
             result.Ok(typed_module) ->
               let iface = checker.extract_interface(typed_module)
               case cached:
