@@ -1,6 +1,9 @@
 name = "donna"
-version = "0.1.0"
+version = "0.1.1"
 description = "The Donna programming language compiler"
+licences = ["MIT"]
+repository = { type = "github", user = "donna-lang", repo = "donna" }
+links = [{ title = "Donna", href = "https://donna-lang.org" }]
 
 [dependencies]
 donna = { git = "https://github.com/donna-lang/donna_stdlib", version = ">=0.1.0 and <1.0.0" }

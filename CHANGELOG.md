@@ -4,6 +4,8 @@ All notable changes to `donna` will be documented in this file.
 
 ## Unreleased
 
+## [0.1.1] — 2026-05-11
+
 ### Fixed
 
 - Generated project GitHub Actions now install QBE using Donna's maintained `install-qbe` script before running `donna format`, `donna check`, and `donna test`.
@@ -16,6 +18,7 @@ All notable changes to `donna` will be documented in this file.
 
 - `donna clean` now supports `--docs`, `--lock`, and `--all` for removing generated docs and lockfiles explicitly.
 - Compiler diagnostics now use light-blue gutter/source-location styling and an orange `hint:` label to match the website error style.
+- Add octal and scientific notation number formats.
 
 ## [0.1.0] — 2026-05-10
 

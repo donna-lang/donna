@@ -114,6 +114,16 @@ pub fn lex_binary_with_underscores_test() -> String:
     [token.TokInt("240"), token.TokEof] -> ""
     _ -> should.fail("expected Int(240) Eof")
 
+pub fn lex_octal_test() -> String:
+  case lex_ok("0o17"):
+    [token.TokInt("15"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(15) Eof")
+
+pub fn lex_octal_with_underscores_test() -> String:
+  case lex_ok("0o1_7"):
+    [token.TokInt("15"), token.TokEof] -> ""
+    _ -> should.fail("expected Int(15) Eof")
+
 // ── Float literals ────────────────────────────────────────────────────────────
 
 pub fn lex_float_test() -> String:
@@ -135,6 +145,26 @@ pub fn lex_float_with_underscores_test() -> String:
   case lex_ok("1_000.5"):
     [token.TokFloat("1000.5"), token.TokEof] -> ""
     _ -> should.fail("expected Float(1000.5) Eof")
+
+pub fn lex_float_fraction_with_underscores_test() -> String:
+  case lex_ok("10_000.01"):
+    [token.TokFloat("10000.01"), token.TokEof] -> ""
+    _ -> should.fail("expected Float(10000.01) Eof")
+
+pub fn lex_float_scientific_positive_test() -> String:
+  case lex_ok("7.0e7"):
+    [token.TokFloat("7.0e7"), token.TokEof] -> ""
+    _ -> should.fail("expected Float(7.0e7) Eof")
+
+pub fn lex_float_scientific_negative_exp_test() -> String:
+  case lex_ok("3.0e-4"):
+    [token.TokFloat("3.0e-4"), token.TokEof] -> ""
+    _ -> should.fail("expected Float(3.0e-4) Eof")
+
+pub fn lex_float_scientific_uppercase_test() -> String:
+  case lex_ok("1.5E+2"):
+    [token.TokFloat("1.5E+2"), token.TokEof] -> ""
+    _ -> should.fail("expected Float(1.5E+2) Eof")
 
 // ── String literals ───────────────────────────────────────────────────────────
 
@@ -844,6 +874,9 @@ pub fn lex_empty_hex_literal_is_error_test() -> String:
 
 pub fn lex_empty_binary_literal_is_error_test() -> String:
   should.is_true(lex_err("0b"))
+
+pub fn lex_empty_octal_literal_is_error_test() -> String:
+  should.is_true(lex_err("0o"))
 
 pub fn lex_valid_hex_literal_is_ok_test() -> String:
   case lex_ok("0xFF"):

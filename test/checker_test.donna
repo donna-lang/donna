@@ -162,6 +162,14 @@ pub fn check_float_lit_ret_type_test() -> String:
         [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("Float")
         [] -> should.fail("no functions")
 
+pub fn check_scientific_float_lit_ret_type_test() -> String:
+  case check_src("fn f() -> Float:\n  3.0e-4"):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("Float")
+        [] -> should.fail("no functions")
+
 pub fn check_string_lit_ret_type_test() -> String:
   case check_src("fn f() -> String:\n  \"hello\""):
     result.Error(_) -> should.fail("expected Ok")

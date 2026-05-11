@@ -1323,24 +1323,56 @@ fn lex_number(
                 depth
               )
         False ->
-          let #(end, is_float) = scan_decimal(src, pos, False)
-          let content = strip_underscores(string.slice(src, pos, end - pos))
-          let tok = case is_float:
-            True -> token.TokFloat(content)
-            False -> token.TokInt(content)
-          push_at(
-            src,
-            end,
-            line,
-            col + (end - pos),
-            file,
-            stack,
-            acc,
-            tok,
-            sp,
-            errs,
-            depth
-          )
+          case c0 == "0" && c1 == "o":
+            True ->
+              let end = scan_octal_digits(src, pos + 2)
+              case end == pos + 2:
+                True ->
+                  lex_loop(
+                    src,
+                    pos + 2,
+                    line,
+                    col + 2,
+                    file,
+                    stack,
+                    acc,
+                    [error.LexEmptyNumberLiteral("0o", sp), ..errs],
+                    depth
+                  )
+                False ->
+                  let raw = string.slice(src, pos + 2, end - pos - 2)
+                  push_at(
+                    src,
+                    end,
+                    line,
+                    col + (end - pos),
+                    file,
+                    stack,
+                    acc,
+                    token.TokInt(int.to_string(parse_octal_str(raw))),
+                    sp,
+                    errs,
+                    depth
+                  )
+            False ->
+              let #(end, is_float) = scan_decimal(src, pos, False)
+              let content = strip_underscores(string.slice(src, pos, end - pos))
+              let tok = case is_float:
+                True -> token.TokFloat(content)
+                False -> token.TokInt(content)
+              push_at(
+                src,
+                end,
+                line,
+                col + (end - pos),
+                file,
+                stack,
+                acc,
+                tok,
+                sp,
+                errs,
+                depth
+              )
 
 fn scan_decimal(src: String, pos: Int, seen_dot: Bool) -> #(Int, Bool):
   case pos >= string.length(src):
@@ -1355,10 +1387,35 @@ fn scan_decimal(src: String, pos: Int, seen_dot: Bool) -> #(Int, Bool):
               case is_digit_code(safe_char_at(src, pos + 1)):
                 True -> scan_decimal(src, pos + 1, True)
                 False -> #(pos, seen_dot)
+        "e" -> scan_exponent(src, pos, seen_dot)
+        "E" -> scan_exponent(src, pos, seen_dot)
         ch ->
           case is_digit_code(string.char_at(ch, 0)):
             True -> scan_decimal(src, pos + 1, seen_dot)
             False -> #(pos, seen_dot)
+
+fn scan_exponent(src: String, pos: Int, seen_dot: Bool) -> #(Int, Bool):
+  let next = safe_char_str(src, pos + 1)
+  case next == "+" || next == "-":
+    True ->
+      case is_digit_code(safe_char_at(src, pos + 2)):
+        True -> scan_exponent_digits(src, pos + 3)
+        False -> #(pos, seen_dot)
+    False ->
+      case is_digit_code(safe_char_at(src, pos + 1)):
+        True -> scan_exponent_digits(src, pos + 2)
+        False -> #(pos, seen_dot)
+
+fn scan_exponent_digits(src: String, pos: Int) -> #(Int, Bool):
+  case pos >= string.length(src):
+    True -> #(pos, True)
+    False ->
+      case string.char_str(src, pos):
+        "_" -> scan_exponent_digits(src, pos + 1)
+        ch ->
+          case is_digit_code(string.char_at(ch, 0)):
+            True -> scan_exponent_digits(src, pos + 1)
+            False -> #(pos, True)
 
 fn scan_hex_digits(src: String, pos: Int) -> Int:
   case pos >= string.length(src):
@@ -1380,6 +1437,17 @@ fn scan_binary_digits(src: String, pos: Int) -> Int:
         "0" -> scan_binary_digits(src, pos + 1)
         "1" -> scan_binary_digits(src, pos + 1)
         _ -> pos
+
+fn scan_octal_digits(src: String, pos: Int) -> Int:
+  case pos >= string.length(src):
+    True -> pos
+    False ->
+      case string.char_str(src, pos):
+        "_" -> scan_octal_digits(src, pos + 1)
+        ch ->
+          case is_octal_digit_code(string.char_at(ch, 0)):
+            True -> scan_octal_digits(src, pos + 1)
+            False -> pos
 
 fn strip_underscores(s: String) -> String:
   strip_underscores_acc(s, 0, string.length(s), "")
@@ -1416,6 +1484,18 @@ fn parse_binary_acc(s: String, i: Int, len: Int, acc: Int) -> Int:
         "1" -> parse_binary_acc(s, i + 1, len, acc * 2 + 1)
         _ -> parse_binary_acc(s, i + 1, len, acc * 2)
 
+fn parse_octal_str(s: String) -> Int:
+  parse_octal_acc(s, 0, string.length(s), 0)
+
+fn parse_octal_acc(s: String, i: Int, len: Int, acc: Int) -> Int:
+  case i >= len:
+    True -> acc
+    False ->
+      case string.char_str(s, i):
+        "_" -> parse_octal_acc(s, i + 1, len, acc)
+        _ ->
+          parse_octal_acc(s, i + 1, len, acc * 8 + (string.char_at(s, i) - 48))
+
 fn all_hex_digits(s: String, i: Int) -> Bool:
   case i >= string.length(s):
     True -> True
@@ -1423,6 +1503,9 @@ fn all_hex_digits(s: String, i: Int) -> Bool:
       case is_hex_digit_code(string.char_at(s, i)):
         False -> False
         True -> all_hex_digits(s, i + 1)
+
+fn is_octal_digit_code(c: Int) -> Bool:
+  c >= 48 && c <= 55
 
 fn hex_val(c: Int) -> Int:
   case c >= 48 && c <= 57:

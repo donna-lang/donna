@@ -337,6 +337,22 @@ pub fn parse_float_literal_test() -> String:
         [ast.Const(_, _, _, ast.FloatLit("3.14", _), _)] -> ""
         _ -> should.fail("expected FloatLit(3.14)")
 
+pub fn parse_octal_literal_test() -> String:
+  case parse_src("const mask = 0o17"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.IntLit("15", _), _)] -> ""
+        _ -> should.fail("expected IntLit(15)")
+
+pub fn parse_scientific_float_literal_test() -> String:
+  case parse_src("const speed = 7.0e7"):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_consts(m):
+        [ast.Const(_, _, _, ast.FloatLit("7.0e7", _), _)] -> ""
+        _ -> should.fail("expected FloatLit(7.0e7)")
+
 pub fn parse_string_literal_test() -> String:
   case parse_src("const s = \"hello\""):
     parse_result.PErr(_) -> should.fail("parse failed")
