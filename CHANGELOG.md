@@ -10,6 +10,7 @@ All notable changes to `donna` will be documented in this file.
 - `donna check` now works for multi-module libraries without requiring a root `src/<name>.donna` file.
 - Type diagnostics from `donna check`, `donna build`, and `donna test` no longer get wrapped with an extra `error: type error in ...` prefix.
 - Missing module calls such as `string.to_slug(...)` without `import donna/string` are covered by a regression test and report `undefined module` with a source span and hint.
+- CLI exit codes now correctly fail for structured diagnostics and plain lex/parse errors after diagnostic prefix cleanup.
 
 ### Enhancements
 

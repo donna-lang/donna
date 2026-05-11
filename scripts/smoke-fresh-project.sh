@@ -22,9 +22,16 @@ cd smoke
 "$DONNA" run
 "$DONNA" test
 
-printf 'pub fn main() -> Nil:\n  let broken =\n' > src/smoke.donna
+printf 'pub fn main() -> Nil:\n  let route = string.to_slug("Language Tour")\n  echo route\n' > src/smoke.donna
 if "$DONNA" build >/tmp/donna-smoke-bad-build.log 2>&1; then
   echo "expected bad fresh project build to fail"
+  cat /tmp/donna-smoke-bad-build.log
+  exit 1
+fi
+grep -q "undefined module" /tmp/donna-smoke-bad-build.log
+grep -q "\`string\` has not been imported" /tmp/donna-smoke-bad-build.log
+if grep -q "type error in" /tmp/donna-smoke-bad-build.log; then
+  echo "unexpected redundant type error wrapper"
   cat /tmp/donna-smoke-bad-build.log
   exit 1
 fi

@@ -95,9 +95,16 @@ pub fn exit_code_for_output(text: String) -> Int:
     False -> 0
 
 fn is_failure_text(text: String) -> Bool:
-  case string.starts_with(text, colors.red("error")):
+  let clean = colors.strip(text)
+  case string.starts_with(clean, "error"):
     True -> True
-    False -> string.starts_with(text, colors.red("build failed"))
+    False ->
+      case string.starts_with(clean, "build failed"):
+        True -> True
+        False ->
+          case string.starts_with(clean, "parse error:"):
+            True -> True
+            False -> string.starts_with(clean, "lex error:")
 
 fn fail(message: String) -> String:
   colors.red("error") <> ": " <> message
