@@ -78,7 +78,7 @@ donna run
 
 ## Documentation
 
-Work in Progress
+You can check the language-tour [here](https://donna-lang.org/docs/)
 
 ## Licence
 
