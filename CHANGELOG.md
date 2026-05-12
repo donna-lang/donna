@@ -4,6 +4,12 @@ All notable changes to `donna` will be documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Git package caches are now refreshed when resolving unlocked dependencies, so a stale `~/.donna/packages/<name>` checkout no longer hides newer matching tags or branches.
+- QBE installation now prefers system packages when available and falls back to QBE's official git repository, avoiding the flaky self-hosted mirror in CI.
+- `donna new` now generates a CI workflow that installs QBE directly instead of checking out the Donna compiler just to run `make install-qbe`.
+
 ## [0.1.1] — 2026-05-11
 
 ### Fixed

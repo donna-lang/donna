@@ -145,6 +145,8 @@ fn resolve_git_dep(
     True ->
       case files.is_dir(dest):
         True ->
+          let ref = pick_ref(url, value)
+          let _ = refresh_cached_dep(dest, url, ref)
           let rev = head_sha(dest)
           let _ = lock.write_cached_rev(dest, rev)
           #(Dep(name, dest), lock.LockedDep(name, url, rev))
@@ -213,6 +215,36 @@ fn clone_at_ref(url: String, dest: String, ref: String) -> Int:
           case c == 0:
             False -> c
             True -> shell.exec("git", ["-C", dest, "checkout", ref])
+
+fn refresh_cached_dep(dest: String, url: String, ref: String) -> Int:
+  case string.equal(origin_url(dest), url):
+    False ->
+      let _ = shell.run("rm -rf " <> dest)
+      clone_at_ref(url, dest, ref)
+    True ->
+      let _ = shell.exec(
+        "git",
+        ["-C", dest, "fetch", "--tags", "--force", "--prune", "origin"]
+      )
+      case string.is_empty(ref):
+        True -> shell.exec("git", ["-C", dest, "pull", "--ff-only"])
+        False -> checkout_ref(dest, ref)
+
+fn checkout_ref(dest: String, ref: String) -> Int:
+  let code = shell.exec("git", ["-C", dest, "checkout", ref])
+  case code == 0:
+    True -> code
+    False ->
+      let _ = shell.exec("git", ["-C", dest, "fetch", "origin", ref])
+      shell.exec("git", ["-C", dest, "checkout", ref])
+
+fn origin_url(repo_path: String) -> String:
+  string.trim(
+    shell.output(
+      "git",
+      ["-C", repo_path, "config", "--get", "remote.origin.url"]
+    )
+  )
 
 fn git_cache_dir() -> String:
   files.join(files.join(shell.getenv("HOME"), ".donna"), "packages")
