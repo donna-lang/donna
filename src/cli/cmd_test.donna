@@ -50,21 +50,28 @@ fn do_test(
           colors.dim("no .donna test files found in ") <> colors.path(test_src_dir)
         False ->
           let test_mods = tester.collect_test_modules(test_files)
-          let runner_src = tester.generate_filtered_runner(test_mods, filters)
-          let build_dir = scanner.project_build_dir(project)
-          let test_dir = scanner.project_test_dir(project)
-          let _ = files.mkdir(build_dir)
-          let _ = files.mkdir(test_dir)
-          let runner_path = files.join(test_dir, "test_runner.donna")
-          let _ = files.write(runner_path, runner_src)
-          build_and_run(
-            dir,
-            project,
-            test_files,
-            test_mods,
-            runner_path,
-            test_dir
-          )
+          let invalid = tester.collect_invalid_public_test_functions(test_files)
+          case list.is_empty(invalid):
+            False -> invalid_test_names_error(invalid)
+            True ->
+              case tester.count_total(test_mods) == 0:
+                True -> no_tests_error()
+                False ->
+                  let runner_src = tester.generate_filtered_runner(test_mods, filters)
+                  let build_dir = scanner.project_build_dir(project)
+                  let test_dir = scanner.project_test_dir(project)
+                  let _ = files.mkdir(build_dir)
+                  let _ = files.mkdir(test_dir)
+                  let runner_path = files.join(test_dir, "test_runner.donna")
+                  let _ = files.write(runner_path, runner_src)
+                  build_and_run(
+                    dir,
+                    project,
+                    test_files,
+                    test_mods,
+                    runner_path,
+                    test_dir
+                  )
 
 fn build_and_run(
   dir: String,
@@ -139,30 +146,49 @@ fn build_and_run(
                           case pipeline.c_compiler_available():
                             False -> c_compiler_missing_error()
                             True ->
-                              let s_files = pipeline.run_qbe_all(all_ssa, [])
-                              let out_path = files.join(test_dir, "donna_test_runner")
-                              let link_args = list.append(
-                                s_files,
-                                list.append(
-                                  list.append(dep_objs, dev_objs),
-                                  list.append(linker_flags(), ["-o", out_path])
-                                )
-                              )
-                              let link_code = shell.run(pipeline.c_command(link_args) <> " >/dev/null 2>&1")
-                              case link_code == 0:
-                                False -> colors.red("error") <> ": linker failed"
-                                True ->
-                                  let _ = shell.run(
-                                    "command -v codesign >/dev/null 2>&1 && codesign --force -s - " <> out_path <> " >/dev/null 2>&1"
+                              case pipeline.run_qbe_all_checked(all_ssa):
+                                result.Error(e) -> e
+                                result.Ok(s_files) ->
+                                  let out_path = files.join(test_dir, "donna_test_runner")
+                                  let link_args = list.append(
+                                    s_files,
+                                    list.append(
+                                      list.append(dep_objs, dev_objs),
+                                      list.append(
+                                        linker_flags(),
+                                        ["-o", out_path]
+                                      )
+                                    )
                                   )
-                                  echo colors.dim("  Running tests...")
-                                  let _ = shell.flush()
-                                  let code = shell.exec(out_path, [])
-                                  case code == 0:
-                                    True -> ""
+                                  let link_code = shell.run(
+                                    pipeline.c_command(link_args) <> " >/dev/null 2>&1"
+                                  )
+                                  case link_code == 0:
                                     False ->
-                                      let _ = process_exit(code)
-                                      ""
+                                      colors.red("error") <> ": linker failed"
+                                    True ->
+                                      let _ = maybe_codesign(out_path)
+                                      echo colors.dim("  Running tests...")
+                                      let _ = shell.flush()
+                                      let code = shell.exec(out_path, [])
+                                      case code == 0:
+                                        True -> ""
+                                        False ->
+                                          let _ = process_exit(code)
+                                          ""
+
+fn invalid_test_names_error(names: List(String)) -> String:
+  colors.red("error") <> ": invalid test function name\n" <> invalid_test_lines(names, "")
+
+fn invalid_test_lines(names: List(String), acc: String) -> String:
+  case names:
+    [] ->
+      acc <> colors.dim("  hint: public test functions must end with `_test`")
+    [name, ..rest] ->
+      invalid_test_lines(rest, acc <> "  " <> colors.path(name) <> "\n")
+
+fn no_tests_error() -> String:
+  colors.red("error") <> ": no test functions found\n" <> colors.dim("  hint: add a public function named like `example_test` in test/")
 
 fn qbe_missing_error() -> String:
   let hint = colors.dim("  hint: install QBE and make sure qbe is in PATH")
@@ -262,6 +288,14 @@ fn linker_flags() -> List(String):
     True -> ["-Wl,-stack_size,0x2000000"]
     False -> ["-lm"]
 
+fn maybe_codesign(path: String) -> Int:
+  case shell.run("uname | grep -q '^Darwin$' >/dev/null 2>&1") == 0:
+    False -> 0
+    True ->
+      shell.run(
+        "command -v codesign >/dev/null 2>&1 && codesign --force -s - " <> path <> " >/dev/null 2>&1"
+      )
+
 fn scrub_main_from_ssa(
   paths: List(String),
   scrub_dir: String,
@@ -271,16 +305,19 @@ fn scrub_main_from_ssa(
     [] -> list.reverse(acc)
     [p, ..rest] ->
       let src = files.read(p)
-      let patched = string.replace(
-        src,
-        "export function w $main(",
-        "function w $__proj_main("
-      )
-      let patched2 = string.replace(
-        patched,
-        "export function w $donna_program_main(",
-        "function w $__proj_main("
-      )
+      let patched2 = case string.contains(src, "$main(") || string.contains(src, "$donna_program_main("):
+        False -> src
+        True ->
+          let patched = string.replace(
+            src,
+            "export function w $main(",
+            "function w $__proj_main("
+          )
+          string.replace(
+            patched,
+            "export function w $donna_program_main(",
+            "function w $__proj_main("
+          )
       let dst = files.join(scrub_dir, files.basename(p))
       let _ = files.write(dst, patched2)
       scrub_main_from_ssa(rest, scrub_dir, [dst, ..acc])

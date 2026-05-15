@@ -30,6 +30,35 @@ fn collect_loop(
 pub fn find_test_fns(content: String) -> List(String):
   collect_fns(string.split(content, "\n"), [])
 
+/// Collect public functions in test files that are not valid test names.
+///
+/// Public functions in `test/` are treated as runnable tests, so they must end
+/// with `_test`. Keeping helpers private avoids generated-runner/link errors.
+pub fn collect_invalid_public_test_functions(
+  paths: List(String)
+) -> List(String):
+  collect_invalid_public_test_functions_loop(paths, [])
+
+fn collect_invalid_public_test_functions_loop(
+  paths: List(String),
+  acc: List(String)
+) -> List(String):
+  case paths:
+    [] -> list.reverse(acc)
+    [path, ..rest] ->
+      let invalid = find_invalid_public_test_fns(files.read(path), path)
+      collect_invalid_public_test_functions_loop(
+        rest,
+        list.append(invalid, acc)
+      )
+
+/// Find public functions in test source text that do not end with `_test`.
+pub fn find_invalid_public_test_fns(
+  content: String,
+  path: String
+) -> List(String):
+  collect_invalid_fns(string.split(content, "\n"), path, [])
+
 fn collect_fns(lines: List(String), acc: List(String)) -> List(String):
   case lines:
     [] -> list.reverse(acc)
@@ -46,6 +75,28 @@ fn collect_fns(lines: List(String), acc: List(String)) -> List(String):
               case string.ends_with(name, "_test"):
                 True -> collect_fns(rest, [name, ..acc])
                 False -> collect_fns(rest, acc)
+
+fn collect_invalid_fns(
+  lines: List(String),
+  path: String,
+  acc: List(String)
+) -> List(String):
+  case lines:
+    [] -> list.reverse(acc)
+    [line, ..rest] ->
+      case string.starts_with(line, "pub fn "):
+        False -> collect_invalid_fns(rest, path, acc)
+        True ->
+          let after = string.slice(line, 7, string.length(line) - 7)
+          let paren = string.index_of(after, "(")
+          case paren >= 0:
+            False -> collect_invalid_fns(rest, path, acc)
+            True ->
+              let name = string.slice(after, 0, paren)
+              case string.ends_with(name, "_test"):
+                True -> collect_invalid_fns(rest, path, acc)
+                False ->
+                  collect_invalid_fns(rest, path, [path <> ":" <> name, ..acc])
 
 /// Count the total number of test functions across collected modules.
 pub fn count_total(mods: List(#(String, List(String)))) -> Int:

@@ -16,6 +16,7 @@ import donna/result
 import donna/string
 import donna/shell
 import utilities/logger
+import utilities/colors
 
 /// Compile one Donna module into a module interface and an SSA artifact.
 ///
@@ -203,7 +204,9 @@ pub fn run_qbe(ssa_path: String) -> String:
   case file_is_current(ssa_path, s_path):
     True -> s_path
     False ->
-      let code = shell.run("qbe -o " <> sh_quote(s_path) <> " " <> sh_quote(ssa_path) <> " >/dev/null 2>&1")
+      let code = shell.run(
+        "qbe -o " <> sh_quote(s_path) <> " " <> sh_quote(ssa_path) <> " >/dev/null 2>&1"
+      )
       case code == 0:
         True -> s_path
         False -> ""
@@ -222,6 +225,27 @@ pub fn run_qbe_all(ssa_paths: List(String), acc: List(String)) -> List(String):
         True -> run_qbe_all(rest, acc)
         False -> run_qbe_all(rest, [s, ..acc])
 
+/// Run QBE for every SSA file and fail with a Donna error when QBE rejects one.
+pub fn run_qbe_all_checked(
+  ssa_paths: List(String)
+) -> result.Result(List(String), String):
+  run_qbe_all_checked_loop(ssa_paths, [])
+
+fn run_qbe_all_checked_loop(
+  ssa_paths: List(String),
+  acc: List(String)
+) -> result.Result(List(String), String):
+  case ssa_paths:
+    [] -> result.Ok(list.reverse(acc))
+    [path, ..rest] ->
+      let s = run_qbe(path)
+      case string.is_empty(s):
+        True -> result.Error(qbe_compile_error(path))
+        False -> run_qbe_all_checked_loop(rest, [s, ..acc])
+
+fn qbe_compile_error(path: String) -> String:
+  colors.red("error") <> ": QBE failed to compile " <> colors.path(path) <> "\n" <> colors.dim("  hint: run `qbe " <> path <> "` to see the backend error")
+
 /// Compile one C FFI source file into an object file.
 ///
 /// The object path is returned in a one-item list on success and an empty list
@@ -234,7 +258,9 @@ pub fn compile_c(src_path: String, obj_path: String) -> List(String):
       case file_is_current(src_path, obj_path):
         True -> [obj_path]
         False ->
-          let code = shell.run(c_command(["-c", "-O2", src_path, "-o", obj_path]) <> " >/dev/null 2>&1")
+          let code = shell.run(
+            c_command(["-c", "-O2", src_path, "-o", obj_path]) <> " >/dev/null 2>&1"
+          )
           case code == 0:
             True -> [obj_path]
             False -> []
@@ -273,7 +299,8 @@ pub fn mod_name_to_stem(mod_name: String) -> String:
 fn file_is_current(src: String, output: String) -> Bool:
   case files.exists(output):
     False -> False
-    True -> shell.run("test " <> sh_quote(src) <> " -nt " <> sh_quote(output)) != 0
+    True ->
+      shell.run("test " <> sh_quote(src) <> " -nt " <> sh_quote(output)) != 0
 
 fn sh_quote(s: String) -> String:
   "'" <> string.replace(s, "'", "'\\''") <> "'"

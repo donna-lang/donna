@@ -562,7 +562,7 @@ pub fn infer_expr(
       case infer_expr(subj, e):
         result.Error(err) -> result.Error(err)
         result.Ok(#(ts, e2)) ->
-          case infer_clauses(clauses, e2):
+          case infer_clauses(clauses, e2, types.typed_expr_type(ts)):
             result.Error(err) -> result.Error(err)
             result.Ok(#(typed_clauses, result_type)) ->
               result.Ok(#(types.TECase(ts, typed_clauses, result_type), e2))
@@ -651,15 +651,17 @@ fn infer_exprs(
 
 fn infer_clauses(
   clauses: List(ast.CaseClause),
-  e: env.Env
+  e: env.Env,
+  subject_type: types.Type
 ) -> result.Result(#(List(types.TypedClause), types.Type), types.TypeError):
   case clauses:
     [] -> result.Ok(#([], types.TNil))
-    _ -> infer_clauses_loop(clauses, e, [], types.TNil)
+    _ -> infer_clauses_loop(clauses, e, subject_type, [], types.TNil)
 
 fn infer_clauses_loop(
   clauses: List(ast.CaseClause),
   e: env.Env,
+  subject_type: types.Type,
   acc: List(types.TypedClause),
   result_type: types.Type
 ) -> result.Result(#(List(types.TypedClause), types.Type), types.TypeError):
@@ -668,7 +670,7 @@ fn infer_clauses_loop(
     [clause, ..rest] ->
       case clause:
         ast.CaseClause(pattern, guard_opt, body, _) ->
-          let clause_env = bind_pattern(pattern, e)
+          let clause_env = bind_pattern_typed(pattern, subject_type, e)
           case infer_guard(guard_opt, clause_env):
             result.Error(err) -> result.Error(err)
             result.Ok(typed_guard) ->
@@ -677,7 +679,7 @@ fn infer_clauses_loop(
                 result.Ok(#(typed_body, _)) ->
                   let t = types.typed_expr_type(typed_body)
                   let tc = types.TypedClause(pattern, typed_guard, typed_body, t)
-                  infer_clauses_loop(rest, e, [tc, ..acc], t)
+                  infer_clauses_loop(rest, e, subject_type, [tc, ..acc], t)
 
 fn infer_guard(
   guard_opt: option.Option(ast.Expr),
@@ -722,7 +724,7 @@ fn check_stmt(
       case infer_expr(value, e):
         result.Error(err) -> result.Error(err)
         result.Ok(#(typed_val, _)) ->
-          let e2 = bind_pattern(pattern, e)
+          let e2 = bind_pattern_typed(pattern, types.typed_expr_type(typed_val), e)
           result.Ok(#(types.TStmtLetPat(pattern, typed_val), types.TNil, e2))
     ast.ExprStmt(expr, _) ->
       case infer_expr(expr, e):
@@ -754,6 +756,63 @@ fn bind_pattern(pattern: ast.Pattern, e: env.Env) -> env.Env:
             types.TListType(types.TTypeVar(env.env_next_var(e2)))
           )
     ast.PCons(_, _, args, _) -> bind_pattern_list(args, e)
+
+fn bind_pattern_typed(
+  pattern: ast.Pattern,
+  expected: types.Type,
+  e: env.Env
+) -> env.Env:
+  case pattern:
+    ast.PVar(name, _) ->
+      env.env_bind(e, name, expected)
+    ast.PWild(_) -> e
+    ast.PDiscard(_, _) -> e
+    ast.PInt(_, _) -> e
+    ast.PFloat(_, _) -> e
+    ast.PString(_, _) -> e
+    ast.PBool(_, _) -> e
+    ast.PTuple(elems, _) ->
+      case expected:
+        types.TTupleType(elem_types) ->
+          bind_pattern_typed_list(elems, elem_types, e)
+        _ -> bind_pattern_list(elems, e)
+    ast.PList(elems, rest_opt, _) ->
+      let elem_type = case expected:
+        types.TListType(t) -> t
+        _ -> types.TTypeVar(env.env_next_var(e))
+      let e2 = bind_pattern_typed_repeated(elems, elem_type, e)
+      case rest_opt:
+        option.None -> e2
+        option.Some("_") -> e2
+        option.Some(name) -> env.env_bind(e2, name, types.TListType(elem_type))
+    ast.PCons(_, name, args, _) ->
+      case env.env_lookup_ctor(e, name):
+        option.None -> bind_pattern_list(args, e)
+        option.Some(#(_, field_types, _)) ->
+          bind_pattern_typed_list(args, field_types, e)
+
+fn bind_pattern_typed_list(
+  patterns: List(ast.Pattern),
+  expected: List(types.Type),
+  e: env.Env
+) -> env.Env:
+  case patterns:
+    [] -> e
+    [p, ..prest] ->
+      case expected:
+        [] -> bind_pattern_list(patterns, e)
+        [t, ..trest] ->
+          bind_pattern_typed_list(prest, trest, bind_pattern_typed(p, t, e))
+
+fn bind_pattern_typed_repeated(
+  patterns: List(ast.Pattern),
+  item_type: types.Type,
+  e: env.Env
+) -> env.Env:
+  case patterns:
+    [] -> e
+    [p, ..rest] ->
+      bind_pattern_typed_repeated(rest, item_type, bind_pattern_typed(p, item_type, e))
 
 fn bind_pattern_list(patterns: List(ast.Pattern), e: env.Env) -> env.Env:
   case patterns:

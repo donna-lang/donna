@@ -13,118 +13,136 @@ import donna/int
 
 /// Mutable code generation state threaded through expression and declaration lowering.
 pub type CgState:
-  CgState(List(il.DataDef), List(il.Block), List(String), List(#(String, String)), Int, List(#(String, Int)), List(#(String, List(types.Type))), List(il.Function), List(String), String, List(String))
+  CgState(List(il.DataDef), List(il.Block), List(String), List(#(String, String)), Int, List(#(String, Int)), List(#(String, List(types.Type))), List(il.Function), List(String), String, List(#(String, types.Type)), List(String))
 
 fn state_data_defs(s: CgState) -> List(il.DataDef):
   case s:
-    CgState(x, _, _, _, _, _, _, _, _, _, _) -> x
+    CgState(x, _, _, _, _, _, _, _, _, _, _, _) -> x
 
 fn state_finished_blocks(s: CgState) -> List(il.Block):
   case s:
-    CgState(_, x, _, _, _, _, _, _, _, _, _) -> x
+    CgState(_, x, _, _, _, _, _, _, _, _, _, _) -> x
 
 fn state_globals(s: CgState) -> List(String):
   case s:
-    CgState(_, _, x, _, _, _, _, _, _, _, _) -> x
+    CgState(_, _, x, _, _, _, _, _, _, _, _, _) -> x
 
 fn state_extern_aliases(s: CgState) -> List(#(String, String)):
   case s:
-    CgState(_, _, _, x, _, _, _, _, _, _, _) -> x
+    CgState(_, _, _, x, _, _, _, _, _, _, _, _) -> x
 
 fn state_counter(s: CgState) -> Int:
   case s:
-    CgState(_, _, _, _, x, _, _, _, _, _, _) -> x
+    CgState(_, _, _, _, x, _, _, _, _, _, _, _) -> x
 
 fn state_ctor_tags(s: CgState) -> List(#(String, Int)):
   case s:
-    CgState(_, _, _, _, _, x, _, _, _, _, _) -> x
+    CgState(_, _, _, _, _, x, _, _, _, _, _, _) -> x
 
 fn state_ctor_field_types(s: CgState) -> List(#(String, List(types.Type))):
   case s:
-    CgState(_, _, _, _, _, _, x, _, _, _, _) -> x
+    CgState(_, _, _, _, _, _, x, _, _, _, _, _) -> x
 
 fn state_helper_fns(s: CgState) -> List(il.Function):
   case s:
-    CgState(_, _, _, _, _, _, _, x, _, _, _) -> x
+    CgState(_, _, _, _, _, _, _, x, _, _, _, _) -> x
 
 fn state_emitted_helpers(s: CgState) -> List(String):
   case s:
-    CgState(_, _, _, _, _, _, _, _, x, _, _) -> x
+    CgState(_, _, _, _, _, _, _, _, x, _, _, _) -> x
 
 fn state_fn_prefix(s: CgState) -> String:
   case s:
-    CgState(_, _, _, _, _, _, _, _, _, x, _) -> x
+    CgState(_, _, _, _, _, _, _, _, _, x, _, _) -> x
+
+fn state_local_value_types(s: CgState) -> List(#(String, types.Type)):
+  case s:
+    CgState(_, _, _, _, _, _, _, _, _, _, x, _) -> x
 
 fn state_local_fn_names(s: CgState) -> List(String):
   case s:
-    CgState(_, _, _, _, _, _, _, _, _, _, x) -> x
+    CgState(_, _, _, _, _, _, _, _, _, _, _, x) -> x
 
 fn set_data_defs(s: CgState, v: List(il.DataDef)) -> CgState:
   case s:
-    CgState(_, b, g, ea, n, ct, cft, hf, eh, fp, lfn) ->
-      CgState(v, b, g, ea, n, ct, cft, hf, eh, fp, lfn)
+    CgState(_, b, g, ea, n, ct, cft, hf, eh, fp, lvt, lfn) ->
+      CgState(v, b, g, ea, n, ct, cft, hf, eh, fp, lvt, lfn)
 
 fn set_finished_blocks(s: CgState, v: List(il.Block)) -> CgState:
   case s:
-    CgState(d, _, g, ea, n, ct, cft, hf, eh, fp, lfn) ->
-      CgState(d, v, g, ea, n, ct, cft, hf, eh, fp, lfn)
+    CgState(d, _, g, ea, n, ct, cft, hf, eh, fp, lvt, lfn) ->
+      CgState(d, v, g, ea, n, ct, cft, hf, eh, fp, lvt, lfn)
 
 fn set_counter(s: CgState, v: Int) -> CgState:
   case s:
-    CgState(d, b, g, ea, _, ct, cft, hf, eh, fp, lfn) ->
-      CgState(d, b, g, ea, v, ct, cft, hf, eh, fp, lfn)
+    CgState(d, b, g, ea, _, ct, cft, hf, eh, fp, lvt, lfn) ->
+      CgState(d, b, g, ea, v, ct, cft, hf, eh, fp, lvt, lfn)
 
 fn set_ctor_tags(s: CgState, v: List(#(String, Int))) -> CgState:
   case s:
-    CgState(d, b, g, ea, n, _, cft, hf, eh, fp, lfn) ->
-      CgState(d, b, g, ea, n, v, cft, hf, eh, fp, lfn)
+    CgState(d, b, g, ea, n, _, cft, hf, eh, fp, lvt, lfn) ->
+      CgState(d, b, g, ea, n, v, cft, hf, eh, fp, lvt, lfn)
 
 fn set_ctor_field_types(
   s: CgState,
   v: List(#(String, List(types.Type)))
 ) -> CgState:
   case s:
-    CgState(d, b, g, ea, n, ct, _, hf, eh, fp, lfn) ->
-      CgState(d, b, g, ea, n, ct, v, hf, eh, fp, lfn)
+    CgState(d, b, g, ea, n, ct, _, hf, eh, fp, lvt, lfn) ->
+      CgState(d, b, g, ea, n, ct, v, hf, eh, fp, lvt, lfn)
 
 fn set_helper_fns(s: CgState, v: List(il.Function)) -> CgState:
   case s:
-    CgState(d, b, g, ea, n, ct, cft, _, eh, fp, lfn) ->
-      CgState(d, b, g, ea, n, ct, cft, v, eh, fp, lfn)
+    CgState(d, b, g, ea, n, ct, cft, _, eh, fp, lvt, lfn) ->
+      CgState(d, b, g, ea, n, ct, cft, v, eh, fp, lvt, lfn)
 
 fn set_emitted_helpers(s: CgState, v: List(String)) -> CgState:
   case s:
-    CgState(d, b, g, ea, n, ct, cft, hf, _, fp, lfn) ->
-      CgState(d, b, g, ea, n, ct, cft, hf, v, fp, lfn)
+    CgState(d, b, g, ea, n, ct, cft, hf, _, fp, lvt, lfn) ->
+      CgState(d, b, g, ea, n, ct, cft, hf, v, fp, lvt, lfn)
 
 fn set_fn_prefix(s: CgState, v: String) -> CgState:
   case s:
-    CgState(d, b, g, ea, n, ct, cft, hf, eh, _, lfn) ->
-      CgState(d, b, g, ea, n, ct, cft, hf, eh, v, lfn)
+    CgState(d, b, g, ea, n, ct, cft, hf, eh, _, lvt, lfn) ->
+      CgState(d, b, g, ea, n, ct, cft, hf, eh, v, lvt, lfn)
+
+fn set_local_value_types(
+  s: CgState,
+  v: List(#(String, types.Type))
+) -> CgState:
+  case s:
+    CgState(d, b, g, ea, n, ct, cft, hf, eh, fp, _, lfn) ->
+      CgState(d, b, g, ea, n, ct, cft, hf, eh, fp, v, lfn)
 
 fn set_local_fn_names(s: CgState, v: List(String)) -> CgState:
   case s:
-    CgState(d, b, g, ea, n, ct, cft, hf, eh, fp, _) ->
-      CgState(d, b, g, ea, n, ct, cft, hf, eh, fp, v)
+    CgState(d, b, g, ea, n, ct, cft, hf, eh, fp, lvt, _) ->
+      CgState(d, b, g, ea, n, ct, cft, hf, eh, fp, lvt, v)
 
 fn set_globals(s: CgState, v: List(String)) -> CgState:
   case s:
-    CgState(d, b, _, ea, n, ct, cft, hf, eh, fp, lfn) ->
-      CgState(d, b, v, ea, n, ct, cft, hf, eh, fp, lfn)
+    CgState(d, b, _, ea, n, ct, cft, hf, eh, fp, lvt, lfn) ->
+      CgState(d, b, v, ea, n, ct, cft, hf, eh, fp, lvt, lfn)
 
 fn set_extern_aliases(s: CgState, v: List(#(String, String))) -> CgState:
   case s:
-    CgState(d, b, g, _, n, ct, cft, hf, eh, fp, lfn) ->
-      CgState(d, b, g, v, n, ct, cft, hf, eh, fp, lfn)
+    CgState(d, b, g, _, n, ct, cft, hf, eh, fp, lvt, lfn) ->
+      CgState(d, b, g, v, n, ct, cft, hf, eh, fp, lvt, lfn)
 
 fn add_data_def(s: CgState, d: il.DataDef) -> CgState:
   set_data_defs(s, [d, ..state_data_defs(s)])
+
+fn bind_local_value_type(s: CgState, name: String, t: types.Type) -> CgState:
+  set_local_value_types(s, [#(name, t), ..state_local_value_types(s)])
+
+fn local_value_type(s: CgState, name: String) -> option.Option(types.Type):
+  lookup_alist(state_local_value_types(s), name)
 
 fn push_block(s: CgState, b: il.Block) -> CgState:
   set_finished_blocks(s, [b, ..state_finished_blocks(s)])
 
 fn new_state() -> CgState:
-  CgState([], [], [], [], 0, [], [], [], [], "", [])
+  CgState([], [], [], [], 0, [], [], [], [], "", [], [])
 
 fn fresh_temp(s: CgState) -> #(String, CgState):
   let n = state_counter(s)
@@ -577,9 +595,266 @@ fn gen_field_stores(
       )
       let block3 = il.volatile_inst(
         block2,
-        il.Storel(il.Temporary(param_name), il.Temporary(fptr))
+        store_typed_value(ft, il.Temporary(param_name), il.Temporary(fptr))
       )
       gen_field_stores(rest, ptr, idx + 1, block3, state2)
+
+fn store_typed_value(t: types.Type, value: il.Value, addr: il.Value) -> il.Inst:
+  case t:
+    types.TFloat -> il.Stored(value, addr)
+    _ -> il.Storel(value, addr)
+
+fn load_typed_value(t: types.Type, addr: il.Value) -> il.Inst:
+  case t:
+    types.TFloat -> il.Loadd(addr)
+    _ -> il.Loadl(addr)
+
+fn constructor_call_name(fn_expr: types.TypedExpr) -> option.Option(String):
+  case fn_expr:
+    types.TEVar(name, _) -> option.Some(name)
+    types.TEFieldAccess(_, field, _, _) -> option.Some(field)
+    _ -> option.None
+
+fn gen_constructor_call(
+  tag: Int,
+  fn_expr: types.TypedExpr,
+  args: List(types.TypedExpr),
+  ret_type: types.Type,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  let field_types = constructor_call_field_types(fn_expr, args, ret_type, state)
+  let #(arg_vals, block2, state2) = gen_exprs_list(args, block, state, [])
+  let n_fields = list_length(args)
+  let struct_size = n_fields * 8 + 8
+  let #(ptr_t, state3) = fresh_temp(state2)
+  let block3 = il.assign_inst(
+    block2,
+    il.Temporary(ptr_t),
+    il.Long,
+    il.Call(il.Global("malloc"), [#(il.Long, il.Const(struct_size))])
+  )
+  let block4 = il.volatile_inst(block3, il.Storel(il.Const(tag), il.Temporary(ptr_t)))
+  let #(block5, state4) = store_constructor_typed_fields(
+    field_types,
+    arg_vals,
+    il.Temporary(ptr_t),
+    0,
+    block4,
+    state3
+  )
+  #(il.Temporary(ptr_t), block5, state4)
+
+fn constructor_call_field_types(
+  fn_expr: types.TypedExpr,
+  args: List(types.TypedExpr),
+  ret_type: types.Type,
+  state: CgState
+) -> List(types.Type):
+  case types.typed_expr_type(fn_expr):
+    types.TFnType(params, formal_ret) ->
+      let bindings = collect_type_bindings(formal_ret, ret_type, [])
+      let inferred = apply_result_type_args(
+        apply_type_bindings_list(params, bindings),
+        ret_type
+      )
+      prefer_local_arg_types(args, inferred, state)
+    _ -> apply_result_type_args(typed_expr_types(args, []), ret_type)
+
+fn prefer_local_arg_types(
+  args: List(types.TypedExpr),
+  inferred: List(types.Type),
+  state: CgState
+) -> List(types.Type):
+  case args:
+    [] -> inferred
+    [arg, ..arg_rest] ->
+      case inferred:
+        [] -> []
+        [t, ..type_rest] ->
+          let preferred = case arg:
+            types.TEVar(name, _) ->
+              case local_value_type(state, name):
+                option.Some(local_t) -> local_t
+                option.None -> t
+            _ -> t
+          [preferred, ..prefer_local_arg_types(arg_rest, type_rest, state)]
+
+fn typed_expr_types(
+  args: List(types.TypedExpr),
+  acc: List(types.Type)
+) -> List(types.Type):
+  case args:
+    [] -> list.reverse(acc)
+    [arg, ..rest] ->
+      typed_expr_types(rest, [types.typed_expr_type(arg), ..acc])
+
+fn collect_type_bindings(
+  formal: types.Type,
+  actual: types.Type,
+  acc: List(#(Int, types.Type))
+) -> List(#(Int, types.Type)):
+  case formal:
+    types.TTypeVar(n) ->
+      case lookup_type_binding(acc, n):
+        option.Some(_) -> acc
+        option.None -> [#(n, actual), ..acc]
+    types.TListType(fe) ->
+      case actual:
+        types.TListType(ae) -> collect_type_bindings(fe, ae, acc)
+        _ -> acc
+    types.TTupleType(felems) ->
+      case actual:
+        types.TTupleType(aelems) ->
+          collect_type_bindings_list(felems, aelems, acc)
+        _ -> acc
+    types.TFnType(fparams, fret) ->
+      case actual:
+        types.TFnType(aparams, aret) ->
+          let acc2 = collect_type_bindings_list(fparams, aparams, acc)
+          collect_type_bindings(fret, aret, acc2)
+        _ -> acc
+    types.TNamedType(fname, fargs) ->
+      case actual:
+        types.TNamedType(aname, aargs) ->
+          case string.equal(fname, aname):
+            True -> collect_type_bindings_list(fargs, aargs, acc)
+            False -> acc
+        _ -> acc
+    _ -> acc
+
+fn collect_type_bindings_list(
+  formals: List(types.Type),
+  actuals: List(types.Type),
+  acc: List(#(Int, types.Type))
+) -> List(#(Int, types.Type)):
+  case formals:
+    [] -> acc
+    [f, ..rf] ->
+      case actuals:
+        [] -> acc
+        [a, ..ra] ->
+          collect_type_bindings_list(rf, ra, collect_type_bindings(f, a, acc))
+
+fn lookup_type_binding(
+  bindings: List(#(Int, types.Type)),
+  n: Int
+) -> option.Option(types.Type):
+  case bindings:
+    [] -> option.None
+    [#(k, v), ..rest] ->
+      case k == n:
+        True -> option.Some(v)
+        False -> lookup_type_binding(rest, n)
+
+fn apply_type_bindings(t: types.Type, bindings: List(#(Int, types.Type))) -> types.Type:
+  case t:
+    types.TTypeVar(n) ->
+      case lookup_type_binding(bindings, n):
+        option.Some(bound) -> bound
+        option.None -> t
+    types.TListType(elem) ->
+      types.TListType(apply_type_bindings(elem, bindings))
+    types.TTupleType(elems) ->
+      types.TTupleType(apply_type_bindings_list(elems, bindings))
+    types.TFnType(params, ret) ->
+      types.TFnType(
+        apply_type_bindings_list(params, bindings),
+        apply_type_bindings(ret, bindings)
+      )
+    types.TNamedType(name, args) ->
+      types.TNamedType(name, apply_type_bindings_list(args, bindings))
+    _ -> t
+
+fn apply_type_bindings_list(
+  ts: List(types.Type),
+  bindings: List(#(Int, types.Type))
+) -> List(types.Type):
+  case ts:
+    [] -> []
+    [t, ..rest] ->
+      [apply_type_bindings(t, bindings), ..apply_type_bindings_list(rest, bindings)]
+
+fn apply_result_type_args(
+  ts: List(types.Type),
+  ret_type: types.Type
+) -> List(types.Type):
+  case ret_type:
+    types.TNamedType(_, args) -> apply_type_args_by_id_list(ts, args)
+    _ -> ts
+
+fn apply_type_args_by_id(t: types.Type, args: List(types.Type)) -> types.Type:
+  case t:
+    types.TTypeVar(n) -> type_arg_at(args, n, t)
+    types.TListType(elem) ->
+      types.TListType(apply_type_args_by_id(elem, args))
+    types.TTupleType(elems) ->
+      types.TTupleType(apply_type_args_by_id_list(elems, args))
+    types.TFnType(params, ret) ->
+      types.TFnType(
+        apply_type_args_by_id_list(params, args),
+        apply_type_args_by_id(ret, args)
+      )
+    types.TNamedType(name, inner_args) ->
+      types.TNamedType(name, apply_type_args_by_id_list(inner_args, args))
+    _ -> t
+
+fn apply_type_args_by_id_list(
+  ts: List(types.Type),
+  args: List(types.Type)
+) -> List(types.Type):
+  case ts:
+    [] -> []
+    [t, ..rest] ->
+      [apply_type_args_by_id(t, args), ..apply_type_args_by_id_list(rest, args)]
+
+fn type_arg_at(
+  args: List(types.Type),
+  idx: Int,
+  default: types.Type
+) -> types.Type:
+  case args:
+    [] -> default
+    [arg] -> arg
+    [arg, ..rest] ->
+      case idx == 0:
+        True -> arg
+        False -> type_arg_at(rest, idx - 1, default)
+
+fn store_constructor_typed_fields(
+  field_types: List(types.Type),
+  values: List(il.Value),
+  ptr: il.Value,
+  idx: Int,
+  block: il.Block,
+  state: CgState
+) -> #(il.Block, CgState):
+  case field_types:
+    [] -> #(block, state)
+    [field_type, ..rest_types] ->
+      case values:
+        [] -> #(block, state)
+        [value, ..rest_values] ->
+          let offset = 8 + 8 * idx
+          let #(fptr, state2) = fresh_temp(state)
+          let block2 = il.assign_inst(
+            block,
+            il.Temporary(fptr),
+            il.Long,
+            il.Add(ptr, il.Const(offset))
+          )
+          let block3 = il.volatile_inst(
+            block2,
+            store_typed_value(field_type, value, il.Temporary(fptr))
+          )
+          store_constructor_typed_fields(
+            rest_types,
+            rest_values,
+            ptr,
+            idx + 1,
+            block3,
+            state2
+          )
 
 fn gen_functions(
   fns: List(typed_ast.TypedFunction),
@@ -620,6 +895,7 @@ fn gen_function(
       let entry = il.new_block("start")
       let saved_blocks = state_finished_blocks(state)
       let state2 = set_finished_blocks(state, [])
+      let state2 = bind_param_value_types(params, state2)
       let #(ret_val, body_block, state3) = gen_expr(body, entry, state2)
       let body_block2 = case block_jumps(body_block):
         True -> body_block
@@ -632,6 +908,15 @@ fn gen_function(
       let il_fn = il.Function(linkage, qbe_name, arguments, return_ty, all_blocks)
       let state4 = set_finished_blocks(state3, saved_blocks)
       #(il_fn, state4)
+
+fn bind_param_value_types(
+  params: List(#(String, types.Type)),
+  state: CgState
+) -> CgState:
+  case params:
+    [] -> state
+    [#(name, t), ..rest] ->
+      bind_param_value_types(rest, bind_local_value_type(state, name, t))
 
 fn build_fn_params(
   params: List(#(String, types.Type)),
@@ -814,21 +1099,15 @@ fn gen_expr(
           gen_builtin_int_to_string(args, block, state)
         types.TEVar("print_str", _) -> gen_builtin_print_str(args, block, state)
         _ ->
-          let #(fn_val, block2, state2) = gen_call_target(fn_expr, block, state)
-          let #(arg_vals, block3, state3) = gen_args(args, block2, state2, [])
-          case ret_type:
-            types.TNil ->
-              let block4 = il.volatile_inst(block3, il.Call(fn_val, arg_vals))
-              #(il.Const(0), block4, state3)
-            _ ->
-              let #(temp, state4) = fresh_temp(state3)
-              let block4 = il.assign_inst(
-                block3,
-                il.Temporary(temp),
-                donna_type_to_qbe(ret_type),
-                il.Call(fn_val, arg_vals)
-              )
-              #(il.Temporary(temp), block4, state4)
+          case constructor_call_name(fn_expr):
+            option.Some(name) ->
+              case lookup_alist(state_ctor_tags(state), name):
+                option.None ->
+                  gen_regular_call(fn_expr, args, ret_type, block, state)
+                option.Some(tag) ->
+                  gen_constructor_call(tag, fn_expr, args, ret_type, block, state)
+            option.None ->
+              gen_regular_call(fn_expr, args, ret_type, block, state)
     types.TEBinOp(op, left, right, result_type) ->
       case op:
         ast.BConcat ->
@@ -1006,9 +1285,10 @@ fn gen_block_as_expr(
         types.TStmtExpr(_, expr_val) -> gen_expr(expr_val, block2, state2)
         types.TStmtLet(name, _, value) ->
           let #(val, block3, state3) = gen_expr(value, block2, state2)
-          let t = donna_type_to_qbe(types.typed_expr_type(value))
+          let value_type = types.typed_expr_type(value)
+          let t = donna_type_to_qbe(value_type)
           let block4 = il.assign_inst(block3, il.Temporary(name), t, il.Copy(val))
-          #(il.Temporary(name), block4, state3)
+          #(il.Temporary(name), block4, bind_local_value_type(state3, name, value_type))
         types.TStmtLetPat(pat, value) ->
           let #(val, block3, state3) = gen_expr(value, block2, state2)
           let #(block4, state4) = emit_pattern_bindings(pat, val, block3, state3)
@@ -1033,9 +1313,10 @@ fn gen_stmt_no_ret(
   case stmt:
     types.TStmtLet(name, _, value) ->
       let #(val, block2, state2) = gen_expr(value, block, state)
-      let t = donna_type_to_qbe(types.typed_expr_type(value))
+      let value_type = types.typed_expr_type(value)
+      let t = donna_type_to_qbe(value_type)
       let block3 = il.assign_inst(block2, il.Temporary(name), t, il.Copy(val))
-      #(block3, state2)
+      #(block3, bind_local_value_type(state2, name, value_type))
     types.TStmtLetPat(pat, value) ->
       let #(val, block2, state2) = gen_expr(value, block, state)
       emit_pattern_bindings(pat, val, block2, state2)
@@ -1233,9 +1514,9 @@ fn emit_constructor_field_bindings(
         block2,
         il.Temporary(fval),
         donna_type_to_qbe(ft),
-        il.Loadl(il.Temporary(fptr))
+        load_typed_value(ft, il.Temporary(fptr))
       )
-      let #(block4, state4) = emit_pattern_bindings(pat, il.Temporary(fval), block3, state3)
+      let #(block4, state4) = emit_typed_pattern_bindings(pat, ft, il.Temporary(fval), block3, state3)
       emit_constructor_field_bindings(
         rest_pats,
         rest_fts,
@@ -1244,6 +1525,24 @@ fn emit_constructor_field_bindings(
         block4,
         state4
       )
+
+fn emit_typed_pattern_bindings(
+  pat: ast.Pattern,
+  pat_type: types.Type,
+  subj: il.Value,
+  block: il.Block,
+  state: CgState
+) -> #(il.Block, CgState):
+  case pat:
+    ast.PVar(name, _) ->
+      let block2 = il.assign_inst(
+        block,
+        il.Temporary(name),
+        donna_type_to_qbe(pat_type),
+        il.Copy(subj)
+      )
+      #(block2, bind_local_value_type(state, name, pat_type))
+    _ -> emit_pattern_bindings(pat, subj, block, state)
 
 fn emit_list_bindings(
   elems: List(ast.Pattern),
@@ -1752,6 +2051,29 @@ fn gen_call_target(
       #(il.Global(qbe_name), block, state)
     other ->
       gen_expr(other, block, state)
+
+fn gen_regular_call(
+  fn_expr: types.TypedExpr,
+  args: List(types.TypedExpr),
+  ret_type: types.Type,
+  block: il.Block,
+  state: CgState
+) -> #(il.Value, il.Block, CgState):
+  let #(fn_val, block2, state2) = gen_call_target(fn_expr, block, state)
+  let #(arg_vals, block3, state3) = gen_args(args, block2, state2, [])
+  case ret_type:
+    types.TNil ->
+      let block4 = il.volatile_inst(block3, il.Call(fn_val, arg_vals))
+      #(il.Const(0), block4, state3)
+    _ ->
+      let #(temp, state4) = fresh_temp(state3)
+      let block4 = il.assign_inst(
+        block3,
+        il.Temporary(temp),
+        donna_type_to_qbe(ret_type),
+        il.Call(fn_val, arg_vals)
+      )
+      #(il.Temporary(temp), block4, state4)
 
 fn gen_args(
   args: List(types.TypedExpr),

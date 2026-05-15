@@ -12,6 +12,19 @@ pub fn find_test_fns_discovers_public_tests_test() -> String:
     should.contains_string_value(fns, "beta_test")
   ])
 
+pub fn find_invalid_public_test_fns_reports_bad_names_test() -> String:
+  let src = "pub fn alpha_test() -> String:\n  \"\"\n\npub fn helper() -> String:\n  \"\"\n\nfn private_helper() -> String:\n  \"\"\n"
+  let invalid = tester.find_invalid_public_test_fns(src, "test/sample_test.donna")
+  should.all([
+    should.length_list(invalid, 1),
+    should.contains_string_value(invalid, "test/sample_test.donna:helper")
+  ])
+
+pub fn find_invalid_public_test_fns_accepts_only_test_suffix_test() -> String:
+  let src = "pub fn alpha_test() -> String:\n  \"\"\n\nfn helper() -> String:\n  \"\"\n"
+  let invalid = tester.find_invalid_public_test_fns(src, "test/sample_test.donna")
+  should.length_list(invalid, 0)
+
 pub fn generate_filtered_runner_keeps_matching_tests_test() -> String:
   let mods = [#("parser_test", ["parse_import_test", "parse_tuple_test"]), #("lexer_test", ["lex_name_test"])]
   let src = tester.generate_filtered_runner(mods, ["parse_import"])

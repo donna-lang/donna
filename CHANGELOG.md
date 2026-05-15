@@ -9,6 +9,10 @@ All notable changes to `donna` will be documented in this file.
 - Git package caches are now refreshed when resolving unlocked dependencies, so a stale `~/.donna/packages/<name>` checkout no longer hides newer matching tags or branches.
 - QBE installation now prefers system packages when available and falls back to QBE's official git repository, avoiding the flaky self-hosted mirror in CI.
 - `donna new` now generates a CI workflow that installs QBE directly instead of checking out the Donna compiler just to run `make install-qbe`.
+- QBE backend failures now stop `donna build` and `donna test` with a Donna error instead of continuing to a misleading linker failure.
+- `donna test` now reports public test functions that do not end with `_test` before generating the runner, avoiding unresolved-symbol linker errors.
+- `codesign` is only attempted on macOS, so Linux and other platforms do not run macOS-specific signing commands.
+- Float fields in constructors and generic constructor calls now use the correct QBE ABI, fixing cases such as `Parsed(Float)`.
 
 ## [0.1.1] — 2026-05-11
 

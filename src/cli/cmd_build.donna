@@ -71,26 +71,30 @@ pub fn build_project(dir: String, project: scanner.Project) -> BuildOutcome:
                   case pipeline.c_compiler_available():
                     False -> BuildFailed(c_compiler_missing_error())
                     True ->
-                      let s_files = pipeline.run_qbe_all(all_ssa, [])
-                      let name = scanner.project_name(project)
-                      let out_path = files.join(bin_dir, name)
-                      let link_args = list.append(
-                        s_files,
-                        list.append(
-                          dep_objs,
-                          list.append(linker_flags(), ["-o", out_path])
-                        )
-                      )
-                      let link_code = shell.run(pipeline.c_command(link_args) <> " >/dev/null 2>&1")
-                      case link_code == 0:
-                        False ->
-                          BuildFailed(colors.red("build failed") <> ": linker failed")
-                        True ->
-                          let _ = shell.run(
-                            "command -v codesign >/dev/null 2>&1 && codesign --force -s - " <> out_path <> " >/dev/null 2>&1"
+                      case pipeline.run_qbe_all_checked(all_ssa):
+                        result.Error(e) -> BuildFailed(e)
+                        result.Ok(s_files) ->
+                          let name = scanner.project_name(project)
+                          let out_path = files.join(bin_dir, name)
+                          let link_args = list.append(
+                            s_files,
+                            list.append(
+                              dep_objs,
+                              list.append(linker_flags(), ["-o", out_path])
+                            )
                           )
-                          let _ = logger.ok("", time.now_us() - t0)
-                          BuildOk(True)
+                          let link_code = shell.run(
+                            pipeline.c_command(link_args) <> " >/dev/null 2>&1"
+                          )
+                          case link_code == 0:
+                            False ->
+                              BuildFailed(
+                                colors.red("build failed") <> ": linker failed"
+                              )
+                            True ->
+                              let _ = maybe_codesign(out_path)
+                              let _ = logger.ok("", time.now_us() - t0)
+                              BuildOk(True)
 
 fn qbe_missing_error() -> String:
   let hint = colors.dim("  hint: install QBE and make sure qbe is in PATH")
@@ -161,6 +165,14 @@ fn linker_flags() -> List(String):
   case shell.run("uname | grep -q '^Darwin$' >/dev/null 2>&1") == 0:
     True -> ["-Wl,-stack_size,0x2000000"]
     False -> ["-lm"]
+
+fn maybe_codesign(path: String) -> Int:
+  case shell.run("uname | grep -q '^Darwin$' >/dev/null 2>&1") == 0:
+    False -> 0
+    True ->
+      shell.run(
+        "command -v codesign >/dev/null 2>&1 && codesign --force -s - " <> path <> " >/dev/null 2>&1"
+      )
 
 fn first_positional(args: List(#(String, String))) -> String:
   case args:
