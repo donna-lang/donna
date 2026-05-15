@@ -1,5 +1,5 @@
 name = "donna"
-version = "0.1.1"
+version = "0.1.2"
 description = "The Donna programming language compiler"
 licences = ["MIT"]
 repository = { type = "github", user = "donna-lang", repo = "donna" }

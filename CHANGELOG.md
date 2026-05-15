@@ -4,6 +4,8 @@ All notable changes to `donna` will be documented in this file.
 
 ## Unreleased
 
+## [0.1.2] — 2026-05-15
+
 ### Fixed
 
 - Git package caches are now refreshed when resolving unlocked dependencies, so a stale `~/.donna/packages/<name>` checkout no longer hides newer matching tags or branches.
