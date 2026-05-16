@@ -43,25 +43,64 @@ pub fn resolve_all(toml_path: String, project_dir: String) -> List(Dep):
   let locked = lock.read(lock_path)
   let toml_src = files.read(toml_path)
   let #(deps, locked1) = parse_section(toml_src, project_dir, "dependencies", locked)
-  let #(dev_deps, locked2) = parse_section(toml_src, project_dir, "dev-dependencies", locked1)
-  let _ = lock.write(lock_path, locked2)
-  list.append(deps, dev_deps)
+  let #(runtime_deps, locked2, seen) = expand_deps(deps, locked1, [], [])
+  let #(dev_deps, locked3) = parse_section(toml_src, project_dir, "dev-dependencies", locked2)
+  let #(expanded_dev_deps, locked4, _) = expand_deps(dev_deps, locked3, seen, [])
+  let _ = lock.write(lock_path, locked4)
+  list.append(runtime_deps, expanded_dev_deps)
 
 /// Resolve only `[dependencies]` from `donna.toml` and update the lockfile.
 pub fn resolve_deps(toml_path: String, project_dir: String) -> List(Dep):
   let lock_path = files.join(project_dir, "donna.lock")
   let locked = lock.read(lock_path)
   let #(deps, locked1) = parse_section(files.read(toml_path), project_dir, "dependencies", locked)
-  let _ = lock.write(lock_path, locked1)
-  deps
+  let #(expanded, locked2, _) = expand_deps(deps, locked1, [], [])
+  let _ = lock.write(lock_path, locked2)
+  expanded
 
 /// Resolve only `[dev-dependencies]` from `donna.toml` and update the lockfile.
 pub fn resolve_dev_deps(toml_path: String, project_dir: String) -> List(Dep):
   let lock_path = files.join(project_dir, "donna.lock")
   let locked = lock.read(lock_path)
-  let #(deps, locked1) = parse_section(files.read(toml_path), project_dir, "dev-dependencies", locked)
-  let _ = lock.write(lock_path, locked1)
-  deps
+  let toml_src = files.read(toml_path)
+  let #(runtime_deps, locked1) = parse_section(toml_src, project_dir, "dependencies", locked)
+  let #(_, locked2, seen) = expand_deps(runtime_deps, locked1, [], [])
+  let #(deps, locked3) = parse_section(toml_src, project_dir, "dev-dependencies", locked2)
+  let #(expanded, locked4, _) = expand_deps(deps, locked3, seen, [])
+  let _ = lock.write(lock_path, locked4)
+  expanded
+
+fn expand_deps(
+  deps: List(Dep),
+  locked: List(lock.LockedDep),
+  seen: List(String),
+  acc: List(Dep)
+) -> #(List(Dep), List(lock.LockedDep), List(String)):
+  case deps:
+    [] -> #(list.reverse(acc), locked, seen)
+    [dep, ..rest] ->
+      let name = dep_name(dep)
+      case list.contains_str(seen, name):
+        True -> expand_deps(rest, locked, seen, acc)
+        False ->
+          let next_seen = [name, ..seen]
+          let toml_path = files.join(dep_path(dep), "donna.toml")
+          case files.exists(toml_path):
+            False ->
+              expand_deps(rest, locked, next_seen, [dep, ..acc])
+            True ->
+              let #(child_deps, locked1) = parse_section(
+                files.read(toml_path),
+                dep_path(dep),
+                "dependencies",
+                locked
+              )
+              let #(expanded_children, locked2, seen2) = expand_deps(child_deps, locked1, next_seen, [])
+              let acc2 = list.append(
+                [dep],
+                list.append(list.reverse(expanded_children), acc)
+              )
+              expand_deps(rest, locked2, seen2, acc2)
 
 fn parse_section(
   toml_src: String,

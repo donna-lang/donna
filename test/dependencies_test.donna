@@ -1,0 +1,120 @@
+import builder/dependencies
+import donna/files
+import donna/list
+import donna/shell
+import unittest/should
+
+fn reset_dir(path: String) -> Nil:
+  let _ = shell.run("rm -rf " <> path)
+  let _ = files.mkdir(path)
+  Nil
+
+fn write_project(path: String, name: String, deps: String) -> Nil:
+  let _ = files.mkdir(path)
+  let _ = files.mkdir(files.join(path, "src"))
+  let _ = files.write(
+    files.join(path, "donna.toml"),
+    "name = \"" <> name <> "\"\nversion = \"0.1.0\"\n\n" <> deps
+  )
+  let _ = files.write(
+    files.join(files.join(path, "src"), name <> ".donna"),
+    "pub fn value() -> Int:\n  1\n"
+  )
+  Nil
+
+fn dep_names(deps: List(dependencies.Dep)) -> List(String):
+  list.map(deps, dependencies.dep_name)
+
+pub fn resolve_deps_includes_transitive_path_deps_first_test() -> String:
+  let root = "/tmp/donna-transitive-path-deps-test"
+  let _ = reset_dir(root)
+  let app = files.join(root, "app")
+  let pkg_a = files.join(root, "a")
+  let pkg_b = files.join(root, "b")
+  let _ = write_project(
+    pkg_b,
+    "b",
+    "[dependencies]\n"
+  )
+  let _ = write_project(
+    pkg_a,
+    "a",
+    "[dependencies]\nb = { path = \"../b\" }\n"
+  )
+  let _ = write_project(
+    app,
+    "app",
+    "[dependencies]\na = { path = \"../a\" }\n"
+  )
+  let deps = dependencies.resolve_deps(files.join(app, "donna.toml"), app)
+  should.equal_string(string_join(dep_names(deps)), "b,a")
+
+pub fn resolve_deps_skips_duplicate_transitive_path_deps_test() -> String:
+  let root = "/tmp/donna-duplicate-path-deps-test"
+  let _ = reset_dir(root)
+  let app = files.join(root, "app")
+  let pkg_a = files.join(root, "a")
+  let pkg_b = files.join(root, "b")
+  let _ = write_project(pkg_b, "b", "[dependencies]\n")
+  let _ = write_project(
+    pkg_a,
+    "a",
+    "[dependencies]\nb = { path = \"../b\" }\n"
+  )
+  let _ = write_project(
+    app,
+    "app",
+    "[dependencies]\na = { path = \"../a\" }\nb = { path = \"../b\" }\n"
+  )
+  let deps = dependencies.resolve_deps(files.join(app, "donna.toml"), app)
+  should.equal_string(string_join(dep_names(deps)), "b,a")
+
+pub fn resolve_deps_stops_path_dependency_cycles_test() -> String:
+  let root = "/tmp/donna-cycle-path-deps-test"
+  let _ = reset_dir(root)
+  let app = files.join(root, "app")
+  let pkg_a = files.join(root, "a")
+  let pkg_b = files.join(root, "b")
+  let _ = write_project(
+    pkg_a,
+    "a",
+    "[dependencies]\nb = { path = \"../b\" }\n"
+  )
+  let _ = write_project(
+    pkg_b,
+    "b",
+    "[dependencies]\na = { path = \"../a\" }\n"
+  )
+  let _ = write_project(
+    app,
+    "app",
+    "[dependencies]\na = { path = \"../a\" }\n"
+  )
+  let deps = dependencies.resolve_deps(files.join(app, "donna.toml"), app)
+  should.equal_string(string_join(dep_names(deps)), "b,a")
+
+pub fn resolve_dev_deps_dedupes_runtime_test() -> String:
+  let root = "/tmp/donna-dev-runtime-duplicate-deps-test"
+  let _ = reset_dir(root)
+  let app = files.join(root, "app")
+  let pkg_b = files.join(root, "b")
+  let pkg_testlib = files.join(root, "testlib")
+  let _ = write_project(pkg_b, "b", "[dependencies]\n")
+  let _ = write_project(
+    pkg_testlib,
+    "testlib",
+    "[dependencies]\nb = { path = \"../b\" }\n"
+  )
+  let _ = write_project(
+    app,
+    "app",
+    "[dependencies]\nb = { path = \"../b\" }\n\n[dev-dependencies]\ntestlib = { path = \"../testlib\" }\n"
+  )
+  let deps = dependencies.resolve_dev_deps(files.join(app, "donna.toml"), app)
+  should.equal_string(string_join(dep_names(deps)), "testlib")
+
+fn string_join(parts: List(String)) -> String:
+  case parts:
+    [] -> ""
+    [one] -> one
+    [one, ..rest] -> one <> "," <> string_join(rest)

@@ -3,8 +3,16 @@
 // display_block, display_function, display_data_def, and escape_str_for_qbe.
 
 import compiler/codegen/il
+import compiler/codegen/codegen
+import compiler/lexer/lexer
+import compiler/parser/parser
+import compiler/typesystem/checker
+import compiler/typesystem/types
+import compiler/typesystem/typed_ast
+import errors/error
 import donna/string
 import donna/option
+import donna/result
 import unittest/should
 
 // ── display_value ─────────────────────────────────────────────────────────────
@@ -344,3 +352,46 @@ pub fn into_abi_byte_is_w_test() -> String:
 
 pub fn into_abi_long_is_l_test() -> String:
   should.equal_string(il.into_abi(il.Long), "l")
+
+pub fn qualified_constructor_call_uses_imported_tag_test() -> String:
+  let src = "import a\nimport b\npub fn make() -> Value:\n  a.Text(\"ok\")"
+  case check_src_with_imports(src, constructor_collision_ifaces()):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let text = codegen.generate(m)
+      should.contains_string(text, "storel 3")
+
+pub fn qualified_constructor_pattern_uses_imported_tag_test() -> String:
+  let src = "import a\nimport b\npub fn read(v: Value) -> String:\n  case v:\n    a.Text(s) -> s\n    b.Text(s) -> s"
+  case check_src_with_imports(src, constructor_collision_ifaces()):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let text = codegen.generate(m)
+      should.contains_string(text, ", 3")
+
+fn constructor_collision_ifaces() -> List(#(String, typed_ast.ModuleInterface)):
+  let value_type = types.TNamedType("Value", [])
+  let ctor_type = types.TFnType([types.TString], value_type)
+  let iface_a = typed_ast.ModuleInterface(
+    [#("Text", ctor_type)],
+    [#("Text", #("Value", [types.TString], 3))]
+  )
+  let iface_b = typed_ast.ModuleInterface(
+    [#("Text", ctor_type)],
+    [#("Text", #("Value", [types.TString], 0))]
+  )
+  [#("a", iface_a), #("b", iface_b)]
+
+fn check_src_with_imports(
+  src: String,
+  imports: List(#(String, typed_ast.ModuleInterface))
+) -> result.Result(typed_ast.TypedModule, List(error.DonnaError)):
+  case lexer.lex(src, "test"):
+    lexer.LexErrors(errs) ->
+      result.Error(errs)
+    lexer.LexOk(toks) ->
+      case parser.parse(toks):
+        parser.ParseErrors(errs) ->
+          result.Error(errs)
+        parser.ParseOk(m) ->
+          checker.check_module_with_imports(m, "test", imports)

@@ -78,17 +78,20 @@ fn add_imports_to_env(
     [#(full_path, iface), ..rest] ->
       let alias = path_last_segment(full_path)
       let e2 = env.env_add_module(e, alias, full_path, iface)
-      let e3 = add_iface_ctors_to_env(iface_ctor_info(iface), e2)
+      let e3 = add_iface_ctors_to_env(alias, iface_ctor_info(iface), e2)
       add_imports_to_env(rest, e3)
 
 fn add_iface_ctors_to_env(
+  alias: String,
   ctors: List(#(String, #(String, List(types.Type), Int))),
   e: env.Env
 ) -> env.Env:
   case ctors:
     [] -> e
     [#(name, info), ..rest] ->
-      add_iface_ctors_to_env(rest, env.env_add_ctor(e, name, info))
+      let e2 = env.env_add_ctor(e, name, info)
+      let e3 = env.env_add_ctor(e2, alias <> "." <> name, info)
+      add_iface_ctors_to_env(alias, rest, e3)
 
 fn register_import_aliases(imports: List(ast.Import), e: env.Env) -> env.Env:
   case imports:
@@ -786,10 +789,16 @@ fn bind_pattern_typed(
         option.Some("_") -> e2
         option.Some(name) -> env.env_bind(e2, name, types.TListType(elem_type))
     ast.PCons(_, name, args, _) ->
-      case env.env_lookup_ctor(e, name):
+      case env.env_lookup_ctor(e, pattern_ctor_key(pattern)):
         option.None -> bind_pattern_list(args, e)
         option.Some(#(_, field_types, _)) ->
           bind_pattern_typed_list(args, field_types, e)
+
+fn pattern_ctor_key(pattern: ast.Pattern) -> String:
+  case pattern:
+    ast.PCons(option.Some(module), name, _, _) -> module <> "." <> name
+    ast.PCons(option.None, name, _, _) -> name
+    _ -> ""
 
 fn bind_pattern_typed_list(
   patterns: List(ast.Pattern),

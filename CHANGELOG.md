@@ -4,6 +4,13 @@ All notable changes to `donna` will be documented in this file.
 
 ## Unreleased
 
+## [0.1.3] — 2026-05-16
+
+### Fixed
+
+- Path and git dependencies now resolve their own transitive `[dependencies]`, so packages can import modules from dependencies of dependencies without the root project declaring each one directly.
+- Qualified constructor calls and patterns now use module-aware constructor metadata, fixing collisions such as `sqlite.Text` and `mustache.Text` in the same module.
+
 ## [0.1.2] — 2026-05-15
 
 ### Fixed

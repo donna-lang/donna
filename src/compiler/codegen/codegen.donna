@@ -612,8 +612,22 @@ fn load_typed_value(t: types.Type, addr: il.Value) -> il.Inst:
 fn constructor_call_name(fn_expr: types.TypedExpr) -> option.Option(String):
   case fn_expr:
     types.TEVar(name, _) -> option.Some(name)
-    types.TEFieldAccess(_, field, _, _) -> option.Some(field)
+    types.TEFieldAccess(_, field, module_path, _) ->
+      case string.is_empty(module_path):
+        True -> option.Some(field)
+        False -> option.Some(path_last_segment(module_path) <> "." <> field)
     _ -> option.None
+
+fn pattern_ctor_key(pat: ast.Pattern) -> String:
+  case pat:
+    ast.PCons(option.Some(module), name, _, _) -> module <> "." <> name
+    ast.PCons(option.None, name, _, _) -> name
+    _ -> ""
+
+fn path_last_segment(path: String) -> String:
+  let parts = string.split(path, "/")
+  let rev = list.reverse(parts)
+  list.head(rev, path)
 
 fn gen_constructor_call(
   tag: Int,
@@ -1474,7 +1488,8 @@ fn emit_pattern_bindings(
       let block2 = il.assign_inst(block, il.Temporary(name), il.Long, il.Copy(subj))
       #(block2, state)
     ast.PCons(_, name, args, _) ->
-      let field_types = case lookup_alist(state_ctor_field_types(state), name):
+      let ctor_key = pattern_ctor_key(pat)
+      let field_types = case lookup_alist(state_ctor_field_types(state), ctor_key):
         option.None -> []
         option.Some(t) -> t
       emit_constructor_field_bindings(args, field_types, 0, subj, block, state)
@@ -1692,7 +1707,8 @@ fn gen_pattern_check(
       )
       #(il.Temporary(eq_t), block3, state4)
     ast.PCons(_, name, args, _) ->
-      let expected_tag = case lookup_alist(state_ctor_tags(state), name):
+      let ctor_key = pattern_ctor_key(pat)
+      let expected_tag = case lookup_alist(state_ctor_tags(state), ctor_key):
         option.None -> -1
         option.Some(t) -> t
       let #(tag_t, state2) = fresh_temp(state)
@@ -1704,7 +1720,7 @@ fn gen_pattern_check(
         il.Long,
         il.Cmp(il.Long, il.Ceql, il.Temporary(tag_t), il.Const(expected_tag))
       )
-      let field_types = case lookup_alist(state_ctor_field_types(state3), name):
+      let field_types = case lookup_alist(state_ctor_field_types(state3), ctor_key):
         option.None -> []
         option.Some(f) -> f
       check_nested_patterns(
