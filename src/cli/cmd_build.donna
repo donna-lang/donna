@@ -21,16 +21,24 @@ pub type BuildOutcome:
   BuildOk(Bool)
   BuildFailed(String)
 
+/// Build mode selected from `donna build` arguments.
+pub type BuildConfig:
+  BuildDebug
+  BuildRelease(List(String))
+
 /// Run the `donna build` command and return the text printed by the CLI.
 pub fn run(args: List(#(String, String))) -> String:
-  let dir = first_positional(args)
-  case scanner.scan(dir):
-    scanner.ScanErr(msg) ->
-      colors.red("error") <> ": " <> msg
-    scanner.ScanOk(project) ->
-      case build_project(dir, project):
-        BuildFailed(msg) -> msg
-        BuildOk(_) -> ""
+  let dir = build_dir_arg(args)
+  case build_config(args):
+    result.Error(msg) -> msg
+    result.Ok(config) ->
+      case scanner.scan(dir):
+        scanner.ScanErr(msg) ->
+          colors.red("error") <> ": " <> msg
+        scanner.ScanOk(project) ->
+          case build_project_with_config(dir, project, config):
+            BuildFailed(msg) -> msg
+            BuildOk(_) -> ""
 
 /// Build a scanned project.
 ///
@@ -38,19 +46,56 @@ pub fn run(args: List(#(String, String))) -> String:
 /// public `main`; application projects continue through QBE and the system C
 /// linker to produce an executable in `build/bin/`.
 pub fn build_project(dir: String, project: scanner.Project) -> BuildOutcome:
+  build_project_with_config(dir, project, BuildDebug)
+
+/// Build a project with an explicit build config.
+pub fn build_project_with_config(
+  dir: String,
+  project: scanner.Project,
+  config: BuildConfig
+) -> BuildOutcome:
+  case config:
+    BuildDebug -> build_project_target(dir, project, "", "debug")
+    BuildRelease(targets) -> build_release_targets(dir, project, targets)
+
+fn build_release_targets(
+  dir: String,
+  project: scanner.Project,
+  targets: List(String)
+) -> BuildOutcome:
+  case targets:
+    [] -> BuildOk(False)
+    [target, ..rest] ->
+      case build_project_target(dir, project, target, "release"):
+        BuildFailed(msg) -> BuildFailed(msg)
+        BuildOk(has_main) ->
+          case build_release_targets(dir, project, rest):
+            BuildFailed(msg) -> BuildFailed(msg)
+            BuildOk(rest_has_main) ->
+              case has_main:
+                True -> BuildOk(True)
+                False -> BuildOk(rest_has_main)
+
+fn build_project_target(
+  dir: String,
+  project: scanner.Project,
+  qbe_target: String,
+  mode: String
+) -> BuildOutcome:
   let t0 = time.now_us()
   let build_dir = scanner.project_build_dir(project)
-  let bin_dir = scanner.project_bin_dir(project)
-  let dev_dir = scanner.project_dev_dir(project)
-  let artifacts_dir = scanner.project_dev_artifacts_dir(project)
+  let target_root = target_root_dir(project, mode, qbe_target)
+  let bin_dir = files.join(target_root, "bin")
+  let artifacts_dir = files.join(target_root, "artifacts")
   let _ = files.mkdir(build_dir)
+  let _ = mkdir_release_parents(project, mode)
+  let _ = files.mkdir(target_root)
   let _ = files.mkdir(bin_dir)
-  let _ = files.mkdir(dev_dir)
   let _ = files.mkdir(artifacts_dir)
   let toml_path = files.join(dir, "donna.toml")
   let all_deps = dependencies.resolve_deps(toml_path, dir)
-  let proj_ffi_objs = pipeline.compile_ffi(dir, artifacts_dir)
-  case compile_deps(all_deps, build_dir, [], [], proj_ffi_objs):
+  let proj_ffi_objs = compile_ffi_for_mode(dir, artifacts_dir, mode, qbe_target)
+  case compile_deps(all_deps, target_root, [], [], proj_ffi_objs, mode, qbe_target):
     result.Error(e) -> BuildFailed(e)
     result.Ok(#(dep_ifaces, dep_ssa, dep_objs, deps_rebuilt)) ->
       let src_dir = scanner.project_src_dir(project)
@@ -68,23 +113,32 @@ pub fn build_project(dir: String, project: scanner.Project) -> BuildOutcome:
               case pipeline.qbe_available():
                 False -> BuildFailed(qbe_missing_error())
                 True ->
-                  case pipeline.c_compiler_available():
+                  case c_compiler_available_for_mode(mode):
                     False -> BuildFailed(c_compiler_missing_error())
                     True ->
-                      case pipeline.run_qbe_all_checked(all_ssa):
+                      case run_qbe_for_mode(all_ssa, mode, qbe_target):
                         result.Error(e) -> BuildFailed(e)
                         result.Ok(s_files) ->
-                          let name = scanner.project_name(project)
+                          let name = output_name_for_target(
+                            scanner.project_name(project),
+                            qbe_target
+                          )
                           let out_path = files.join(bin_dir, name)
                           let link_args = list.append(
                             s_files,
                             list.append(
                               dep_objs,
-                              list.append(linker_flags(), ["-o", out_path])
+                              list.append(
+                                cc_flags_for_mode(mode, qbe_target),
+                                list.append(
+                                  linker_flags_for_mode(mode, qbe_target),
+                                  ["-o", out_path]
+                                )
+                              )
                             )
                           )
                           let link_code = shell.run(
-                            pipeline.c_command(link_args) <> " >/dev/null 2>&1"
+                            c_command_for_mode(mode, link_args) <> " >/dev/null 2>&1"
                           )
                           case link_code == 0:
                             False ->
@@ -95,6 +149,60 @@ pub fn build_project(dir: String, project: scanner.Project) -> BuildOutcome:
                               let _ = maybe_codesign(out_path)
                               let _ = logger.ok("", time.now_us() - t0)
                               BuildOk(True)
+
+fn target_root_dir(
+  project: scanner.Project,
+  mode: String,
+  qbe_target: String
+) -> String:
+  case string.equal(mode, "release"):
+    False -> scanner.project_dev_dir(project)
+    True ->
+      files.join(
+        files.join(
+          files.join(scanner.project_build_dir(project), "release"),
+          "target"
+        ),
+        release_target_dir(qbe_target)
+      )
+
+fn mkdir_release_parents(project: scanner.Project, mode: String) -> Int:
+  case string.equal(mode, "release"):
+    False -> 0
+    True ->
+      let release_dir = files.join(scanner.project_build_dir(project), "release")
+      let target_dir = files.join(release_dir, "target")
+      let _ = files.mkdir(release_dir)
+      files.mkdir(target_dir)
+
+fn compile_ffi_for_mode(
+  dir: String,
+  artifacts_dir: String,
+  mode: String,
+  qbe_target: String
+) -> List(String):
+  case string.equal(mode, "release"):
+    True -> pipeline.compile_ffi_target(dir, artifacts_dir, qbe_target)
+    False -> pipeline.compile_ffi(dir, artifacts_dir)
+
+fn run_qbe_for_mode(
+  all_ssa: List(String),
+  mode: String,
+  qbe_target: String
+) -> result.Result(List(String), String):
+  case string.equal(mode, "release"):
+    True -> pipeline.run_qbe_all_checked_target(all_ssa, qbe_target)
+    False -> pipeline.run_qbe_all_checked(all_ssa)
+
+fn c_compiler_available_for_mode(mode: String) -> Bool:
+  case string.equal(mode, "release"):
+    True -> pipeline.release_c_compiler_available()
+    False -> pipeline.c_compiler_available()
+
+fn c_command_for_mode(mode: String, args: List(String)) -> String:
+  case string.equal(mode, "release"):
+    True -> pipeline.release_c_command(args)
+    False -> pipeline.c_command(args)
 
 fn qbe_missing_error() -> String:
   let hint = colors.dim("  hint: install QBE and make sure qbe is in PATH")
@@ -109,7 +217,9 @@ fn compile_deps(
   build_dir: String,
   iface_acc: List(#(String, typed_ast.ModuleInterface)),
   ssa_acc: List(String),
-  obj_acc: List(String)
+  obj_acc: List(String),
+  mode: String,
+  qbe_target: String
 ) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), List(String), Bool), String):
   case deps:
     [] -> result.Ok(#(iface_acc, ssa_acc, obj_acc, False))
@@ -129,11 +239,24 @@ fn compile_deps(
       ):
         result.Error(e) -> result.Error(e)
         result.Ok(#(new_ifaces, new_ssa, rebuilt)) ->
-          let new_objs = pipeline.compile_ffi(dependencies.dep_path(dep), art_dir)
+          let new_objs = compile_ffi_for_mode(
+            dependencies.dep_path(dep),
+            art_dir,
+            mode,
+            qbe_target
+          )
           let next_ifaces = list.append(iface_acc, new_ifaces)
           let next_ssa = list.append(ssa_acc, new_ssa)
           let next_objs = list.append(obj_acc, new_objs)
-          case compile_deps(rest, build_dir, next_ifaces, next_ssa, next_objs):
+          case compile_deps(
+            rest,
+            build_dir,
+            next_ifaces,
+            next_ssa,
+            next_objs,
+            mode,
+            qbe_target
+          ):
             result.Error(e) -> result.Error(e)
             result.Ok(#(ifaces2, ssa2, objs2, rest_rebuilt)) ->
               let any_rebuilt = case rebuilt:
@@ -166,6 +289,28 @@ fn linker_flags() -> List(String):
     True -> ["-Wl,-stack_size,0x2000000"]
     False -> ["-lm"]
 
+fn linker_flags_for_mode(mode: String, qbe_target: String) -> List(String):
+  case string.equal(mode, "release"):
+    False -> linker_flags()
+    True -> release_linker_flags(qbe_target)
+
+fn release_linker_flags(qbe_target: String) -> List(String):
+  case qbe_target:
+    "amd64_apple" -> ["-Wl,-stack_size,0x2000000"]
+    "arm64_apple" -> ["-Wl,-stack_size,0x2000000"]
+    "amd64_win" -> []
+    _ -> ["-lm"]
+
+fn cc_flags_for_mode(mode: String, qbe_target: String) -> List(String):
+  case string.equal(mode, "release"):
+    False -> []
+    True -> list.append(["-O2"], pipeline.release_cc_target_flags(qbe_target))
+
+fn output_name_for_target(name: String, qbe_target: String) -> String:
+  case string.equal(qbe_target, "amd64_win"):
+    True -> name <> ".exe"
+    False -> name
+
 fn maybe_codesign(path: String) -> Int:
   case shell.run("uname | grep -q '^Darwin$' >/dev/null 2>&1") == 0:
     False -> 0
@@ -179,3 +324,91 @@ fn first_positional(args: List(#(String, String))) -> String:
     [] -> "."
     [#("", v), .._] -> v
     [_, ..rest] -> first_positional(rest)
+
+fn build_dir_arg(args: List(#(String, String))) -> String:
+  let positional = first_positional(args)
+  case string.equal(positional, "."):
+    False -> positional
+    True ->
+      let release_value = flag_value(args, "release")
+      case string.equal(release_value, "true"):
+        True -> "."
+        False ->
+          case string.is_empty(release_value):
+            True -> "."
+            False -> release_value
+
+fn build_config(
+  args: List(#(String, String))
+) -> result.Result(BuildConfig, String):
+  case has_flag(args, "release"):
+    False -> result.Ok(BuildDebug)
+    True ->
+      let target = flag_value(args, "target")
+      case string.equal(target, "all"):
+        True -> result.Ok(BuildRelease(all_release_targets()))
+        False ->
+          case normalize_release_target(target):
+            result.Error(msg) -> result.Error(msg)
+            result.Ok(t) -> result.Ok(BuildRelease([t]))
+
+fn has_flag(args: List(#(String, String)), key: String) -> Bool:
+  case args:
+    [] -> False
+    [#(k, _), ..rest] ->
+      case string.equal(k, key):
+        True -> True
+        False -> has_flag(rest, key)
+
+fn flag_value(args: List(#(String, String)), key: String) -> String:
+  case args:
+    [] -> ""
+    [#(k, v), ..rest] ->
+      case string.equal(k, key):
+        True -> v
+        False -> flag_value(rest, key)
+
+/// Normalize a user-facing release target to QBE's target name.
+pub fn normalize_release_target(
+  target: String
+) -> result.Result(String, String):
+  let t = case string.is_empty(target):
+    True -> host_release_target()
+    False -> target
+  case t:
+    "amd64" -> result.Ok("amd64_sysv")
+    "x86_64" -> result.Ok("amd64_sysv")
+    "amd64_sysv" -> result.Ok("amd64_sysv")
+    "amd64_apple" -> result.Ok("amd64_apple")
+    "x86_64_apple" -> result.Ok("amd64_apple")
+    "amd64_win" -> result.Ok("amd64_win")
+    "x86_64_win" -> result.Ok("amd64_win")
+    "arm64" -> result.Ok("arm64")
+    "aarch64" -> result.Ok("arm64")
+    "arm64_apple" -> result.Ok("arm64_apple")
+    "aarch64_apple" -> result.Ok("arm64_apple")
+    _ ->
+      result.Error(
+        colors.red("error") <> ": unknown release target " <> colors.path(target)
+      )
+
+/// Return all QBE targets Donna release builds currently support.
+pub fn all_release_targets() -> List(String):
+  ["amd64_sysv", "amd64_apple", "amd64_win", "arm64", "arm64_apple"]
+
+fn host_release_target() -> String:
+  case shell.run("uname | grep -q '^Darwin$' >/dev/null 2>&1") == 0:
+    True ->
+      case shell.run("uname -m | grep -q 'arm64\\|aarch64' >/dev/null 2>&1") == 0:
+        True -> "arm64_apple"
+        False -> "amd64_apple"
+    False ->
+      case shell.run("uname -m | grep -q 'arm64\\|aarch64' >/dev/null 2>&1") == 0:
+        True -> "arm64"
+        False -> "amd64_sysv"
+
+/// Return the directory name used inside `build/release/target/`.
+pub fn release_target_dir(qbe_target: String) -> String:
+  case qbe_target:
+    "amd64_sysv" -> "amd64"
+    _ -> qbe_target

@@ -187,13 +187,43 @@ pub fn c_compiler_command() -> String:
             True -> "zig cc"
             False -> ""
 
+/// Return the C compiler command Donna should prefer for release builds.
+///
+/// Release builds may target platforms other than the host. When the user did
+/// not explicitly set `DONNA_CC`, Zig is preferred because `zig cc -target ...`
+/// gives Donna one predictable cross-compilation path.
+pub fn release_c_compiler_command() -> String:
+  let configured = string.trim(shell.getenv("DONNA_CC"))
+  case string.is_empty(configured):
+    False -> configured
+    True ->
+      case zig_available():
+        True -> "zig cc"
+        False -> c_compiler_command()
+
 /// Return whether Donna can find a C compiler for FFI and linking.
 pub fn c_compiler_available() -> Bool:
   string.is_empty(c_compiler_command()) == False
 
+/// Return whether Donna can find a C compiler for release FFI and linking.
+pub fn release_c_compiler_available() -> Bool:
+  string.is_empty(release_c_compiler_command()) == False
+
+/// Return whether Zig is available in PATH.
+pub fn zig_available() -> Bool:
+  shell.run("command -v zig >/dev/null 2>&1") == 0
+
 /// Build a shell command for invoking the resolved C compiler with arguments.
 pub fn c_command(args: List(String)) -> String:
   c_compiler_command() <> " " <> join_shell_args(args)
+
+/// Build a shell command for invoking a specific C compiler with arguments.
+pub fn c_command_with(compiler: String, args: List(String)) -> String:
+  compiler <> " " <> join_shell_args(args)
+
+/// Build a shell command for invoking the release C compiler with arguments.
+pub fn release_c_command(args: List(String)) -> String:
+  release_c_compiler_command() <> " " <> join_shell_args(args)
 
 /// Run QBE for one SSA file and return the generated assembly path.
 ///
@@ -206,6 +236,25 @@ pub fn run_qbe(ssa_path: String) -> String:
     False ->
       let code = shell.run(
         "qbe -o " <> sh_quote(s_path) <> " " <> sh_quote(ssa_path) <> " >/dev/null 2>&1"
+      )
+      case code == 0:
+        True -> s_path
+        False -> ""
+
+/// Run QBE for one SSA file and an explicit QBE target.
+///
+/// Release builds use this to emit target-specific assembly into the release
+/// target directory.
+pub fn run_qbe_target(ssa_path: String, target: String) -> String:
+  let s_path = files.drop_extension(ssa_path) <> ".s"
+  case file_is_current(ssa_path, s_path):
+    True -> s_path
+    False ->
+      let target_args = case string.is_empty(target):
+        True -> ""
+        False -> " -t " <> sh_quote(target)
+      let code = shell.run(
+        "qbe" <> target_args <> " -o " <> sh_quote(s_path) <> " " <> sh_quote(ssa_path) <> " >/dev/null 2>&1"
       )
       case code == 0:
         True -> s_path
@@ -231,6 +280,13 @@ pub fn run_qbe_all_checked(
 ) -> result.Result(List(String), String):
   run_qbe_all_checked_loop(ssa_paths, [])
 
+/// Run QBE for every SSA file using an explicit QBE target.
+pub fn run_qbe_all_checked_target(
+  ssa_paths: List(String),
+  target: String
+) -> result.Result(List(String), String):
+  run_qbe_all_checked_target_loop(ssa_paths, target, [])
+
 fn run_qbe_all_checked_loop(
   ssa_paths: List(String),
   acc: List(String)
@@ -242,6 +298,19 @@ fn run_qbe_all_checked_loop(
       case string.is_empty(s):
         True -> result.Error(qbe_compile_error(path))
         False -> run_qbe_all_checked_loop(rest, [s, ..acc])
+
+fn run_qbe_all_checked_target_loop(
+  ssa_paths: List(String),
+  target: String,
+  acc: List(String)
+) -> result.Result(List(String), String):
+  case ssa_paths:
+    [] -> result.Ok(list.reverse(acc))
+    [path, ..rest] ->
+      let s = run_qbe_target(path, target)
+      case string.is_empty(s):
+        True -> result.Error(qbe_compile_error(path))
+        False -> run_qbe_all_checked_target_loop(rest, target, [s, ..acc])
 
 fn qbe_compile_error(path: String) -> String:
   colors.red("error") <> ": QBE failed to compile " <> colors.path(path) <> "\n" <> colors.dim("  hint: run `qbe " <> path <> "` to see the backend error")
@@ -265,6 +334,33 @@ pub fn compile_c(src_path: String, obj_path: String) -> List(String):
             True -> [obj_path]
             False -> []
 
+/// Compile one C FFI source file for a release target.
+pub fn compile_c_target(
+  src_path: String,
+  obj_path: String,
+  target: String
+) -> List(String):
+  case files.exists(src_path):
+    False -> []
+    True ->
+      case file_is_current(src_path, obj_path):
+        True -> [obj_path]
+        False ->
+          let code = shell.run(
+            release_c_command(
+              list.append(
+                ["-c", "-O2"],
+                list.append(
+                  release_cc_target_flags(target),
+                  [src_path, "-o", obj_path]
+                )
+              )
+            ) <> " >/dev/null 2>&1"
+          )
+          case code == 0:
+            True -> [obj_path]
+            False -> []
+
 /// Compile every C file inside a package or project `ffi/` directory.
 ///
 /// Projects without FFI return an empty object list.
@@ -274,6 +370,24 @@ pub fn compile_ffi(dep_path: String, artifacts_dir: String) -> List(String):
     False -> []
     True ->
       compile_c_files(files.list_dir(ffi_dir), ffi_dir, artifacts_dir, [])
+
+/// Compile every C file inside `ffi/` for a release target.
+pub fn compile_ffi_target(
+  dep_path: String,
+  artifacts_dir: String,
+  target: String
+) -> List(String):
+  let ffi_dir = files.join(dep_path, "ffi")
+  case files.is_dir(ffi_dir):
+    False -> []
+    True ->
+      compile_c_files_target(
+        files.list_dir(ffi_dir),
+        ffi_dir,
+        artifacts_dir,
+        target,
+        []
+      )
 
 fn compile_c_files(
   entries: List(String),
@@ -291,6 +405,60 @@ fn compile_c_files(
           let obj = files.join(artifacts_dir, files.drop_extension(name) <> ".o")
           let objs = compile_c(src, obj)
           compile_c_files(rest, ffi_dir, artifacts_dir, list.append(objs, acc))
+
+fn compile_c_files_target(
+  entries: List(String),
+  ffi_dir: String,
+  artifacts_dir: String,
+  target: String,
+  acc: List(String)
+) -> List(String):
+  case entries:
+    [] -> list.reverse(acc)
+    [name, ..rest] ->
+      case string.ends_with(name, ".c"):
+        False ->
+          compile_c_files_target(rest, ffi_dir, artifacts_dir, target, acc)
+        True ->
+          let src = files.join(ffi_dir, name)
+          let obj = files.join(artifacts_dir, files.drop_extension(name) <> ".o")
+          let objs = compile_c_target(src, obj, target)
+          compile_c_files_target(
+            rest,
+            ffi_dir,
+            artifacts_dir,
+            target,
+            list.append(objs, acc)
+          )
+
+/// Return C compiler target flags for Zig-backed cross compilation.
+pub fn cc_target_flags(target: String) -> List(String):
+  case string.starts_with(c_compiler_command(), "zig cc"):
+    False -> []
+    True ->
+      let zig_target = zig_target_for_qbe(target)
+      case string.is_empty(zig_target):
+        True -> []
+        False -> ["-target", zig_target]
+
+/// Return C compiler target flags for release builds.
+pub fn release_cc_target_flags(target: String) -> List(String):
+  case string.starts_with(release_c_compiler_command(), "zig cc"):
+    False -> []
+    True ->
+      let zig_target = zig_target_for_qbe(target)
+      case string.is_empty(zig_target):
+        True -> []
+        False -> ["-target", zig_target]
+
+fn zig_target_for_qbe(target: String) -> String:
+  case target:
+    "amd64_sysv" -> "x86_64-linux-gnu"
+    "amd64_apple" -> "x86_64-macos"
+    "amd64_win" -> "x86_64-windows-gnu"
+    "arm64" -> "aarch64-linux-gnu"
+    "arm64_apple" -> "aarch64-macos"
+    _ -> ""
 
 /// Convert a module path such as `donna/string` into an artifact-safe stem.
 pub fn mod_name_to_stem(mod_name: String) -> String:

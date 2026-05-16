@@ -46,9 +46,14 @@ pub fn build_help() -> String:
   command_help(
     "build",
     "Build the project",
-    "donna build [DIR]",
+    "donna build [DIR] [--release] [--target TARGET]",
     [
       #("DIR", "Build another project directory"),
+      #(
+        "--release",
+        "Build optimized output under build/release/target/<target>/"
+      ),
+      #("--target TARGET", "Release target name, or all"),
       #("-h, --help", "Show this help")
     ]
   )

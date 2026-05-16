@@ -4,6 +4,16 @@ All notable changes to `donna` will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- `donna build --release` now writes optimized application binaries under `build/release/target/<target>/bin/`.
+- `donna build --release --target=<target>` supports QBE targets `amd64_sysv`, `amd64_apple`, `amd64_win`, `arm64`, and `arm64_apple`, with `amd64` as the Linux x86_64 directory alias.
+- `donna build --release --target=all` builds every supported release target except `rv64`.
+
+### Changed
+
+- Release builds prefer `zig cc` when `DONNA_CC` is not set, giving cross-target builds a predictable compiler path while keeping normal `donna build` behavior unchanged.
+
 ## [0.1.3] — 2026-05-16
 
 ### Fixed

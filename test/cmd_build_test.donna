@@ -1,0 +1,63 @@
+import cli/cmd_build
+import donna/result
+import donna/string
+import unittest/should
+
+pub fn normalize_release_target_accepts_short_linux_amd64_test() -> String:
+  case cmd_build.normalize_release_target("amd64"):
+    result.Ok(target) -> should.equal_string(target, "amd64_sysv")
+    result.Error(msg) -> should.fail(msg)
+
+pub fn normalize_release_target_accepts_qbe_target_names_test() -> String:
+  should.all(
+    [
+      should.equal_string(ok_target("amd64_apple"), "amd64_apple"),
+      should.equal_string(ok_target("amd64_win"), "amd64_win"),
+      should.equal_string(ok_target("arm64"), "arm64"),
+      should.equal_string(ok_target("arm64_apple"), "arm64_apple")
+    ]
+  )
+
+pub fn all_release_targets_excludes_rv64_test() -> String:
+  let targets = cmd_build.all_release_targets()
+  should.all(
+    [
+      should.length_list(targets, 5),
+      should.contains_string_value(targets, "amd64_sysv"),
+      should.contains_string_value(targets, "amd64_apple"),
+      should.contains_string_value(targets, "amd64_win"),
+      should.contains_string_value(targets, "arm64"),
+      should.contains_string_value(targets, "arm64_apple"),
+      should.not_contains_string(string.join(targets, ","), "rv64")
+    ]
+  )
+
+pub fn release_target_dir_uses_requested_structure_test() -> String:
+  should.all(
+    [
+      should.equal_string(cmd_build.release_target_dir("amd64_sysv"), "amd64"),
+      should.equal_string(
+        cmd_build.release_target_dir("amd64_apple"),
+        "amd64_apple"
+      ),
+      should.equal_string(
+        cmd_build.release_target_dir("amd64_win"),
+        "amd64_win"
+      ),
+      should.equal_string(cmd_build.release_target_dir("arm64"), "arm64"),
+      should.equal_string(
+        cmd_build.release_target_dir("arm64_apple"),
+        "arm64_apple"
+      )
+    ]
+  )
+
+pub fn normalize_release_target_rejects_unknown_target_test() -> String:
+  case cmd_build.normalize_release_target("rv64"):
+    result.Ok(target) -> should.fail("unexpected target: " <> target)
+    result.Error(msg) -> should.contains_string(msg, "unknown release target")
+
+fn ok_target(target: String) -> String:
+  case cmd_build.normalize_release_target(target):
+    result.Ok(t) -> t
+    result.Error(_) -> ""
