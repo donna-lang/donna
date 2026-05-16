@@ -85,8 +85,9 @@ fn build_project_target(
   let t0 = time.now_us()
   let build_dir = scanner.project_build_dir(project)
   let target_root = target_root_dir(project, mode, qbe_target)
-  let bin_dir = files.join(target_root, "bin")
-  let artifacts_dir = files.join(target_root, "artifacts")
+  let bin_dir = bin_dir_for_mode(project, mode, qbe_target)
+  let artifacts_dir = artifacts_dir_for_mode(project, mode, qbe_target)
+  let deps_build_dir = deps_build_dir_for_mode(project, mode, qbe_target)
   let _ = files.mkdir(build_dir)
   let _ = mkdir_release_parents(project, mode)
   let _ = files.mkdir(target_root)
@@ -95,7 +96,15 @@ fn build_project_target(
   let toml_path = files.join(dir, "donna.toml")
   let all_deps = dependencies.resolve_deps(toml_path, dir)
   let proj_ffi_objs = compile_ffi_for_mode(dir, artifacts_dir, mode, qbe_target)
-  case compile_deps(all_deps, target_root, [], [], proj_ffi_objs, mode, qbe_target):
+  case compile_deps(
+    all_deps,
+    deps_build_dir,
+    [],
+    [],
+    proj_ffi_objs,
+    mode,
+    qbe_target
+  ):
     result.Error(e) -> BuildFailed(e)
     result.Ok(#(dep_ifaces, dep_ssa, dep_objs, deps_rebuilt)) ->
       let src_dir = scanner.project_src_dir(project)
@@ -165,6 +174,33 @@ fn target_root_dir(
         ),
         release_target_dir(qbe_target)
       )
+
+fn bin_dir_for_mode(
+  project: scanner.Project,
+  mode: String,
+  qbe_target: String
+) -> String:
+  case string.equal(mode, "release"):
+    False -> scanner.project_bin_dir(project)
+    True -> files.join(target_root_dir(project, mode, qbe_target), "bin")
+
+fn artifacts_dir_for_mode(
+  project: scanner.Project,
+  mode: String,
+  qbe_target: String
+) -> String:
+  case string.equal(mode, "release"):
+    False -> scanner.project_dev_artifacts_dir(project)
+    True -> files.join(target_root_dir(project, mode, qbe_target), "artifacts")
+
+fn deps_build_dir_for_mode(
+  project: scanner.Project,
+  mode: String,
+  qbe_target: String
+) -> String:
+  case string.equal(mode, "release"):
+    False -> scanner.project_build_dir(project)
+    True -> target_root_dir(project, mode, qbe_target)
 
 fn mkdir_release_parents(project: scanner.Project, mode: String) -> Int:
   case string.equal(mode, "release"):
