@@ -12,6 +12,7 @@ import cli/cmd_run
 import cli/cmd_test
 import cli/cmd_format
 import cli/cmd_docs
+import cli/cmd_deps
 import utilities/colors
 import donna/string
 
@@ -40,6 +41,7 @@ pub fn run(version: String, args: List(#(String, String))) -> String:
     "build" -> route_command(args, help.build_help(), cmd_build.run)
     "check" -> route_command(args, help.check_help(), cmd_check.run)
     "clean" -> route_command(args, help.clean_help(), cmd_clean.run)
+    "deps" -> route_command(args, help.deps_help(), cmd_deps.run)
     "new" -> route_command(args, help.new_help(), cmd_new.run)
     "run" -> route_command(args, help.run_help(), cmd_run.run)
     "test" -> route_command(args, help.test_help(), cmd_test.run)
@@ -73,6 +75,7 @@ fn help_for(version: String, command: String) -> String:
     "build" -> help.build_help()
     "check" -> help.check_help()
     "clean" -> help.clean_help()
+    "deps" -> help.deps_help()
     "docs" -> help.docs_help()
     "format" -> help.format_help()
     "fmt" -> help.format_help()

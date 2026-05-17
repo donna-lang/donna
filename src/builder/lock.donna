@@ -85,6 +85,22 @@ fn upsert_loop(
         True -> list.append(list.reverse(acc), [new_dep, ..rest])
         False -> upsert_loop(rest, new_dep, [d, ..acc])
 
+/// Remove one dependency entry by package name.
+pub fn remove(deps: List(LockedDep), name: String) -> List(LockedDep):
+  remove_loop(deps, name, [])
+
+fn remove_loop(
+  deps: List(LockedDep),
+  name: String,
+  acc: List(LockedDep)
+) -> List(LockedDep):
+  case deps:
+    [] -> list.reverse(acc)
+    [d, ..rest] ->
+      case string.equal(locked_name(d), name):
+        True -> remove_loop(rest, name, acc)
+        False -> remove_loop(rest, name, [d, ..acc])
+
 /// Write lockfile entries to disk and return the write status.
 pub fn write(lock_path: String, deps: List(LockedDep)) -> Int:
   files.write(lock_path, format_lock(deps))

@@ -5,6 +5,8 @@
 import compiler/lexer/lexer
 import compiler/parser/parser
 import compiler/parser/ast
+import errors/error
+import errors/reporter
 import utilities/location
 import donna/string
 import donna/list
@@ -22,10 +24,10 @@ pub fn format_source(
   path: String
 ) -> result.Result(String, String):
   case lexer.lex(src, path):
-    lexer.LexErrors(_) -> result.Error("cannot format: lex error")
+    lexer.LexErrors(errs) -> result.Error(render_error_block(errs, src))
     lexer.LexOk(toks) ->
       case parser.parse(toks):
-        parser.ParseErrors(_) -> result.Error("cannot format: parse error")
+        parser.ParseErrors(errs) -> result.Error(render_error_block(errs, src))
         parser.ParseOk(module) ->
           result.Ok(format_module(module, src))
 
@@ -35,6 +37,27 @@ pub fn format_module(m: ast.Module, src: String) -> String:
     ast.Module(doc_comments, imports, consts, type_defs, fns) ->
       let secs = collect_sections(doc_comments, imports, consts, type_defs, fns, src)
       string.join(secs, "\n\n") <> "\n"
+
+fn render_error_block(errs: List(error.DonnaError), src: String) -> String:
+  string.join(unique_strings(render_errors(errs, src, []), []), "\n\n")
+
+fn unique_strings(xs: List(String), acc: List(String)) -> List(String):
+  case xs:
+    [] -> list.reverse(acc)
+    [x, ..rest] ->
+      case list.contains_str(acc, x):
+        True -> unique_strings(rest, acc)
+        False -> unique_strings(rest, [x, ..acc])
+
+fn render_errors(
+  errs: List(error.DonnaError),
+  src: String,
+  acc: List(String)
+) -> List(String):
+  case errs:
+    [] -> list.reverse(acc)
+    [e, ..rest] ->
+      render_errors(rest, src, [reporter.render_error(e, src), ..acc])
 
 fn collect_sections(
   doc_comments: List(String),

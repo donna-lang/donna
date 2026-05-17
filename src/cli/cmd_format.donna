@@ -95,7 +95,7 @@ fn format_file(path: String) -> String:
       let src = files.read(path)
       case formatter.format_source(src, path):
         result.Error(msg) ->
-          colors.red("error") <> ": " <> msg
+          msg
         result.Ok(formatted) ->
           case string.equal(src, formatted):
             True -> logger.format_summary("no changes")

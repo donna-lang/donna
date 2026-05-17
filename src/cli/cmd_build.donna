@@ -94,70 +94,73 @@ fn build_project_target(
   let _ = files.mkdir(bin_dir)
   let _ = files.mkdir(artifacts_dir)
   let toml_path = files.join(dir, "donna.toml")
-  let all_deps = dependencies.resolve_deps(toml_path, dir)
-  let proj_ffi_objs = compile_ffi_for_mode(dir, artifacts_dir, mode, qbe_target)
-  case compile_deps(
-    all_deps,
-    deps_build_dir,
-    [],
-    [],
-    proj_ffi_objs,
-    mode,
-    qbe_target
-  ):
+  case dependencies.resolve_deps_checked(toml_path, dir):
     result.Error(e) -> BuildFailed(e)
-    result.Ok(#(dep_ifaces, dep_ssa, dep_objs, deps_rebuilt)) ->
-      let src_dir = scanner.project_src_dir(project)
-      case pipeline.compile_dir(src_dir, "", artifacts_dir, dep_ifaces, deps_rebuilt):
+    result.Ok(all_deps) ->
+      let proj_ffi_objs = compile_ffi_for_mode(dir, artifacts_dir, mode, qbe_target)
+      case compile_deps(
+        all_deps,
+        deps_build_dir,
+        [],
+        [],
+        proj_ffi_objs,
+        mode,
+        qbe_target
+      ):
         result.Error(e) -> BuildFailed(e)
-        result.Ok(#(src_ifaces, src_ssa, _)) ->
-          case has_public_main(src_ifaces):
-            False ->
-              let out_path = files.join(bin_dir, scanner.project_name(project))
-              let _ = files.delete(out_path)
-              let _ = logger.ok("", time.now_us() - t0)
-              BuildOk(False)
-            True ->
-              let all_ssa = list.append(dep_ssa, src_ssa)
-              case pipeline.qbe_available():
-                False -> BuildFailed(qbe_missing_error())
+        result.Ok(#(dep_ifaces, dep_ssa, dep_objs, deps_rebuilt)) ->
+          let src_dir = scanner.project_src_dir(project)
+          case pipeline.compile_dir(src_dir, "", artifacts_dir, dep_ifaces, deps_rebuilt):
+            result.Error(e) -> BuildFailed(e)
+            result.Ok(#(src_ifaces, src_ssa, _)) ->
+              case has_public_main(src_ifaces):
+                False ->
+                  let out_path = files.join(bin_dir, scanner.project_name(project))
+                  let _ = files.delete(out_path)
+                  let _ = logger.ok("", time.now_us() - t0)
+                  BuildOk(False)
                 True ->
-                  case c_compiler_available_for_mode(mode):
-                    False -> BuildFailed(c_compiler_missing_error())
+                  let all_ssa = list.append(dep_ssa, src_ssa)
+                  case pipeline.qbe_available():
+                    False -> BuildFailed(qbe_missing_error())
                     True ->
-                      case run_qbe_for_mode(all_ssa, mode, qbe_target):
-                        result.Error(e) -> BuildFailed(e)
-                        result.Ok(s_files) ->
-                          let name = output_name_for_target(
-                            scanner.project_name(project),
-                            qbe_target
-                          )
-                          let out_path = files.join(bin_dir, name)
-                          let link_args = list.append(
-                            s_files,
-                            list.append(
-                              dep_objs,
-                              list.append(
-                                cc_flags_for_mode(mode, qbe_target),
+                      case c_compiler_available_for_mode(mode):
+                        False -> BuildFailed(c_compiler_missing_error())
+                        True ->
+                          case run_qbe_for_mode(all_ssa, mode, qbe_target):
+                            result.Error(e) -> BuildFailed(e)
+                            result.Ok(s_files) ->
+                              let name = output_name_for_target(
+                                scanner.project_name(project),
+                                qbe_target
+                              )
+                              let out_path = files.join(bin_dir, name)
+                              let link_args = list.append(
+                                s_files,
                                 list.append(
-                                  linker_flags_for_mode(mode, qbe_target),
-                                  ["-o", out_path]
+                                  dep_objs,
+                                  list.append(
+                                    cc_flags_for_mode(mode, qbe_target),
+                                    list.append(
+                                      linker_flags_for_mode(mode, qbe_target),
+                                      ["-o", out_path]
+                                    )
+                                  )
                                 )
                               )
-                            )
-                          )
-                          let link_code = shell.run(
-                            c_command_for_mode(mode, link_args) <> " >/dev/null 2>&1"
-                          )
-                          case link_code == 0:
-                            False ->
-                              BuildFailed(
-                                colors.red("build failed") <> ": linker failed"
+                              let link_log = out_path <> ".link.log"
+                              let link_cmd = c_command_for_mode(mode, link_args)
+                              let link_code = shell.run(
+                                link_cmd <> " > " <> sh_quote(link_log) <> " 2>&1"
                               )
-                            True ->
-                              let _ = maybe_codesign(out_path)
-                              let _ = logger.ok("", time.now_us() - t0)
-                              BuildOk(True)
+                              case link_code == 0:
+                                False ->
+                                  BuildFailed(linker_failed_error(link_log, link_cmd))
+                                True ->
+                                  let _ = files.delete(link_log)
+                                  let _ = maybe_codesign(out_path)
+                                  let _ = logger.ok("", time.now_us() - t0)
+                                  BuildOk(True)
 
 fn target_root_dir(
   project: scanner.Project,
@@ -247,6 +250,24 @@ fn qbe_missing_error() -> String:
 fn c_compiler_missing_error() -> String:
   let hint = colors.dim("  hint: install clang/gcc or Zig, or set DONNA_CC")
   colors.red("error") <> ": C compiler not found\n" <> hint
+
+fn linker_failed_error(log_path: String, command: String) -> String:
+  let output = string.trim(files.read(log_path))
+  let header = colors.error_header("error") <> colors.bold(": linker failed")
+  let command_row = colors.dim("  command: ") <> colors.path(command)
+  let output_row = case string.is_empty(output):
+    True -> colors.dim("  linker did not print an error message")
+    False -> colors.dim("  linker output:\n") <> indent(output)
+  let hint = colors.orange("hint:") <> " check missing C symbols, FFI objects, or linker flags"
+  string.join([header, command_row, output_row, hint], "\n")
+
+fn indent(text: String) -> String:
+  indent_lines(string.split(text, "\n"), "")
+
+fn indent_lines(lines: List(String), acc: String) -> String:
+  case lines:
+    [] -> acc
+    [line, ..rest] -> indent_lines(rest, acc <> "    " <> line <> "\n")
 
 fn compile_deps(
   deps: List(dependencies.Dep),
@@ -354,6 +375,9 @@ fn maybe_codesign(path: String) -> Int:
       shell.run(
         "command -v codesign >/dev/null 2>&1 && codesign --force -s - " <> path <> " >/dev/null 2>&1"
       )
+
+fn sh_quote(s: String) -> String:
+  "'" <> string.replace(s, "'", "'\\''") <> "'"
 
 fn first_positional(args: List(#(String, String))) -> String:
   case args:

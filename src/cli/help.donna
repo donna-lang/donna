@@ -32,14 +32,15 @@ fn commands_block() -> String:
   let r1 = command_row("build", "Build the project")
   let r2 = command_row("check", "Type check the project")
   let r3 = command_row("clean", "Delete build artifacts")
-  let r4 = command_row("docs", "Generate HTML documentation")
-  let r5 = command_row("format", "Format source files (alias: fmt)")
-  let r6 = command_row("new", "Create a new project")
-  let r7 = command_row("run", "Build and run the project")
-  let r8 = command_row("test", "Run the project tests")
-  let r9 = command_row("version", "Print the compiler version")
-  let r10 = command_row("help", "Show help for Donna or a command")
-  string.join([r1, r2, r3, r4, r5, r6, r7, r8, r9, r10], "\n")
+  let r4 = command_row("deps", "Manage package dependencies")
+  let r5 = command_row("docs", "Generate HTML documentation")
+  let r6 = command_row("format", "Format source files (alias: fmt)")
+  let r7 = command_row("new", "Create a new project")
+  let r8 = command_row("run", "Build and run the project")
+  let r9 = command_row("test", "Run the project tests")
+  let r10 = command_row("version", "Print the compiler version")
+  let r11 = command_row("help", "Show help for Donna or a command")
+  string.join([r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11], "\n")
 
 /// Render help for `donna build`.
 pub fn build_help() -> String:
@@ -81,6 +82,20 @@ pub fn clean_help() -> String:
       #("--docs", "Also delete generated docs/"),
       #("--lock", "Also delete donna.lock"),
       #("--all", "Delete build/, docs/, and donna.lock"),
+      #("-h, --help", "Show this help")
+    ]
+  )
+
+/// Render help for `donna deps`.
+pub fn deps_help() -> String:
+  command_help(
+    "deps",
+    "Manage package dependencies",
+    "donna deps <COMMAND>",
+    [
+      #("clean [NAME]", "Remove all cached packages or one cached package"),
+      #("update [NAME]", "Refresh all dependencies or one dependency"),
+      #("tree", "Show resolved dependencies"),
       #("-h, --help", "Show this help")
     ]
   )

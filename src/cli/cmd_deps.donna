@@ -1,0 +1,115 @@
+//// `donna deps` command.
+//// Provides dependency-cache maintenance and lockfile refresh operations.
+
+import donna/files
+import donna/list
+import donna/shell
+import donna/string
+import donna/result
+import utilities/colors
+import builder/dependencies
+import builder/lock
+
+/// Run `donna deps` for the current project.
+pub fn run(args: List(#(String, String))) -> String:
+  case first_positional(args):
+    "" -> help_text()
+    "help" -> help_text()
+    "clean" -> clean(args)
+    "update" -> update(args)
+    "tree" -> tree(args)
+    cmd -> colors.red("error") <> ": unknown deps command " <> colors.path(cmd)
+
+fn clean(args: List(#(String, String))) -> String:
+  let name = second_positional(args)
+  let cache = dependencies.cache_dir()
+  let path = case string.is_empty(name):
+    True -> cache
+    False -> files.join(cache, name)
+  case files.exists(path):
+    False -> colors.dim("nothing to clean")
+    True ->
+      let _ = shell.exec("rm", ["-rf", path])
+      colors.orange("Cleaned") <> colors.dim(" dependency cache")
+
+fn update(args: List(#(String, String))) -> String:
+  let name = second_positional(args)
+  let dir = "."
+  let toml_path = files.join(dir, "donna.toml")
+  case files.exists(toml_path):
+    False -> colors.red("error") <> ": donna.toml not found"
+    True ->
+      let lock_path = files.join(dir, "donna.lock")
+      let cache = dependencies.cache_dir()
+      let _ = case string.is_empty(name):
+        True ->
+          files.delete(lock_path)
+        False ->
+          let _ = shell.exec("rm", ["-rf", files.join(cache, name)])
+          lock.write(lock_path, lock.remove(lock.read(lock_path), name))
+      case dependencies.resolve_all_checked(toml_path, dir):
+        result.Error(e) -> e
+        result.Ok(deps) ->
+          colors.orange("Updated") <> colors.dim(
+            " " <> string.from_int(list.length(deps)) <> " dependencies"
+          )
+
+fn tree(args: List(#(String, String))) -> String:
+  let dir = "."
+  let toml_path = files.join(dir, "donna.toml")
+  case dependencies.resolve_all_checked(toml_path, dir):
+    result.Error(e) -> e
+    result.Ok(deps) ->
+      case list.is_empty(deps):
+        True -> colors.dim("no dependencies")
+        False ->
+          colors.orange("Dependencies") <> "\n" <> tree_lines(deps, "")
+
+fn tree_lines(deps: List(dependencies.Dep), acc: String) -> String:
+  case deps:
+    [] -> acc
+    [dep, ..rest] ->
+      let line = "  " <> colors.path(dependencies.dep_name(dep)) <> colors.dim("  " <> dependencies.dep_path(dep)) <> "\n"
+      tree_lines(rest, acc <> line)
+
+fn help_text() -> String:
+  let usage = colors.orange("Usage:") <> " donna deps " <> colors.path("<COMMAND>")
+  let commands = colors.orange("Commands:")
+  let clean_line = "  " <> colors.path("clean [NAME]") <> "    Remove cached packages"
+  let update_line = "  " <> colors.path("update [NAME]") <> "   Refresh lockfile dependencies"
+  let tree_line = "  " <> colors.path("tree") <> "            Show resolved dependencies"
+  string.join(
+    [
+      "donna deps - manage package dependencies",
+      "",
+      usage,
+      "",
+      commands,
+      clean_line,
+      update_line,
+      tree_line,
+      ""
+    ],
+    "\n"
+  )
+
+fn first_positional(args: List(#(String, String))) -> String:
+  case args:
+    [] -> ""
+    [#("", v), .._] -> v
+    [_, ..rest] -> first_positional(rest)
+
+fn second_positional(args: List(#(String, String))) -> String:
+  second_positional_loop(args, False)
+
+fn second_positional_loop(
+  args: List(#(String, String)),
+  seen_first: Bool
+) -> String:
+  case args:
+    [] -> ""
+    [#("", v), ..rest] ->
+      case seen_first:
+        True -> v
+        False -> second_positional_loop(rest, True)
+    [_, ..rest] -> second_positional_loop(rest, seen_first)

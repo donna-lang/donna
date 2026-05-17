@@ -2,6 +2,8 @@ import builder/dependencies
 import donna/files
 import donna/list
 import donna/shell
+import donna/result
+import donna/string
 import unittest/should
 
 fn reset_dir(path: String) -> Nil:
@@ -22,6 +24,24 @@ fn write_project(path: String, name: String, deps: String) -> Nil:
   )
   Nil
 
+fn write_project_with_repo(
+  path: String,
+  name: String,
+  repo: String,
+  deps: String
+) -> Nil:
+  let _ = files.mkdir(path)
+  let _ = files.mkdir(files.join(path, "src"))
+  let _ = files.write(
+    files.join(path, "donna.toml"),
+    "name = \"" <> name <> "\"\nversion = \"0.1.0\"\nrepository = { type = \"github\", user = \"me\", repo = \"" <> repo <> "\" }\n\n" <> deps
+  )
+  let _ = files.write(
+    files.join(files.join(path, "src"), name <> ".donna"),
+    "pub fn value() -> Int:\n  1\n"
+  )
+  Nil
+
 fn dep_names(deps: List(dependencies.Dep)) -> List(String):
   list.map(deps, dependencies.dep_name)
 
@@ -31,21 +51,9 @@ pub fn resolve_deps_includes_transitive_path_deps_first_test() -> String:
   let app = files.join(root, "app")
   let pkg_a = files.join(root, "a")
   let pkg_b = files.join(root, "b")
-  let _ = write_project(
-    pkg_b,
-    "b",
-    "[dependencies]\n"
-  )
-  let _ = write_project(
-    pkg_a,
-    "a",
-    "[dependencies]\nb = { path = \"../b\" }\n"
-  )
-  let _ = write_project(
-    app,
-    "app",
-    "[dependencies]\na = { path = \"../a\" }\n"
-  )
+  let _ = write_project(pkg_b, "b", "[dependencies]\n")
+  let _ = write_project(pkg_a, "a", "[dependencies]\nb = { path = \"../b\" }\n")
+  let _ = write_project(app, "app", "[dependencies]\na = { path = \"../a\" }\n")
   let deps = dependencies.resolve_deps(files.join(app, "donna.toml"), app)
   should.equal_string(string_join(dep_names(deps)), "b,a")
 
@@ -56,11 +64,7 @@ pub fn resolve_deps_skips_duplicate_transitive_path_deps_test() -> String:
   let pkg_a = files.join(root, "a")
   let pkg_b = files.join(root, "b")
   let _ = write_project(pkg_b, "b", "[dependencies]\n")
-  let _ = write_project(
-    pkg_a,
-    "a",
-    "[dependencies]\nb = { path = \"../b\" }\n"
-  )
+  let _ = write_project(pkg_a, "a", "[dependencies]\nb = { path = \"../b\" }\n")
   let _ = write_project(
     app,
     "app",
@@ -69,29 +73,36 @@ pub fn resolve_deps_skips_duplicate_transitive_path_deps_test() -> String:
   let deps = dependencies.resolve_deps(files.join(app, "donna.toml"), app)
   should.equal_string(string_join(dep_names(deps)), "b,a")
 
-pub fn resolve_deps_stops_path_dependency_cycles_test() -> String:
+pub fn resolve_deps_reports_path_dependency_cycles_test() -> String:
   let root = "/tmp/donna-cycle-path-deps-test"
   let _ = reset_dir(root)
   let app = files.join(root, "app")
   let pkg_a = files.join(root, "a")
   let pkg_b = files.join(root, "b")
-  let _ = write_project(
-    pkg_a,
-    "a",
-    "[dependencies]\nb = { path = \"../b\" }\n"
-  )
-  let _ = write_project(
-    pkg_b,
-    "b",
-    "[dependencies]\na = { path = \"../a\" }\n"
-  )
-  let _ = write_project(
+  let _ = write_project(pkg_a, "a", "[dependencies]\nb = { path = \"../b\" }\n")
+  let _ = write_project(pkg_b, "b", "[dependencies]\na = { path = \"../a\" }\n")
+  let _ = write_project(app, "app", "[dependencies]\na = { path = \"../a\" }\n")
+  case dependencies.resolve_deps_checked(files.join(app, "donna.toml"), app):
+    result.Ok(_) -> should.fail("expected cyclic dependency error")
+    result.Error(e) ->
+      should.is_true(string.contains(colors_strip(e), "cyclic dependency"))
+
+pub fn resolve_deps_reports_package_identity_cycles_test() -> String:
+  let root = "/tmp/donna-identity-cycle-deps-test"
+  let _ = reset_dir(root)
+  let app = files.join(root, "app")
+  let pkg_a = files.join(root, "a")
+  let _ = write_project_with_repo(pkg_a, "a", "same", "[dependencies]\n")
+  let _ = write_project_with_repo(
     app,
     "app",
+    "same",
     "[dependencies]\na = { path = \"../a\" }\n"
   )
-  let deps = dependencies.resolve_deps(files.join(app, "donna.toml"), app)
-  should.equal_string(string_join(dep_names(deps)), "b,a")
+  case dependencies.resolve_deps_checked(files.join(app, "donna.toml"), app):
+    result.Ok(_) -> should.fail("expected package identity cycle error")
+    result.Error(e) ->
+      should.is_true(string.contains(colors_strip(e), "cyclic dependency"))
 
 pub fn resolve_dev_deps_dedupes_runtime_test() -> String:
   let root = "/tmp/donna-dev-runtime-duplicate-deps-test"
@@ -112,6 +123,23 @@ pub fn resolve_dev_deps_dedupes_runtime_test() -> String:
   )
   let deps = dependencies.resolve_dev_deps(files.join(app, "donna.toml"), app)
   should.equal_string(string_join(dep_names(deps)), "testlib")
+
+fn colors_strip(text: String) -> String:
+  strip_ansi(text)
+
+fn strip_ansi(text: String) -> String:
+  let esc = "\u{001b}["
+  case string.index_of(text, esc):
+    -1 -> text
+    i ->
+      let before = string.slice(text, 0, i)
+      let rest = string.slice(text, i + 2, string.length(text) - i - 2)
+      let m = string.index_of(rest, "m")
+      case m == -1:
+        True -> before
+        False ->
+          let after = string.slice(rest, m + 1, string.length(rest) - m - 1)
+          before <> strip_ansi(after)
 
 fn string_join(parts: List(String)) -> String:
   case parts:
