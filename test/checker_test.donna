@@ -490,6 +490,21 @@ pub fn check_adt_field_types_test() -> String:
             _ -> should.fail("expected 1 constructor")
         [] -> should.fail("no type defs")
 
+pub fn check_adt_named_fields_keep_constructor_type_test() -> String:
+  let src = "pub type Point:\n  Point(x: Int, y: Int)\n\nfn origin() -> Point:\n  Point(0, 0)"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      case typed_type_defs(m):
+        [td, ..] ->
+          case typedef_ctors(td):
+            [point] ->
+              let r1 = ctor_name_of(point) |> should.equal_string("Point")
+              let r2 = list.length(ctor_fields_of(point)) |> should.equal_int(2)
+              r1 <> r2
+            _ -> should.fail("expected Point constructor")
+        [] -> should.fail("no type defs")
+
 pub fn check_parameterized_adt_test() -> String:
   let src = "type Maybe(a):\n  Nothing\n  Just(a)"
   case check_src(src):

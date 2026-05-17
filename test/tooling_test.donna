@@ -1,0 +1,29 @@
+import donna/result
+import donna/list
+import tools/fmt/formatter
+import tools/docgen/extractor
+import unittest/should
+
+pub fn formatter_keeps_constructor_field_labels_test() -> String:
+  let src = "pub type Point:\n  Point(x: Int, y: Int)\n"
+  case formatter.format_source(src, "test"):
+    result.Error(e) -> should.fail(e)
+    result.Ok(formatted) ->
+      should.equal_string(formatted, src)
+
+pub fn docgen_keeps_constructor_field_labels_test() -> String:
+  let src = "//// Geometry helpers.\n\n/// A point in 2D space.\npub type Point:\n  Point(x: Int, y: Int)\n"
+  let docs = extractor.extract(src, "test", "geometry")
+  case docs:
+    extractor.DocModule(_, _, [extractor.DocType("Point", True, [], ctors, _)], _, _, _) ->
+      case ctors:
+        [extractor.DocCtor("Point", _, fields)] ->
+          should.equal_string(string_join(fields), "x: Int,y: Int")
+        _ -> should.fail("expected Point constructor docs")
+    _ -> should.fail("expected Point type docs")
+
+fn string_join(parts: List(String)) -> String:
+  case parts:
+    [] -> ""
+    [one] -> one
+    [one, ..rest] -> one <> "," <> string_join(rest)

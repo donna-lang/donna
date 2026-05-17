@@ -32,7 +32,7 @@ pub fn extract(src: String, file: String, module_name: String) -> DocModule:
   case lexer.lex(src, file):
     lexer.LexErrors(_) -> empty_doc_module(module_name)
     lexer.LexOk(toks) ->
-      case parser.parse(toks, file):
+      case parser.parse(toks):
         parser.ParseErrors(_) -> empty_doc_module(module_name)
         parser.ParseOk(m) -> extract_from_ast(m, module_name, comments)
 

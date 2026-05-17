@@ -4,12 +4,16 @@ All notable changes to `donna` will be documented in this file.
 
 ## Unreleased
 
+
+## [0.2.0] — 2026-05-18
+
 ### Added
 
 - `donna build --release` now writes optimized application binaries under `build/release/target/<target>/bin/`.
 - `donna build --release --target=<target>` supports QBE targets `amd64_sysv`, `amd64_apple`, `amd64_win`, `arm64`, and `arm64_apple`, with `amd64` as the Linux x86_64 directory alias.
 - `donna build --release --target=all` builds every supported release target except `rv64`.
 - `donna deps clean`, `donna deps update [NAME]`, and `donna deps tree` manage package caches, refresh lockfiles, and inspect resolved dependencies.
+- Type variant declarations support optional field labels such as `Some(value: a)` while keeping constructor calls positional.
 - Module interfaces are now cached beside SSA artifacts as `.iface` files, so unchanged modules can skip lexing, parsing, and typechecking on later checks and builds.
 
 ### Changed
@@ -25,6 +29,7 @@ All notable changes to `donna` will be documented in this file.
 - Cyclic dependencies are now reported as Donna dependency errors before build/check/test reach compilation or linking.
 - Build, test, and format now preserve lexer/parser diagnostics with source snippets instead of collapsing them into `parse error: <file>`.
 - Build and test linker failures now include the C compiler command, linker output, and a Donna hint instead of a plain `linker failed`.
+- Doc generation now calls the current parser API, fixing stale cached builds that could hide a wrong-arity parser call until a full test compile.
 - `donna test` now avoids linking the git `donna` package when testing `donna_stdlib` itself, preventing duplicate standard-library symbols from transitive dev dependencies.
 - Function and constructor calls with the wrong number of arguments now produce a Donna type error instead of reaching codegen with invalid call data.
 

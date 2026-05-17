@@ -75,6 +75,52 @@ cd myapp
 donna run
 ```
 
+## Everyday commands
+
+```sh
+donna format      # format source files
+donna check       # typecheck without linking
+donna test        # run the test suite
+donna build       # build development output
+donna build --release
+```
+
+Development binaries are written under `build/bin/`. Release binaries are written under `build/release/target/<target>/bin/`.
+
+Release targets:
+
+```sh
+donna build --release --target=amd64_sysv
+donna build --release --target=amd64_apple
+donna build --release --target=arm64
+donna build --release --target=arm64_apple
+donna build --release --target=amd64_win
+donna build --release --target=all
+```
+
+## Dependencies
+
+Donna uses `donna.toml` and `donna.lock` for package dependencies. Use git dependencies with a tag, branch, or revision:
+
+```toml
+[dependencies]
+donna = { git = "https://github.com/donna-lang/donna_stdlib", version = "0.2.0" }
+json = { git = "https://github.com/donna-lang/json", rev = "abc1234" }
+```
+
+Useful dependency commands:
+
+```sh
+donna deps tree
+donna deps update
+donna deps update json
+donna deps clean
+donna deps clean json
+```
+
+Donna reports cyclic dependency graphs before compilation, so dependency mistakes should not collapse into linker noise.
+
+
 ## Documentation
 
 You can check the language-tour [here](https://donna-lang.org/docs/)

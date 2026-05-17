@@ -219,6 +219,16 @@ pub fn parse_type_with_named_fields_test() -> String:
         [ast.TypeDef("Point", True, False, [], [ast.ConstructorDef("Point", ["x", "y"], _, _)], _)] -> ""
         _ -> should.fail("expected TypeDef Point with named fields [x, y]")
 
+pub fn parse_type_with_mixed_named_and_positional_fields_test() -> String:
+  let src = "pub type Token:\n  TokName(value: String, location.Span)"
+  case parse_src(src):
+    parse_result.PErr(_) -> should.fail("parse failed")
+    parse_result.POk(m, _) ->
+      case module_type_defs(m):
+        [ast.TypeDef("Token", True, False, [], [ast.ConstructorDef("TokName", ["value", ""], fields, _)], _)] ->
+          should.equal_int(list.length(fields), 2)
+        _ -> should.fail("expected named and positional constructor fields")
+
 pub fn parse_two_param_type_test() -> String:
   case parse_src("pub type Result(a, e):\n  Ok(a)\n  Error(e)"):
     parse_result.PErr(_) -> should.fail("parse failed")
