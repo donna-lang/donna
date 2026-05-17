@@ -31,9 +31,9 @@ fn format_project(dir: String) -> String:
       let elapsed = time.now_us() - t0
       let _ = logger.fmt_ok(elapsed)
       case changed == 0:
-        True -> colors.dim("  no changes")
+        True -> logger.format_summary("no changes")
         False ->
-          colors.dim("  " <> string.from_int(changed) <> " file(s) changed")
+          logger.format_summary(string.from_int(changed) <> " file(s) changed")
 
 fn find_donna_files(dir: String, acc: List(String)) -> List(String):
   let entries = files.list_dir(dir)
@@ -98,10 +98,10 @@ fn format_file(path: String) -> String:
           colors.red("error") <> ": " <> msg
         result.Ok(formatted) ->
           case string.equal(src, formatted):
-            True -> colors.green("formatted") <> colors.dim("  no changes")
+            True -> logger.format_summary("no changes")
             False ->
               let _ = files.write(path, formatted)
-              colors.green("formatted") <> " " <> colors.dim(path)
+              logger.format_summary(path)
 
 fn first_positional(args: List(#(String, String))) -> String:
   case args:

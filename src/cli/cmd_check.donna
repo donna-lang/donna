@@ -56,7 +56,7 @@ fn check_project(dir: String, project: scanner.Project) -> String:
         result.Ok(_) ->
           let elapsed = time.now_us() - t0
           let _ = logger.check_ok(elapsed)
-          colors.green("check ok") <> colors.dim("  no errors")
+          logger.check_success("successful without errors")
 
 fn compile_deps(
   deps: List(dependencies.Dep),
@@ -106,7 +106,7 @@ fn check_file(name: String, path: String) -> String:
 fn render_check_ok(warnings: List(error.DonnaWarning), src: String) -> String:
   case list.is_empty(warnings):
     True ->
-      colors.green("check ok") <> colors.dim("  no errors or warnings")
+      logger.check_success("successful without errors or warnings")
     False ->
       let rendered = render_warnings(warnings, src, [])
       let count = list.length(warnings)

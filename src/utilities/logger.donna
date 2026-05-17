@@ -30,6 +30,18 @@ pub fn fmt_ok(elapsed_us: Int) -> Nil:
 pub fn docs_ok(elapsed_us: Int) -> Nil:
   echo action("Generated") <> "in " <> colors.dim(format_duration(elapsed_us))
 
+/// Format a documentation output line using the aligned action label.
+pub fn docs_output(path: String) -> String:
+  action("Docs") <> colors.dim(path)
+
+/// Format a formatter summary line using the aligned action label.
+pub fn format_summary(message: String) -> String:
+  action("Format") <> colors.dim(message)
+
+/// Print the test runner start line using the aligned action label.
+pub fn running_tests() -> Nil:
+  echo action("Running") <> colors.dim("tests...")
+
 /// Print a clean step line.
 pub fn cleaning(path: String) -> Nil:
   echo action("Cleaning") <> colors.path(path)
@@ -45,6 +57,10 @@ pub fn checking(module_name: String) -> Nil:
 /// Print a check success line with elapsed time.
 pub fn check_ok(elapsed_us: Int) -> Nil:
   echo action("Checked") <> "in " <> colors.dim(format_duration(elapsed_us))
+
+/// Format a check summary line using the same aligned action label.
+pub fn check_success(message: String) -> String:
+  action("Check") <> colors.dim(message)
 
 /// Print a generic successful output line with elapsed time.
 pub fn success(label: String, path: String, elapsed_us: Int) -> Nil:

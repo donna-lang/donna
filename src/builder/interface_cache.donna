@@ -1,0 +1,212 @@
+//// Module interface cache.
+//// Stores public module interfaces beside build artifacts so unchanged modules
+//// do not need to be typechecked just to rebuild import environments.
+
+import compiler/typesystem/types
+import compiler/typesystem/typed_ast
+import donna/files
+import donna/int
+import donna/list
+import donna/option
+import donna/string
+
+/// Return the artifact path used for a cached module interface.
+pub fn path_for(ssa_path: String) -> String:
+  files.drop_extension(ssa_path) <> ".iface"
+
+/// Write a module interface cache file.
+///
+/// The format is intentionally text-based, but types use a structural encoding
+/// instead of pretty Donna syntax. That keeps generic type variable IDs stable
+/// when a cached interface is read back.
+pub fn write(path: String, iface: typed_ast.ModuleInterface) -> Int:
+  files.write(path, encode(iface))
+
+/// Read a cached interface.
+///
+/// Invalid or older cache formats return `None`, which makes callers fall back
+/// to the normal parse/typecheck path.
+pub fn read(path: String) -> option.Option(typed_ast.ModuleInterface):
+  case files.exists(path):
+    False -> option.None
+    True -> decode(files.read(path))
+
+fn encode(iface: typed_ast.ModuleInterface) -> String:
+  case iface:
+    typed_ast.ModuleInterface(bindings, ctors) ->
+      "donna-iface-v1\n" <> encode_bindings(bindings) <> encode_ctors(ctors)
+
+fn encode_bindings(bindings: List(#(String, types.Type))) -> String:
+  case bindings:
+    [] -> ""
+    [#(name, ty), ..rest] ->
+      "B|" <> name <> "|" <> encode_type(ty) <> "\n" <> encode_bindings(rest)
+
+fn encode_ctors(
+  ctors: List(#(String, #(String, List(types.Type), Int)))
+) -> String:
+  case ctors:
+    [] -> ""
+    [#(name, #(type_name, fields, tag)), ..rest] ->
+      "C|" <> name <> "|" <> type_name <> "|" <> int.to_string(tag) <> "|" <> encode_type_list(fields) <> "\n" <> encode_ctors(rest)
+
+fn encode_type_list(ts: List(types.Type)) -> String:
+  case ts:
+    [] -> ""
+    [t] -> encode_type(t)
+    [t, ..rest] -> encode_type(t) <> "|" <> encode_type_list(rest)
+
+fn encode_type(t: types.Type) -> String:
+  case t:
+    types.TInt -> "I"
+    types.TFloat -> "F"
+    types.TString -> "S"
+    types.TBool -> "B"
+    types.TNil -> "N"
+    types.TListType(elem) -> "L:" <> encode_type(elem)
+    types.TTupleType(elems) ->
+      case list.is_empty(elems):
+        True -> "U:0"
+        False ->
+          "U:" <> int.to_string(list.length(elems)) <> ":" <> encode_type_tokens(elems)
+    types.TFnType(params, ret) ->
+      "R:" <> int.to_string(list.length(params)) <> ":" <> encode_type_tokens(list.append(params, [ret]))
+    types.TNamedType(name, args) ->
+      case list.is_empty(args):
+        True -> "M:" <> name <> ":0"
+        False ->
+          "M:" <> name <> ":" <> int.to_string(list.length(args)) <> ":" <> encode_type_tokens(args)
+    types.TTypeVar(id) -> "V:" <> int.to_string(id)
+
+fn encode_type_tokens(ts: List(types.Type)) -> String:
+  case ts:
+    [] -> ""
+    [t] -> encode_type(t)
+    [t, ..rest] -> encode_type(t) <> ":" <> encode_type_tokens(rest)
+
+fn decode(src: String) -> option.Option(typed_ast.ModuleInterface):
+  let lines = string.split(src, "\n")
+  case lines:
+    ["donna-iface-v1", ..rest] -> decode_lines(rest, [], [])
+    _ -> option.None
+
+fn decode_lines(
+  lines: List(String),
+  bindings: List(#(String, types.Type)),
+  ctors: List(#(String, #(String, List(types.Type), Int)))
+) -> option.Option(typed_ast.ModuleInterface):
+  case lines:
+    [] ->
+      option.Some(
+        typed_ast.ModuleInterface(list.reverse(bindings), list.reverse(ctors))
+      )
+    [line, ..rest] ->
+      case string.is_empty(line):
+        True -> decode_lines(rest, bindings, ctors)
+        False ->
+          let parts = string.split(line, "|")
+          case parts:
+            ["B", name, type_src] ->
+              case decode_type(type_src):
+                option.None -> option.None
+                option.Some(ty) ->
+                  decode_lines(rest, [#(name, ty), ..bindings], ctors)
+            ["C", name, type_name, tag_src, ..field_srcs] ->
+              case parse_int(tag_src):
+                option.None -> option.None
+                option.Some(tag) ->
+                  case parse_type_strings(field_srcs, []):
+                    option.None -> option.None
+                    option.Some(fields) ->
+                      decode_lines(
+                        rest,
+                        bindings,
+                        [#(name, #(type_name, fields, tag)), ..ctors]
+                      )
+            _ -> option.None
+
+fn parse_type_strings(
+  srcs: List(String),
+  acc: List(types.Type)
+) -> option.Option(List(types.Type)):
+  case srcs:
+    [] -> option.Some(list.reverse(acc))
+    [src, ..rest] ->
+      case string.is_empty(src):
+        True -> parse_type_strings(rest, acc)
+        False ->
+          case decode_type(src):
+            option.None -> option.None
+            option.Some(ty) -> parse_type_strings(rest, [ty, ..acc])
+
+fn decode_type(src: String) -> option.Option(types.Type):
+  case decode_type_tokens(string.split(src, ":")):
+    option.None -> option.None
+    option.Some(#(ty, rest)) ->
+      case rest:
+        [] -> option.Some(ty)
+        _ -> option.None
+
+fn decode_type_tokens(
+  tokens: List(String)
+) -> option.Option(#(types.Type, List(String))):
+  case tokens:
+    [] -> option.None
+    ["I", ..rest] -> option.Some(#(types.TInt, rest))
+    ["F", ..rest] -> option.Some(#(types.TFloat, rest))
+    ["S", ..rest] -> option.Some(#(types.TString, rest))
+    ["B", ..rest] -> option.Some(#(types.TBool, rest))
+    ["N", ..rest] -> option.Some(#(types.TNil, rest))
+    ["V", id_src, ..rest] ->
+      case parse_int(id_src):
+        option.None -> option.None
+        option.Some(id) -> option.Some(#(types.TTypeVar(id), rest))
+    ["L", ..rest] ->
+      case decode_type_tokens(rest):
+        option.None -> option.None
+        option.Some(#(elem, after_elem)) ->
+          option.Some(#(types.TListType(elem), after_elem))
+    ["U", count_src, ..rest] ->
+      case parse_int(count_src):
+        option.None -> option.None
+        option.Some(count) ->
+          case decode_type_count(count, rest, []):
+            option.None -> option.None
+            option.Some(#(elems, after_elems)) ->
+              option.Some(#(types.TTupleType(elems), after_elems))
+    ["R", count_src, ..rest] ->
+      case parse_int(count_src):
+        option.None -> option.None
+        option.Some(count) ->
+          case decode_type_count(count, rest, []):
+            option.None -> option.None
+            option.Some(#(params, after_params)) ->
+              case decode_type_tokens(after_params):
+                option.None -> option.None
+                option.Some(#(ret, after_ret)) ->
+                  option.Some(#(types.TFnType(params, ret), after_ret))
+    ["M", name, count_src, ..rest] ->
+      case parse_int(count_src):
+        option.None -> option.None
+        option.Some(count) ->
+          case decode_type_count(count, rest, []):
+            option.None -> option.None
+            option.Some(#(args, after_args)) ->
+              option.Some(#(types.TNamedType(name, args), after_args))
+    _ -> option.None
+
+fn decode_type_count(
+  count: Int,
+  tokens: List(String),
+  acc: List(types.Type)
+) -> option.Option(#(List(types.Type), List(String))):
+  case count <= 0:
+    True -> option.Some(#(list.reverse(acc), tokens))
+    False ->
+      case decode_type_tokens(tokens):
+        option.None -> option.None
+        option.Some(#(ty, rest)) ->
+          decode_type_count(count - 1, rest, [ty, ..acc])
+
+fn parse_int(src: String) -> option.Option(Int):
+  int.parse(src)

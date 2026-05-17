@@ -8,10 +8,12 @@ import compiler/parser/parser
 import compiler/typesystem/checker
 import compiler/typesystem/typed_ast
 import compiler/codegen/codegen
+import builder/interface_cache
 import errors/reporter
 import errors/error
 import donna/files
 import donna/list
+import donna/option
 import donna/result
 import donna/string
 import donna/shell
@@ -20,9 +22,10 @@ import utilities/colors
 
 /// Compile one Donna module into a module interface and an SSA artifact.
 ///
-/// The interface is always produced from the current source so imports can be
-/// typechecked correctly. The SSA file is regenerated only when the source is
-/// newer than the cached artifact, unless `force` is true.
+/// Fresh interface and SSA artifacts let the compiler skip lexing, parsing,
+/// typechecking, and codegen for unchanged modules. When only the SSA artifact
+/// is fresh, Donna still typechecks the module to rebuild the import interface
+/// cache, then reuses the existing SSA file.
 pub fn compile_module(
   path: String,
   mod_name: String,
@@ -32,14 +35,44 @@ pub fn compile_module(
 ) -> result.Result(#(typed_ast.ModuleInterface, String, Bool), String):
   let stem = mod_name_to_stem(mod_name)
   let ssa_path = files.join(artifacts_dir, stem <> ".ssa")
-  let cached = case force:
+  let iface_path = interface_cache.path_for(ssa_path)
+  let ssa_cached = case force:
     True -> False
     False -> file_is_current(path, ssa_path)
-  let _ = case cached:
-    True -> ""
+  let iface_cached = case force:
+    True -> False
+    False -> file_is_current(path, iface_path)
+  case ssa_cached && iface_cached:
+    True ->
+      case interface_cache.read(iface_path):
+        option.Some(iface) -> result.Ok(#(iface, ssa_path, False))
+        option.None -> compile_module_uncached(
+          path,
+          mod_name,
+          ssa_path,
+          iface_path,
+          ifaces,
+          ssa_cached
+        )
     False ->
-      let _ = logger.step(mod_name)
-      ""
+      compile_module_uncached(
+        path,
+        mod_name,
+        ssa_path,
+        iface_path,
+        ifaces,
+        ssa_cached
+      )
+
+fn compile_module_uncached(
+  path: String,
+  mod_name: String,
+  ssa_path: String,
+  iface_path: String,
+  ifaces: List(#(String, typed_ast.ModuleInterface)),
+  ssa_cached: Bool
+) -> result.Result(#(typed_ast.ModuleInterface, String, Bool), String):
+  let _ = logger.step(mod_name)
   let src = files.read(path)
   case lexer.lex(src, path):
     lexer.LexErrors(_) -> result.Error("lex error: " <> path)
@@ -53,7 +86,8 @@ pub fn compile_module(
               result.Error(string.join(msgs, "\n"))
             result.Ok(typed_module) ->
               let iface = checker.extract_interface(typed_module)
-              case cached:
+              let _ = interface_cache.write(iface_path, iface)
+              case ssa_cached:
                 True -> result.Ok(#(iface, ssa_path, False))
                 False ->
                   let ir = codegen.generate(typed_module)

@@ -9,15 +9,20 @@ All notable changes to `donna` will be documented in this file.
 - `donna build --release` now writes optimized application binaries under `build/release/target/<target>/bin/`.
 - `donna build --release --target=<target>` supports QBE targets `amd64_sysv`, `amd64_apple`, `amd64_win`, `arm64`, and `arm64_apple`, with `amd64` as the Linux x86_64 directory alias.
 - `donna build --release --target=all` builds every supported release target except `rv64`.
+- Module interfaces are now cached beside SSA artifacts as `.iface` files, so unchanged modules can skip lexing, parsing, and typechecking on later checks and builds.
 
 ### Changed
 
 - Release builds prefer `zig cc` when `DONNA_CC` is not set, giving cross-target builds a predictable compiler path while keeping normal `donna build` behavior unchanged.
 - `donna test` now compiles only the transitive local source modules imported by the selected test files, reducing runner build time for large projects and filtered test runs.
+- `donna test` now avoids rewriting unchanged generated runner and scrubbed SSA files, and reuses the existing test executable when all link inputs are current.
+- `donna check` success summaries now use the same aligned orange action-label style as the rest of the CLI output.
+- `donna format`, `donna docs`, and `donna test` status lines now use the same aligned orange action-label style as build/check output.
 
 ### Fixed
 
 - `donna test` now avoids linking the git `donna` package when testing `donna_stdlib` itself, preventing duplicate standard-library symbols from transitive dev dependencies.
+- Function and constructor calls with the wrong number of arguments now produce a Donna type error instead of reaching codegen with invalid call data.
 
 ## [0.1.3] — 2026-05-16
 

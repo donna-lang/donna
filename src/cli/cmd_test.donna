@@ -11,6 +11,7 @@ import argparse
 import cli/help
 import compiler/typesystem/typed_ast
 import utilities/colors
+import utilities/logger
 import builder/scanner
 import builder/tester
 import builder/dependencies
@@ -65,7 +66,7 @@ fn do_test(
                   let _ = files.mkdir(build_dir)
                   let _ = files.mkdir(test_dir)
                   let runner_path = files.join(test_dir, "test_runner.donna")
-                  let _ = files.write(runner_path, runner_src)
+                  let _ = write_if_changed(runner_path, runner_src)
                   build_and_run(
                     dir,
                     project,
@@ -97,7 +98,12 @@ fn build_and_run(
     result.Ok(#(dep_ifaces, dep_ssa, dep_objs, deps_rebuilt)) ->
       let src_dir = scanner.project_src_dir(project)
       let src_pairs = source_pairs_for_tests(src_dir, test_files)
-      case pipeline.compile_named_file_list(src_pairs, artifacts_dir, dep_ifaces, deps_rebuilt):
+      case pipeline.compile_named_file_list(
+        src_pairs,
+        artifacts_dir,
+        dep_ifaces,
+        deps_rebuilt
+      ):
         result.Error(e) -> e
         result.Ok(#(src_ifaces, src_ssa, _)) ->
           let scrub_dir = files.join(test_dir, "scrubbed")
@@ -120,13 +126,12 @@ fn build_and_run(
                 result.Error(e) -> e
                 result.Ok(#(test_ifaces, test_ssa, _)) ->
                   let all_ifaces3 = list.append(all_ifaces2, test_ifaces)
-                  let _ = files.delete(files.join(test_dir, "test_runner.ssa"))
                   case pipeline.compile_module(
                     runner_path,
                     "test_runner",
                     test_dir,
                     all_ifaces3,
-                    True
+                    False
                   ):
                     result.Error(e) -> e
                     result.Ok(#(_, runner_ssa, _)) ->
@@ -153,32 +158,29 @@ fn build_and_run(
                                 result.Error(e) -> e
                                 result.Ok(s_files) ->
                                   let out_path = files.join(test_dir, "donna_test_runner")
-                                  let link_args = list.append(
+                                  let link_inputs = list.append(
                                     s_files,
+                                    list.append(dep_objs, dev_objs)
+                                  )
+                                  let link_args = list.append(
+                                    link_inputs,
                                     list.append(
-                                      list.append(dep_objs, dev_objs),
-                                      list.append(
-                                        linker_flags(),
-                                        ["-o", out_path]
-                                      )
+                                      linker_flags(),
+                                      ["-o", out_path]
                                     )
                                   )
-                                  let link_code = shell.run(
-                                    pipeline.c_command(link_args) <> " >/dev/null 2>&1"
-                                  )
-                                  case link_code == 0:
+                                  case output_current(out_path, link_inputs):
+                                    True -> run_test_binary(out_path)
                                     False ->
-                                      colors.red("error") <> ": linker failed"
-                                    True ->
-                                      let _ = maybe_codesign(out_path)
-                                      echo colors.dim("  Running tests...")
-                                      let _ = shell.flush()
-                                      let code = shell.exec(out_path, [])
-                                      case code == 0:
-                                        True -> ""
+                                      let link_code = shell.run(
+                                        pipeline.c_command(link_args) <> " >/dev/null 2>&1"
+                                      )
+                                      case link_code == 0:
                                         False ->
-                                          let _ = process_exit(code)
-                                          ""
+                                          colors.red("error") <> ": linker failed"
+                                        True ->
+                                          let _ = maybe_codesign(out_path)
+                                          run_test_binary(out_path)
 
 fn invalid_test_names_error(names: List(String)) -> String:
   colors.red("error") <> ": invalid test function name\n" <> invalid_test_lines(names, "")
@@ -284,7 +286,12 @@ fn collect_source_pairs_loop(
           let mod_name = case string.is_empty(prefix):
             True -> stem
             False -> prefix <> "/" <> stem
-          collect_source_pairs_loop(rest, dir, prefix, [#(path, mod_name), ..acc])
+          collect_source_pairs_loop(
+            rest,
+            dir,
+            prefix,
+            [#(path, mod_name), ..acc]
+          )
         False ->
           case files.is_dir(path):
             False -> collect_source_pairs_loop(rest, dir, prefix, acc)
@@ -319,7 +326,11 @@ fn test_imports(
       let imps = import_lines(files.read(path), all_names, acc)
       test_imports(rest, all_names, imps)
 
-fn import_lines(src: String, all_names: List(String), acc: List(String)) -> List(String):
+fn import_lines(
+  src: String,
+  all_names: List(String),
+  acc: List(String)
+) -> List(String):
   import_line_loop(string.split(src, "\n"), all_names, acc)
 
 fn import_line_loop(
@@ -353,7 +364,12 @@ fn expand_needed_modules(
         False ->
           let path = path_for_module(pairs, name)
           let deps = import_lines(files.read(path), all_names, [])
-          expand_needed_modules(list.append(deps, rest), pairs, all_names, [name, ..seen])
+          expand_needed_modules(
+            list.append(deps, rest),
+            pairs,
+            all_names,
+            [name, ..seen]
+          )
 
 fn path_for_module(pairs: List(#(String, String)), name: String) -> String:
   case pairs:
@@ -503,6 +519,32 @@ fn maybe_codesign(path: String) -> Int:
         "command -v codesign >/dev/null 2>&1 && codesign --force -s - " <> path <> " >/dev/null 2>&1"
       )
 
+fn run_test_binary(out_path: String) -> String:
+  let _ = logger.running_tests()
+  let _ = shell.flush()
+  let code = shell.exec(out_path, [])
+  case code == 0:
+    True -> ""
+    False ->
+      let _ = process_exit(code)
+      ""
+
+fn output_current(output: String, inputs: List(String)) -> Bool:
+  case files.exists(output):
+    False -> False
+    True -> inputs_older_than_output(inputs, output)
+
+fn inputs_older_than_output(inputs: List(String), output: String) -> Bool:
+  case inputs:
+    [] -> True
+    [input, ..rest] ->
+      case shell.run("test " <> sh_quote(input) <> " -nt " <> sh_quote(output)) == 0:
+        True -> False
+        False -> inputs_older_than_output(rest, output)
+
+fn sh_quote(s: String) -> String:
+  "'" <> string.replace(s, "'", "'\\''") <> "'"
+
 fn scrub_main_from_ssa(
   paths: List(String),
   scrub_dir: String,
@@ -526,5 +568,13 @@ fn scrub_main_from_ssa(
             "function w $__proj_main("
           )
       let dst = files.join(scrub_dir, files.basename(p))
-      let _ = files.write(dst, patched2)
+      let _ = write_if_changed(dst, patched2)
       scrub_main_from_ssa(rest, scrub_dir, [dst, ..acc])
+
+fn write_if_changed(path: String, content: String) -> Int:
+  case files.exists(path):
+    False -> files.write(path, content)
+    True ->
+      case string.equal(files.read(path), content):
+        True -> 0
+        False -> files.write(path, content)

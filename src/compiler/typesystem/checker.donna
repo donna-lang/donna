@@ -517,7 +517,7 @@ pub fn infer_expr(
             _ ->
               let #(t, e3) = env.fresh_var(e2)
               result.Ok(#(types.TEFieldAccess(typed_obj, field, "", t), e3))
-    ast.Call(fn_expr, args, _) ->
+    ast.Call(fn_expr, args, call_span) ->
       case infer_expr(fn_expr, e):
         result.Error(err) -> result.Error(err)
         result.Ok(#(typed_fn, e2)) ->
@@ -525,14 +525,26 @@ pub fn infer_expr(
             result.Error(err) -> result.Error(err)
             result.Ok(#(typed_args, e3)) ->
               let arg_types = list.map(typed_args, types.typed_expr_type)
-              let ret_type = case types.typed_expr_type(typed_fn):
+              case types.typed_expr_type(typed_fn):
                 types.TFnType(params, ret) ->
-                  let bindings = collect_all_bindings(params, arg_types, [])
-                  apply_subst(ret, bindings)
+                  case list.length(params) == list.length(arg_types):
+                    False ->
+                      result.Error(
+                        error.TypeWrongArgCount(
+                          list.length(params),
+                          list.length(arg_types),
+                          call_span
+                        )
+                      )
+                    True ->
+                      let bindings = collect_all_bindings(params, arg_types, [])
+                      let ret_type = apply_subst(ret, bindings)
+                      result.Ok(
+                        #(types.TECall(typed_fn, typed_args, ret_type), e3)
+                      )
                 _ ->
                   let #(tv, _) = env.fresh_var(e3)
-                  tv
-              result.Ok(#(types.TECall(typed_fn, typed_args, ret_type), e3))
+                  result.Ok(#(types.TECall(typed_fn, typed_args, tv), e3))
     ast.BinOp(op, left, right, sp) ->
       case infer_expr(left, e):
         result.Error(err) -> result.Error(err)
@@ -821,7 +833,11 @@ fn bind_pattern_typed_repeated(
   case patterns:
     [] -> e
     [p, ..rest] ->
-      bind_pattern_typed_repeated(rest, item_type, bind_pattern_typed(p, item_type, e))
+      bind_pattern_typed_repeated(
+        rest,
+        item_type,
+        bind_pattern_typed(p, item_type, e)
+      )
 
 fn bind_pattern_list(patterns: List(ast.Pattern), e: env.Env) -> env.Env:
   case patterns:

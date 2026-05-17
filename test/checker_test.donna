@@ -838,6 +838,32 @@ pub fn check_missing_module_import_error_test() -> String:
         _ -> should.fail("expected undefined module error")
     result.Ok(_) -> should.fail("should have rejected module call without import")
 
+pub fn check_function_wrong_arg_count_error_test() -> String:
+  let src = "fn add(a: Int, b: Int) -> Int:\n  a + b\nfn f() -> Int:\n  add(1)"
+  case check_src(src):
+    result.Error(errs) ->
+      case errs:
+        [error.TypeWrongArgCount(expected, found, _), ..] ->
+          should.all([
+            expected |> should.equal_int(2),
+            found |> should.equal_int(1)
+          ])
+        _ -> should.fail("expected wrong argument count error")
+    result.Ok(_) -> should.fail("should have rejected missing function argument")
+
+pub fn check_constructor_wrong_arg_count_error_test() -> String:
+  let src = "type Request:\n  Request(String, String, String, String, String, String)\nfn f() -> Request:\n  Request(\"GET\", \"/\", \"\", \"text/plain\", \"\")"
+  case check_src(src):
+    result.Error(errs) ->
+      case errs:
+        [error.TypeWrongArgCount(expected, found, _), ..] ->
+          should.all([
+            expected |> should.equal_int(6),
+            found |> should.equal_int(5)
+          ])
+        _ -> should.fail("expected constructor argument count error")
+    result.Ok(_) -> should.fail("should have rejected missing constructor argument")
+
 // ── Generic functions ─────────────────────────────────────────────────────────
 
 pub fn check_generic_identity_ret_type_test() -> String:

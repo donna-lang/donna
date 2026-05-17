@@ -1,0 +1,150 @@
+import builder/interface_cache
+import compiler/typesystem/types
+import compiler/typesystem/typed_ast
+import donna/files
+import donna/list
+import donna/option
+import donna/shell
+import donna/string
+import unittest/should
+
+fn cache_path() -> String:
+  "/tmp/donna-interface-cache-test.iface"
+
+fn reset_cache() -> Nil:
+  let _ = shell.run("rm -f " <> cache_path())
+  Nil
+
+fn sample_iface() -> typed_ast.ModuleInterface:
+  typed_ast.ModuleInterface(
+    [
+      #("answer", types.TInt),
+      #("names", types.TListType(types.TString)),
+      #(
+        "make",
+        types.TFnType([types.TInt, types.TString], types.TBool)
+      ),
+      #(
+        "wrap",
+        types.TFnType(
+          [types.TTypeVar(1)],
+          types.TNamedType("Box", [types.TTypeVar(1)])
+        )
+      ),
+      #("empty", types.TNamedType("Option", [])),
+      #("unit", types.TTupleType([]))
+    ],
+    [
+      #("Some", #("Option", [types.TTypeVar(1)], 0)),
+      #("None", #("Option", [], 1))
+    ]
+  )
+
+fn bindings_of(iface: typed_ast.ModuleInterface) -> List(#(String, types.Type)):
+  case iface:
+    typed_ast.ModuleInterface(bindings, _) -> bindings
+
+fn ctors_of(
+  iface: typed_ast.ModuleInterface
+) -> List(#(String, #(String, List(types.Type), Int))):
+  case iface:
+    typed_ast.ModuleInterface(_, ctors) -> ctors
+
+fn binding_type(
+  bindings: List(#(String, types.Type)),
+  name: String
+) -> option.Option(types.Type):
+  case bindings:
+    [] -> option.None
+    [#(key, ty), ..rest] ->
+      case string.equal(key, name):
+        True -> option.Some(ty)
+        False -> binding_type(rest, name)
+
+fn ctor_info(
+  ctors: List(#(String, #(String, List(types.Type), Int))),
+  name: String
+) -> option.Option(#(String, List(types.Type), Int)):
+  case ctors:
+    [] -> option.None
+    [#(key, info), ..rest] ->
+      case string.equal(key, name):
+        True -> option.Some(info)
+        False -> ctor_info(rest, name)
+
+fn type_string(ty: types.Type) -> String:
+  types.type_to_string(ty)
+
+pub fn path_for_uses_iface_extension_test() -> String:
+  interface_cache.path_for("build/dev/donna_string.ssa")
+  |> should.equal_string("build/dev/donna_string.iface")
+
+pub fn read_missing_cache_returns_none_test() -> String:
+  let _ = reset_cache()
+  case interface_cache.read(cache_path()):
+    option.None -> should.pass()
+    option.Some(_) -> should.fail("missing interface cache should return None")
+
+pub fn interface_cache_roundtrips_bindings_test() -> String:
+  let _ = reset_cache()
+  let _ = interface_cache.write(cache_path(), sample_iface())
+  case interface_cache.read(cache_path()):
+    option.None -> should.fail("expected cached interface")
+    option.Some(iface) ->
+      let bindings = bindings_of(iface)
+      should.all([
+        list.length(bindings) |> should.equal_int(6),
+        case binding_type(bindings, "answer"):
+          option.None -> should.fail("missing answer binding")
+          option.Some(ty) -> type_string(ty) |> should.equal_string("Int"),
+        case binding_type(bindings, "make"):
+          option.None -> should.fail("missing make binding")
+          option.Some(ty) ->
+            type_string(ty) |> should.equal_string("fn(Int, String) -> Bool"),
+        case binding_type(bindings, "wrap"):
+          option.None -> should.fail("missing wrap binding")
+          option.Some(ty) ->
+            type_string(ty) |> should.equal_string("fn(a1) -> Box(a1)"),
+        case binding_type(bindings, "empty"):
+          option.None -> should.fail("missing empty binding")
+          option.Some(ty) -> type_string(ty) |> should.equal_string("Option"),
+        case binding_type(bindings, "unit"):
+          option.None -> should.fail("missing unit binding")
+          option.Some(ty) -> type_string(ty) |> should.equal_string("#()")
+      ])
+
+pub fn interface_cache_roundtrips_constructors_test() -> String:
+  let _ = reset_cache()
+  let _ = interface_cache.write(cache_path(), sample_iface())
+  case interface_cache.read(cache_path()):
+    option.None -> should.fail("expected cached interface")
+    option.Some(iface) ->
+      let ctors = ctors_of(iface)
+      should.all([
+        list.length(ctors) |> should.equal_int(2),
+        case ctor_info(ctors, "Some"):
+          option.None -> should.fail("missing Some constructor")
+          option.Some(#(type_name, fields, tag)) ->
+            should.all([
+              type_name |> should.equal_string("Option"),
+              tag |> should.equal_int(0),
+              list.length(fields) |> should.equal_int(1),
+              case fields:
+                [ty] -> type_string(ty) |> should.equal_string("a1")
+                _ -> should.fail("expected one Some field")
+            ]),
+        case ctor_info(ctors, "None"):
+          option.None -> should.fail("missing None constructor")
+          option.Some(#(type_name, fields, tag)) ->
+            should.all([
+              type_name |> should.equal_string("Option"),
+              tag |> should.equal_int(1),
+              list.length(fields) |> should.equal_int(0)
+            ])
+      ])
+
+pub fn invalid_cache_returns_none_test() -> String:
+  let _ = files.write(cache_path(), "not-an-interface-cache\n")
+  case interface_cache.read(cache_path()):
+    option.None -> should.pass()
+    option.Some(_) -> should.fail("invalid interface cache should return None")

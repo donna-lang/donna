@@ -38,7 +38,7 @@ pub fn run(args: List(#(String, String))) -> String:
       let elapsed = time.now_us() - t0
       let _ = logger.docs_ok(elapsed)
       let _ = warn_missing_github_repo(meta)
-      colors.orange("  Docs") <> " → " <> colors.dim(docs_dir)
+      logger.docs_output(docs_dir)
 
 fn warn_missing_github_repo(meta: scanner.ProjectMeta) -> Nil:
   case scanner.meta_github_owner_repo(meta):
