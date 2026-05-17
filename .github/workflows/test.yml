@@ -27,5 +27,12 @@ jobs:
       - name: Build Donna from bootstrap sources
         run: make build SOURCES_DIR=sources
 
+      - name: Upload Donna main binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: donna-main-linux-x86_64
+          path: build/bin/donna
+          if-no-files-found: error
+
       - name: Self-host and test compiler
         run: make ci SOURCES_DIR=sources
