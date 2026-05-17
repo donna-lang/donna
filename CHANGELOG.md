@@ -13,6 +13,11 @@ All notable changes to `donna` will be documented in this file.
 ### Changed
 
 - Release builds prefer `zig cc` when `DONNA_CC` is not set, giving cross-target builds a predictable compiler path while keeping normal `donna build` behavior unchanged.
+- `donna test` now compiles only the transitive local source modules imported by the selected test files, reducing runner build time for large projects and filtered test runs.
+
+### Fixed
+
+- `donna test` now avoids linking the git `donna` package when testing `donna_stdlib` itself, preventing duplicate standard-library symbols from transitive dev dependencies.
 
 ## [0.1.3] — 2026-05-16
 

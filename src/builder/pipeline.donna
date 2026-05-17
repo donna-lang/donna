@@ -80,6 +80,26 @@ pub fn compile_file_list(
     False
   )
 
+/// Compile an explicit list of source files with their full module names.
+///
+/// This is used by `donna test` after it computes the transitive local modules
+/// required by the selected test files. Unlike `compile_file_list`, nested
+/// module names are already known and are preserved.
+pub fn compile_named_file_list(
+  pairs: List(#(String, String)),
+  artifacts_dir: String,
+  ifaces: List(#(String, typed_ast.ModuleInterface)),
+  force: Bool
+) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool), String):
+  compile_pairs_loop(
+    topo_sort_pairs(pairs),
+    artifacts_dir,
+    ifaces,
+    [],
+    [],
+    force
+  )
+
 /// Compile every Donna source file under a directory.
 ///
 /// The directory walk preserves nested module names and topologically sorts

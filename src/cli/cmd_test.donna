@@ -58,6 +58,8 @@ fn do_test(
                 True -> no_tests_error()
                 False ->
                   let runner_src = tester.generate_filtered_runner(test_mods, filters)
+                  let selected_mods = tester.select_test_modules(test_mods, filters)
+                  let selected_test_files = select_test_files(test_files, selected_mods)
                   let build_dir = scanner.project_build_dir(project)
                   let test_dir = scanner.project_test_dir(project)
                   let _ = files.mkdir(build_dir)
@@ -67,7 +69,7 @@ fn do_test(
                   build_and_run(
                     dir,
                     project,
-                    test_files,
+                    selected_test_files,
                     test_mods,
                     runner_path,
                     test_dir
@@ -88,13 +90,14 @@ fn build_and_run(
   let _ = files.mkdir(dev_dir)
   let _ = files.mkdir(artifacts_dir)
   let deps = dependencies.resolve_deps(toml_path, dir)
-  let dev_deps = dependencies.resolve_dev_deps(toml_path, dir)
+  let dev_deps = normalize_dev_deps(project, dependencies.resolve_dev_deps(toml_path, dir))
   let proj_ffi_objs = pipeline.compile_ffi(dir, artifacts_dir)
   case compile_deps(deps, build_dir, [], [], proj_ffi_objs):
     result.Error(e) -> e
     result.Ok(#(dep_ifaces, dep_ssa, dep_objs, deps_rebuilt)) ->
       let src_dir = scanner.project_src_dir(project)
-      case pipeline.compile_dir(src_dir, "", artifacts_dir, dep_ifaces, deps_rebuilt):
+      let src_pairs = source_pairs_for_tests(src_dir, test_files)
+      case pipeline.compile_named_file_list(src_pairs, artifacts_dir, dep_ifaces, deps_rebuilt):
         result.Error(e) -> e
         result.Ok(#(src_ifaces, src_ssa, _)) ->
           let scrub_dir = files.join(test_dir, "scrubbed")
@@ -197,6 +200,210 @@ fn qbe_missing_error() -> String:
 fn c_compiler_missing_error() -> String:
   let hint = colors.dim("  hint: install clang/gcc or Zig, or set DONNA_CC")
   colors.red("error") <> ": C compiler not found\n" <> hint
+
+fn normalize_dev_deps(
+  project: scanner.Project,
+  deps: List(dependencies.Dep)
+) -> List(dependencies.Dep):
+  case string.equal(scanner.project_name(project), "donna_stdlib"):
+    False -> deps
+    True -> remove_dep_named(deps, "donna", [])
+
+fn remove_dep_named(
+  deps: List(dependencies.Dep),
+  name: String,
+  acc: List(dependencies.Dep)
+) -> List(dependencies.Dep):
+  case deps:
+    [] -> list.reverse(acc)
+    [dep, ..rest] ->
+      case string.equal(dependencies.dep_name(dep), name):
+        True -> remove_dep_named(rest, name, acc)
+        False -> remove_dep_named(rest, name, [dep, ..acc])
+
+fn select_test_files(
+  paths: List(String),
+  selected: List(#(String, List(String)))
+) -> List(String):
+  select_test_files_loop(paths, selected, [])
+
+fn select_test_files_loop(
+  paths: List(String),
+  selected: List(#(String, List(String))),
+  acc: List(String)
+) -> List(String):
+  case paths:
+    [] -> list.reverse(acc)
+    [path, ..rest] ->
+      let stem = files.drop_extension(files.basename(path))
+      case selected_has_module(selected, stem):
+        True -> select_test_files_loop(rest, selected, [path, ..acc])
+        False -> select_test_files_loop(rest, selected, acc)
+
+fn selected_has_module(
+  selected: List(#(String, List(String))),
+  stem: String
+) -> Bool:
+  case selected:
+    [] -> False
+    [#(name, _), ..rest] ->
+      case string.equal(name, stem):
+        True -> True
+        False -> selected_has_module(rest, stem)
+
+fn source_pairs_for_tests(
+  src_dir: String,
+  test_files: List(String)
+) -> List(#(String, String)):
+  let all_pairs = collect_source_pairs(src_dir, "", [])
+  let all_names = pair_names(all_pairs, [])
+  let seeds = test_imports(test_files, all_names, [])
+  let needed = expand_needed_modules(seeds, all_pairs, all_names, [])
+  filter_pairs_by_names(all_pairs, needed, [])
+
+fn collect_source_pairs(
+  dir: String,
+  prefix: String,
+  acc: List(#(String, String))
+) -> List(#(String, String)):
+  collect_source_pairs_loop(files.list_dir(dir), dir, prefix, acc)
+
+fn collect_source_pairs_loop(
+  entries: List(String),
+  dir: String,
+  prefix: String,
+  acc: List(#(String, String))
+) -> List(#(String, String)):
+  case entries:
+    [] -> list.reverse(acc)
+    [name, ..rest] ->
+      let path = files.join(dir, name)
+      case string.ends_with(name, ".donna"):
+        True ->
+          let stem = files.drop_extension(name)
+          let mod_name = case string.is_empty(prefix):
+            True -> stem
+            False -> prefix <> "/" <> stem
+          collect_source_pairs_loop(rest, dir, prefix, [#(path, mod_name), ..acc])
+        False ->
+          case files.is_dir(path):
+            False -> collect_source_pairs_loop(rest, dir, prefix, acc)
+            True ->
+              let sub_prefix = case string.is_empty(prefix):
+                True -> name
+                False -> prefix <> "/" <> name
+              let sub_pairs = collect_source_pairs(path, sub_prefix, [])
+              collect_source_pairs_loop(
+                rest,
+                dir,
+                prefix,
+                list.append(list.reverse(sub_pairs), acc)
+              )
+
+fn pair_names(
+  pairs: List(#(String, String)),
+  acc: List(String)
+) -> List(String):
+  case pairs:
+    [] -> list.reverse(acc)
+    [#(_, name), ..rest] -> pair_names(rest, [name, ..acc])
+
+fn test_imports(
+  paths: List(String),
+  all_names: List(String),
+  acc: List(String)
+) -> List(String):
+  case paths:
+    [] -> acc
+    [path, ..rest] ->
+      let imps = import_lines(files.read(path), all_names, acc)
+      test_imports(rest, all_names, imps)
+
+fn import_lines(src: String, all_names: List(String), acc: List(String)) -> List(String):
+  import_line_loop(string.split(src, "\n"), all_names, acc)
+
+fn import_line_loop(
+  lines: List(String),
+  all_names: List(String),
+  acc: List(String)
+) -> List(String):
+  case lines:
+    [] -> acc
+    [line, ..rest] ->
+      case string.starts_with(line, "import "):
+        False -> import_line_loop(rest, all_names, acc)
+        True ->
+          let raw = string.slice(line, 7, string.length(line) - 7)
+          let dep = local_dep_name(import_path_only(raw), all_names)
+          case string.is_empty(dep) || list.contains_str(acc, dep):
+            True -> import_line_loop(rest, all_names, acc)
+            False -> import_line_loop(rest, all_names, [dep, ..acc])
+
+fn expand_needed_modules(
+  pending: List(String),
+  pairs: List(#(String, String)),
+  all_names: List(String),
+  seen: List(String)
+) -> List(String):
+  case pending:
+    [] -> seen
+    [name, ..rest] ->
+      case list.contains_str(seen, name):
+        True -> expand_needed_modules(rest, pairs, all_names, seen)
+        False ->
+          let path = path_for_module(pairs, name)
+          let deps = import_lines(files.read(path), all_names, [])
+          expand_needed_modules(list.append(deps, rest), pairs, all_names, [name, ..seen])
+
+fn path_for_module(pairs: List(#(String, String)), name: String) -> String:
+  case pairs:
+    [] -> ""
+    [#(path, mod_name), ..rest] ->
+      case string.equal(mod_name, name):
+        True -> path
+        False -> path_for_module(rest, name)
+
+fn filter_pairs_by_names(
+  pairs: List(#(String, String)),
+  names: List(String),
+  acc: List(#(String, String))
+) -> List(#(String, String)):
+  case pairs:
+    [] -> list.reverse(acc)
+    [#(path, name), ..rest] ->
+      case list.contains_str(names, name):
+        True -> filter_pairs_by_names(rest, names, [#(path, name), ..acc])
+        False -> filter_pairs_by_names(rest, names, acc)
+
+fn import_path_only(raw: String) -> String:
+  let trimmed = string.trim(raw)
+  let parts = string.split(trimmed, " as ")
+  case parts:
+    [] -> trimmed
+    [path, .._] -> string.trim(path)
+
+fn local_dep_name(imp: String, all_names: List(String)) -> String:
+  case list.contains_str(all_names, imp):
+    True -> imp
+    False ->
+      let last = path_last_segment(imp)
+      find_local_dep_by_last_segment(all_names, last)
+
+fn find_local_dep_by_last_segment(names: List(String), last: String) -> String:
+  case names:
+    [] -> ""
+    [name, ..rest] ->
+      case string.equal(path_last_segment(name), last):
+        True -> name
+        False -> find_local_dep_by_last_segment(rest, last)
+
+fn path_last_segment(path: String) -> String:
+  path_last_segment_loop(string.split(path, "/"), "")
+
+fn path_last_segment_loop(parts: List(String), last: String) -> String:
+  case parts:
+    [] -> last
+    [part, ..rest] -> path_last_segment_loop(rest, part)
 
 fn compile_self_alias(
   project: scanner.Project,
