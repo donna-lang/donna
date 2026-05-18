@@ -17,6 +17,7 @@ if [[ ! -x "$DONNA_BIN" ]]; then
   exit 1
 fi
 
+ulimit -s unlimited 2>/dev/null || ulimit -s 32768 2>/dev/null || true
 "$DONNA_BIN" build --release --target=all
 
 package_unix() {
