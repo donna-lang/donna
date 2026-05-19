@@ -3,9 +3,8 @@
 //// formatter tool.
 
 import donna/files
-import donna/list
+import donna/path
 import donna/string
-import donna/result
 import utilities/colors
 import utilities/logger
 import builder/scanner
@@ -47,7 +46,7 @@ fn collect_entries(
   case entries:
     [] -> acc
     [entry, ..rest] ->
-      let path = files.join(dir, entry)
+      let path = path.join(dir, entry)
       let acc2 = case files.is_dir(path):
         True -> find_donna_files(path, acc)
         False ->

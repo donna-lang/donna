@@ -3,13 +3,13 @@
 //// and executes project tests with optional filters.
 
 import donna/files
+import donna/path
 import donna/list
 import donna/string
 import donna/shell
 import donna/result
 import argparse
 import cli/help
-import compiler/typesystem/typed_ast
 import utilities/colors
 import utilities/logger
 import builder/scanner
@@ -40,7 +40,7 @@ fn do_test(
   project: scanner.Project,
   filters: List(String)
 ) -> String:
-  let test_src_dir = files.join(dir, "test")
+  let test_src_dir = path.join(dir, "test")
   case files.is_dir(test_src_dir):
     False ->
       colors.dim("no test/ directory in ") <> colors.path(dir)
@@ -65,7 +65,7 @@ fn do_test(
                   let test_dir = scanner.project_test_dir(project)
                   let _ = files.mkdir(build_dir)
                   let _ = files.mkdir(test_dir)
-                  let runner_path = files.join(test_dir, "test_runner.donna")
+                  let runner_path = path.join(test_dir, "test_runner.donna")
                   let _ = write_if_changed(runner_path, runner_src)
                   build_and_run(
                     dir,
@@ -80,11 +80,11 @@ fn build_and_run(
   dir: String,
   project: scanner.Project,
   test_files: List(String),
-  test_mods: List(#(String, List(String))),
+  _test_mods: List(#(String, List(String))),
   runner_path: String,
   test_dir: String
 ) -> String:
-  let toml_path = files.join(dir, "donna.toml")
+  let toml_path = path.join(dir, "donna.toml")
   let build_dir = scanner.project_build_dir(project)
   let artifacts_dir = scanner.project_dev_artifacts_dir(project)
   let dev_dir = scanner.project_dev_dir(project)
@@ -111,7 +111,7 @@ fn build_and_run(
               ):
                 result.Error(e) -> e
                 result.Ok(#(src_ifaces, src_ssa, _)) ->
-                  let scrub_dir = files.join(test_dir, "scrubbed")
+                  let scrub_dir = path.join(test_dir, "scrubbed")
                   let _ = files.mkdir(scrub_dir)
                   let scrubbed_ssa = scrub_main_from_ssa(src_ssa, scrub_dir, [])
                   let #(self_ifaces, self_ssa) = compile_self_alias(project, src_dir, test_dir, dep_ifaces)
@@ -120,7 +120,7 @@ fn build_and_run(
                     result.Error(e) -> e
                     result.Ok(#(dev_ifaces, dev_ssa, dev_objs, _)) ->
                       let all_ifaces2 = list.append(all_ifaces, dev_ifaces)
-                      let test_art = files.join(test_dir, "artifacts")
+                      let test_art = path.join(test_dir, "artifacts")
                       let _ = files.mkdir(test_art)
                       case pipeline.compile_file_list(
                         test_files,
@@ -165,7 +165,7 @@ fn build_and_run(
                                       case pipeline.run_qbe_all_checked(all_ssa):
                                         result.Error(e) -> e
                                         result.Ok(s_files) ->
-                                          let out_path = files.join(
+                                          let out_path = path.join(
                                             test_dir,
                                             "donna_test_runner"
                                           )
@@ -269,7 +269,7 @@ fn select_test_files_loop(
   case paths:
     [] -> list.reverse(acc)
     [path, ..rest] ->
-      let stem = files.drop_extension(files.basename(path))
+      let stem = path.drop_extension(path.basename(path))
       case selected_has_module(selected, stem):
         True -> select_test_files_loop(rest, selected, [path, ..acc])
         False -> select_test_files_loop(rest, selected, acc)
@@ -311,10 +311,10 @@ fn collect_source_pairs_loop(
   case entries:
     [] -> list.reverse(acc)
     [name, ..rest] ->
-      let path = files.join(dir, name)
+      let path = path.join(dir, name)
       case string.ends_with(name, ".donna"):
         True ->
-          let stem = files.drop_extension(name)
+          let stem = path.drop_extension(name)
           let mod_name = case string.is_empty(prefix):
             True -> stem
             False -> prefix <> "/" <> stem
@@ -462,7 +462,7 @@ fn compile_self_alias(
   case string.equal(scanner.project_name(project), "donna_stdlib"):
     False -> #([], [])
     True ->
-      let alias_art = files.join(test_dir, "self_alias_artifacts")
+      let alias_art = path.join(test_dir, "self_alias_artifacts")
       let _ = files.mkdir(alias_art)
       case pipeline.compile_dir(src_dir, "donna", alias_art, dep_ifaces, False):
         result.Error(_) -> #([], [])
@@ -478,9 +478,9 @@ fn compile_deps(
   case deps:
     [] -> result.Ok(#(iface_acc, ssa_acc, obj_acc, False))
     [dep, ..rest] ->
-      let pkg_dir = files.join(files.join(build_dir, "packages"), dependencies.dep_name(dep))
-      let art_dir = files.join(pkg_dir, "artifacts")
-      let _ = files.mkdir(files.join(build_dir, "packages"))
+      let pkg_dir = path.join(path.join(build_dir, "packages"), dependencies.dep_name(dep))
+      let art_dir = path.join(pkg_dir, "artifacts")
+      let _ = files.mkdir(path.join(build_dir, "packages"))
       let _ = files.mkdir(pkg_dir)
       let _ = files.mkdir(art_dir)
       let src_dir = dependencies.dep_src_dir(dep)
@@ -517,7 +517,7 @@ fn collect_donna(
     [] -> list.reverse(acc)
     [name, ..rest] ->
       case string.ends_with(name, ".donna"):
-        True -> collect_donna(rest, dir, [files.join(dir, name), ..acc])
+        True -> collect_donna(rest, dir, [path.join(dir, name), ..acc])
         False -> collect_donna(rest, dir, acc)
 
 fn parse_test_args(args: List(#(String, String))) -> #(String, List(String)):
@@ -599,7 +599,7 @@ fn scrub_main_from_ssa(
             "export function w $donna_program_main(",
             "function w $__proj_main("
           )
-      let dst = files.join(scrub_dir, files.basename(p))
+      let dst = path.join(scrub_dir, path.basename(p))
       let _ = write_if_changed(dst, patched2)
       scrub_main_from_ssa(rest, scrub_dir, [dst, ..acc])
 

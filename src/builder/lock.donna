@@ -3,6 +3,7 @@
 //// the same package sources instead of floating on remote git branches.
 
 import donna/files
+import donna/path
 import donna/list
 import donna/string
 import parsetoml/parsetoml
@@ -120,11 +121,11 @@ fn format_deps(deps: List(LockedDep), acc: String) -> String:
 
 /// Store the currently cached git revision beside a cloned dependency.
 pub fn write_cached_rev(cache_path: String, rev: String) -> Int:
-  files.write(files.join(cache_path, ".donna_rev"), rev)
+  files.write(path.join(cache_path, ".donna_rev"), rev)
 
 /// Read the cached git revision marker for a cloned dependency.
 pub fn read_cached_rev(cache_path: String) -> String:
-  let marker = files.join(cache_path, ".donna_rev")
+  let marker = path.join(cache_path, ".donna_rev")
   case files.exists(marker):
     False -> ""
     True -> string.trim(files.read(marker))

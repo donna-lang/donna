@@ -3,6 +3,7 @@
 //// documentation into the project `docs/` directory.
 
 import donna/files
+import donna/path
 import donna/list
 import donna/string
 import utilities/colors
@@ -11,7 +12,6 @@ import builder/scanner
 import tools/docgen/extractor
 import tools/docgen/render
 import donna/time
-import donna/option
 
 /// Run `donna docs` for a project directory and return CLI output.
 pub fn run(args: List(#(String, String))) -> String:
@@ -25,7 +25,7 @@ pub fn run(args: List(#(String, String))) -> String:
     scanner.ScanOk(project) ->
       let meta = scanner.scan_meta(dir)
       let src_dir = scanner.project_src_dir(project)
-      let docs_dir = files.join(dir, "docs")
+      let docs_dir = path.join(dir, "docs")
       let t0 = time.now_us()
       let _ = files.mkdir(docs_dir)
       let paths = find_donna_files(src_dir, [])
@@ -33,8 +33,8 @@ pub fn run(args: List(#(String, String))) -> String:
       let readme = read_readme(dir)
       let index_html = render.render_index(meta, readme)
       let docs_html = render.render_docs(meta, modules)
-      let _ = files.write(files.join(docs_dir, "index.html"), index_html)
-      let _ = files.write(files.join(docs_dir, "docs.html"), docs_html)
+      let _ = files.write(path.join(docs_dir, "index.html"), index_html)
+      let _ = files.write(path.join(docs_dir, "docs.html"), docs_html)
       let elapsed = time.now_us() - t0
       let _ = logger.docs_ok(elapsed)
       let _ = warn_missing_github_repo(meta)
@@ -75,7 +75,7 @@ fn path_to_module(path: String, src_dir: String) -> String:
     False -> rel
 
 fn read_readme(dir: String) -> String:
-  let path = files.join(dir, "README.md")
+  let path = path.join(dir, "README.md")
   case files.exists(path):
     True -> files.read(path)
     False -> ""
@@ -92,7 +92,7 @@ fn collect_entries(
   case entries:
     [] -> acc
     [entry, ..rest] ->
-      let path = files.join(dir, entry)
+      let path = path.join(dir, entry)
       let acc2 = case files.is_dir(path):
         True -> find_donna_files(path, acc)
         False ->

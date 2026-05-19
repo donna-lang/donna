@@ -4,6 +4,7 @@
 //// the build pipeline.
 
 import donna/files
+import donna/path
 import donna/list
 import donna/shell
 import donna/string
@@ -34,11 +35,11 @@ pub fn dep_path(d: Dep) -> String:
 
 /// Return the dependency source directory.
 pub fn dep_src_dir(d: Dep) -> String:
-  files.join(dep_path(d), "src")
+  path.join(dep_path(d), "src")
 
 /// Return the dependency FFI directory.
 pub fn dep_ffi_dir(d: Dep) -> String:
-  files.join(dep_path(d), "ffi")
+  path.join(dep_path(d), "ffi")
 
 /// Resolve normal and dev dependencies from `donna.toml`.
 ///
@@ -54,10 +55,10 @@ pub fn resolve_all_checked(
   toml_path: String,
   project_dir: String
 ) -> result.Result(List(Dep), String):
-  let lock_path = files.join(project_dir, "donna.lock")
+  let lock_path = path.join(project_dir, "donna.lock")
   let locked = lock.read(lock_path)
   let toml_src = files.read(toml_path)
-  let root_name = package_name(toml_src, files.basename(project_dir))
+  let root_name = package_name(toml_src, path.basename(project_dir))
   let root_id = package_identity(toml_src, project_dir)
   let root_ids = initial_identity_stack(root_id)
   let #(deps, locked1) = parse_section(toml_src, project_dir, "dependencies", locked)
@@ -82,10 +83,10 @@ pub fn resolve_deps_checked(
   toml_path: String,
   project_dir: String
 ) -> result.Result(List(Dep), String):
-  let lock_path = files.join(project_dir, "donna.lock")
+  let lock_path = path.join(project_dir, "donna.lock")
   let locked = lock.read(lock_path)
   let toml_src = files.read(toml_path)
-  let root_name = package_name(toml_src, files.basename(project_dir))
+  let root_name = package_name(toml_src, path.basename(project_dir))
   let root_id = package_identity(toml_src, project_dir)
   let #(deps, locked1) = parse_section(toml_src, project_dir, "dependencies", locked)
   case expand_deps_checked(
@@ -113,10 +114,10 @@ pub fn resolve_dev_deps_checked(
   toml_path: String,
   project_dir: String
 ) -> result.Result(List(Dep), String):
-  let lock_path = files.join(project_dir, "donna.lock")
+  let lock_path = path.join(project_dir, "donna.lock")
   let locked = lock.read(lock_path)
   let toml_src = files.read(toml_path)
-  let root_name = package_name(toml_src, files.basename(project_dir))
+  let root_name = package_name(toml_src, path.basename(project_dir))
   let root_id = package_identity(toml_src, project_dir)
   let root_ids = initial_identity_stack(root_id)
   let #(runtime_deps, locked1) = parse_section(toml_src, project_dir, "dependencies", locked)
@@ -166,7 +167,7 @@ fn expand_deps_checked(
               )
             False ->
               let next_seen = [name, ..seen]
-              let toml_path = files.join(dep_path(dep), "donna.toml")
+              let toml_path = path.join(dep_path(dep), "donna.toml")
               case files.exists(toml_path):
                 False ->
                   expand_deps_checked(
@@ -308,7 +309,7 @@ fn collect_deps(
     [#(name, value), ..rest] ->
       case parsetoml.get_string(value, "path"):
         parsetoml.Ok(rel_path) ->
-          let abs = files.join(project_dir, rel_path)
+          let abs = path.join(project_dir, rel_path)
           collect_deps(
             rest,
             project_dir,
@@ -339,7 +340,7 @@ fn resolve_git_dep(
 ) -> #(Dep, lock.LockedDep):
   let cache = git_cache_dir()
   let _ = shell.run("mkdir -p " <> cache)
-  let dest = files.join(cache, name)
+  let dest = path.join(cache, name)
   let pinned_rev = lock.find_rev(locked, name)
   let cached_rev = lock.read_cached_rev(dest)
   case string.is_empty(pinned_rev):
@@ -461,7 +462,7 @@ fn origin_url(repo_path: String) -> String:
   )
 
 fn git_cache_dir() -> String:
-  files.join(files.join(shell.getenv("HOME"), ".donna"), "packages")
+  path.join(path.join(shell.getenv("HOME"), ".donna"), "packages")
 
 fn head_sha(repo_path: String) -> String:
   string.trim(shell.output("git", ["-C", repo_path, "rev-parse", "HEAD"]))

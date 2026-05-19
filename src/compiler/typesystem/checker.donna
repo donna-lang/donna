@@ -8,7 +8,6 @@ import compiler/typesystem/typed_ast
 import compiler/typesystem/env
 import compiler/parser/ast
 import errors/error
-import utilities/location
 import donna/result
 import donna/list
 import donna/string

@@ -94,7 +94,7 @@ pub fn generate_runner_includes_failed_summary_test() -> String:
   let src = tester.generate_runner(mods)
   should.all([
     should.contains_string(src, "fn print_failures(failures: List(String)) -> Nil:"),
-    should.contains_string(src, "echo \"\\x1b[31mFailures:\\x1b[0m\""),
+    should.contains_string(src, "io.println(\"\\x1b[31mFailures:\\x1b[0m\")"),
     should.contains_string(src, "print_failure_names(reverse_strings(failures, []))")
   ])
 

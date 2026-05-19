@@ -6,7 +6,6 @@ import utilities/colors
 import utilities/location
 import donna/string
 import donna/int
-import donna/list
 
 /// Render a compiler error with source context.
 pub fn render_error(e: error.DonnaError, src: String) -> String:

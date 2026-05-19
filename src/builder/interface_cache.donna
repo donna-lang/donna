@@ -5,6 +5,7 @@
 import compiler/typesystem/types
 import compiler/typesystem/typed_ast
 import donna/files
+import donna/path
 import donna/int
 import donna/list
 import donna/option
@@ -12,7 +13,7 @@ import donna/string
 
 /// Return the artifact path used for a cached module interface.
 pub fn path_for(ssa_path: String) -> String:
-  files.drop_extension(ssa_path) <> ".iface"
+  path.drop_extension(ssa_path) <> ".iface"
 
 /// Write a module interface cache file.
 ///

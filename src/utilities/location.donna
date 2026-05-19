@@ -71,7 +71,7 @@ pub fn merge(a: Span, b: Span) -> Span:
   Span(span_file(a), span_start(a), span_end(b))
 
 /// Compute a line and column position for a byte offset in source text.
-pub fn position_at(src: String, offset: Int, file: String) -> Position:
+pub fn position_at(src: String, offset: Int, _file: String) -> Position:
   scan_pos(src, 0, 1, 1, offset)
 
 fn scan_pos(

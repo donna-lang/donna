@@ -4,6 +4,22 @@ All notable changes to `donna` will be documented in this file.
 
 ## Unreleased
 
+## [0.2.1] — 2026-05-19
+
+### Changed
+
+- All type variants in `ast.donna` now use labeled fields (`is_pub`, `is_extern`, `is_opaque`, etc.) while keeping positional pattern matching working.
+- Updated `donna_stdlib` dependency to v0.3.0 with `io`/`path` modules.
+- `pipeline.donna` uses `path.join`/`basename`/`drop_extension` (moved from `files` in stdlib v0.3.0).
+- Replaced all `echo` built-in calls with `io.print`/`io.println` across the codebase; `echo` is now a debug-only option.
+- All `io.print` calls in `logger.donna` and `donna.donna` changed to `io.println` for proper newline-separated CLI output.
+- Test runner template now uses `io.println` (maps to `puts`) with concatenation inside the call so test names and durations appear in output.
+
+### Fixed
+
+- Removed unused imports, prefixed unused parameters with `_`, and prefixed unused functions with `_` throughout.
+- Test runner no longer drops test names and durations (concatenation was dead code outside the `println` call).
+- `tester_test` expected template updated to match `io.println` output.
 
 ## [0.2.0] — 2026-05-18
 

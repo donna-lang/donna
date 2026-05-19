@@ -4,7 +4,6 @@
 
 import compiler/lexer/token
 import utilities/location
-import errors/error
 
 /// Result wrapper returned by parser helpers.
 pub type ParseResult(a):

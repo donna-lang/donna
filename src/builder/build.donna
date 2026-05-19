@@ -4,37 +4,36 @@
 //// package builds, but this module remains useful for focused build tasks.
 
 import compiler/codegen/codegen
-import compiler/typesystem/typed_ast
 import donna/files
+import donna/path
 import donna/shell
-import donna/string
 import builder/pipeline
 
 /// Return the SSA artifact path for a module name inside a build directory.
 pub fn ssa_path(dir: String, name: String) -> String:
-  files.join(dir, name <> ".ssa")
+  path.join(dir, name <> ".ssa")
 
 /// Return the assembly artifact path for a module name inside a build directory.
 pub fn asm_path(dir: String, name: String) -> String:
-  files.join(dir, name <> ".s")
+  path.join(dir, name <> ".s")
 
 /// Return the executable path for a project name inside a build directory.
 pub fn bin_path(dir: String, name: String) -> String:
-  files.join(dir, name)
+  path.join(dir, name)
 
 /// Generate QBE SSA for a typed module, run QBE, then link the resulting executable.
 ///
 /// This helper returns `"ok"` on success or a compact error string when either
 /// QBE or the C compiler fails.
 pub fn build(
-  name: String,
+  _name: String,
   ssa_path_val: String,
   out_path: String,
   typed_module: typed_ast.TypedModule
 ) -> String:
   let ir = codegen.generate(typed_module)
   let _ = files.write(ssa_path_val, ir)
-  let s_path = files.drop_extension(ssa_path_val) <> ".s"
+  let s_path = path.drop_extension(ssa_path_val) <> ".s"
   let qbe_status = shell.exec("qbe", ["-o", s_path, ssa_path_val])
   case qbe_status == 0:
     False ->

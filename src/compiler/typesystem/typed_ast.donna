@@ -3,7 +3,6 @@
 //// importing modules.
 
 import compiler/typesystem/types
-import donna/option
 
 /// Public bindings and constructor metadata exported by a module.
 pub type ModuleInterface:

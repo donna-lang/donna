@@ -3,6 +3,7 @@
 //// application projects into `build/bin/`.
 
 import donna/files
+import donna/path
 import donna/list
 import donna/string
 import donna/shell
@@ -12,8 +13,6 @@ import utilities/logger
 import builder/scanner
 import builder/pipeline
 import builder/dependencies
-import compiler/typesystem/typed_ast
-import compiler/typesystem/types
 import donna/time
 
 /// Result of building a project and whether it produced an application binary.
@@ -93,7 +92,7 @@ fn build_project_target(
   let _ = files.mkdir(target_root)
   let _ = files.mkdir(bin_dir)
   let _ = files.mkdir(artifacts_dir)
-  let toml_path = files.join(dir, "donna.toml")
+  let toml_path = path.join(dir, "donna.toml")
   case dependencies.resolve_deps_checked(toml_path, dir):
     result.Error(e) -> BuildFailed(e)
     result.Ok(all_deps) ->
@@ -115,7 +114,7 @@ fn build_project_target(
             result.Ok(#(src_ifaces, src_ssa, _)) ->
               case has_public_main(src_ifaces):
                 False ->
-                  let out_path = files.join(bin_dir, scanner.project_name(project))
+                  let out_path = path.join(bin_dir, scanner.project_name(project))
                   let _ = files.delete(out_path)
                   let _ = logger.ok("", time.now_us() - t0)
                   BuildOk(False)
@@ -134,7 +133,7 @@ fn build_project_target(
                                 scanner.project_name(project),
                                 qbe_target
                               )
-                              let out_path = files.join(bin_dir, name)
+                              let out_path = path.join(bin_dir, name)
                               let link_args = list.append(
                                 s_files,
                                 list.append(
@@ -170,9 +169,9 @@ fn target_root_dir(
   case string.equal(mode, "release"):
     False -> scanner.project_dev_dir(project)
     True ->
-      files.join(
-        files.join(
-          files.join(scanner.project_build_dir(project), "release"),
+      path.join(
+        path.join(
+          path.join(scanner.project_build_dir(project), "release"),
           "target"
         ),
         release_target_dir(qbe_target)
@@ -185,7 +184,7 @@ fn bin_dir_for_mode(
 ) -> String:
   case string.equal(mode, "release"):
     False -> scanner.project_bin_dir(project)
-    True -> files.join(target_root_dir(project, mode, qbe_target), "bin")
+    True -> path.join(target_root_dir(project, mode, qbe_target), "bin")
 
 fn artifacts_dir_for_mode(
   project: scanner.Project,
@@ -194,7 +193,7 @@ fn artifacts_dir_for_mode(
 ) -> String:
   case string.equal(mode, "release"):
     False -> scanner.project_dev_artifacts_dir(project)
-    True -> files.join(target_root_dir(project, mode, qbe_target), "artifacts")
+    True -> path.join(target_root_dir(project, mode, qbe_target), "artifacts")
 
 fn deps_build_dir_for_mode(
   project: scanner.Project,
@@ -209,8 +208,8 @@ fn mkdir_release_parents(project: scanner.Project, mode: String) -> Int:
   case string.equal(mode, "release"):
     False -> 0
     True ->
-      let release_dir = files.join(scanner.project_build_dir(project), "release")
-      let target_dir = files.join(release_dir, "target")
+      let release_dir = path.join(scanner.project_build_dir(project), "release")
+      let target_dir = path.join(release_dir, "target")
       let _ = files.mkdir(release_dir)
       files.mkdir(target_dir)
 
@@ -281,9 +280,9 @@ fn compile_deps(
   case deps:
     [] -> result.Ok(#(iface_acc, ssa_acc, obj_acc, False))
     [dep, ..rest] ->
-      let pkg_dir = files.join(files.join(build_dir, "packages"), dependencies.dep_name(dep))
-      let art_dir = files.join(pkg_dir, "artifacts")
-      let _ = files.mkdir(files.join(build_dir, "packages"))
+      let pkg_dir = path.join(path.join(build_dir, "packages"), dependencies.dep_name(dep))
+      let art_dir = path.join(pkg_dir, "artifacts")
+      let _ = files.mkdir(path.join(build_dir, "packages"))
       let _ = files.mkdir(pkg_dir)
       let _ = files.mkdir(art_dir)
       let src_dir = dependencies.dep_src_dir(dep)

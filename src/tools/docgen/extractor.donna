@@ -4,12 +4,10 @@
 
 import compiler/lexer/lexer
 import compiler/parser/parser
-import compiler/parser/ast
 import tools/fmt/formatter
 import utilities/location
 import donna/string
 import donna/list
-import donna/option
 
 /// Documented constructor extracted from a type declaration.
 pub type DocCtor:

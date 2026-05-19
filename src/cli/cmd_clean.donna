@@ -2,6 +2,7 @@
 //// Removes generated build outputs and optional generated project files.
 
 import donna/files
+import donna/path
 import donna/shell
 import utilities/colors
 import utilities/logger
@@ -19,8 +20,8 @@ pub fn run(args: List(#(String, String))) -> String:
       let clean_docs = clean_all || has_flag(args, "docs")
       let clean_lock = clean_all || has_flag(args, "lock")
       let build_dir = scanner.project_build_dir(project)
-      let docs_dir = files.join(dir, "docs")
-      let lock_path = files.join(dir, "donna.lock")
+      let docs_dir = path.join(dir, "docs")
+      let lock_path = path.join(dir, "donna.lock")
       let t0 = time.now_us()
       let removed_build = clean_path(build_dir)
       let removed_docs = case clean_docs:

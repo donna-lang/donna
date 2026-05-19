@@ -1,6 +1,5 @@
 //// Maps compiler diagnostics to user-facing titles, labels, and repair hints.
 
-import errors/error
 import donna/int
 
 /// Convert an error into a title, source label, and repair hint.
@@ -205,4 +204,10 @@ pub fn warning_message(w: error.DonnaWarning) -> #(String, String, String):
         "unimplemented placeholder",
         "`todo` will abort at runtime",
         "replace `todo` with a real implementation before shipping"
+      )
+    error.WarnDebugEcho(_) ->
+      #(
+        "debug-only echo",
+        "`echo` is intended for debug output",
+        "use `io.print` or `io.println` for user-facing text; keep `echo` for temporary debugging"
       )

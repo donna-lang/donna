@@ -2,7 +2,6 @@
 //// This module routes parsed argv values to subcommands, handles global help
 //// and version flags, and determines the process exit code for CLI output.
 
-import argparse
 import cli/help
 import cli/cmd_new
 import cli/cmd_build

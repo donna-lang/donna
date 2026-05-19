@@ -2,11 +2,9 @@
 //// Defines concrete types, type schemes, type errors, typed expressions, and
 //// helpers for comparing and displaying types.
 
-import compiler/parser/ast
 import donna/list
 import donna/string
 import donna/int
-import donna/option
 
 /// Typechecker representation of Donna types.
 pub type Type:

@@ -3,7 +3,6 @@
 //// recovers from some declaration errors, and returns a full AST module.
 
 import compiler/lexer/token
-import utilities/location
 import errors/error
 import compiler/parser/ast
 import compiler/parser/parse_result

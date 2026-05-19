@@ -3,8 +3,8 @@
 //// projects are rejected with a clear missing-main message.
 
 import donna/files
+import donna/path
 import donna/shell
-import donna/string
 import utilities/colors
 import builder/scanner
 import cli/cmd_build
@@ -20,7 +20,7 @@ pub fn run(args: List(#(String, String))) -> String:
         cmd_build.BuildFailed(msg) -> msg
         cmd_build.BuildOk(has_main) ->
           let name = scanner.project_name(project)
-          let bin_path = files.join(scanner.project_bin_dir(project), name)
+          let bin_path = path.join(scanner.project_bin_dir(project), name)
           case has_main:
             False ->
               colors.red("error") <> ": cannot run library project" <> "\n" <> colors.dim("  hint: add pub fn main() to create an application entry point")

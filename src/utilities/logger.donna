@@ -5,30 +5,31 @@
 import utilities/colors
 import donna/int
 import donna/string
+import donna/io
 
 /// Print a compile step line.
 pub fn step(module_name: String) -> Nil:
-  echo action("Compiling") <> module_name
+  io.println(action("Compiling") <> module_name)
 
 /// Print a dependency fetch line.
 pub fn fetch(name: String, url: String) -> Nil:
-  echo action("Fetching") <> name <> colors.dim("  " <> url)
+  io.println(action("Fetching") <> name <> colors.dim("  " <> url))
 
 /// Print a compiler success line with a microsecond-resolution elapsed time.
-pub fn ok(module_name: String, elapsed_us: Int) -> Nil:
-  echo action("Compiled") <> "in " <> colors.dim(format_duration(elapsed_us))
+pub fn ok(_module_name: String, elapsed_us: Int) -> Nil:
+  io.println(action("Compiled") <> "in " <> colors.dim(format_duration(elapsed_us)))
 
 /// Print a formatting step line.
 pub fn formatting(name: String) -> Nil:
-  echo action("Formatting") <> name
+  io.println(action("Formatting") <> name)
 
 /// Print a formatter success line with a microsecond-resolution elapsed time.
 pub fn fmt_ok(elapsed_us: Int) -> Nil:
-  echo action("Formatted") <> "in " <> colors.dim(format_duration(elapsed_us))
+  io.println(action("Formatted") <> "in " <> colors.dim(format_duration(elapsed_us)))
 
 /// Print a documentation generation success line with elapsed time.
 pub fn docs_ok(elapsed_us: Int) -> Nil:
-  echo action("Generated") <> "in " <> colors.dim(format_duration(elapsed_us))
+  io.println(action("Generated") <> "in " <> colors.dim(format_duration(elapsed_us)))
 
 /// Format a documentation output line using the aligned action label.
 pub fn docs_output(path: String) -> String:
@@ -40,23 +41,23 @@ pub fn format_summary(message: String) -> String:
 
 /// Print the test runner start line using the aligned action label.
 pub fn running_tests() -> Nil:
-  echo action("Running") <> colors.dim("tests...")
+  io.println(action("Running") <> colors.dim("tests..."))
 
 /// Print a clean step line.
 pub fn cleaning(path: String) -> Nil:
-  echo action("Cleaning") <> colors.path(path)
+  io.println(action("Cleaning") <> colors.path(path))
 
 /// Print a clean success line with elapsed time.
 pub fn clean_ok(elapsed_us: Int) -> Nil:
-  echo action("Cleaned") <> "in " <> colors.dim(format_duration(elapsed_us))
+  io.println(action("Cleaned") <> "in " <> colors.dim(format_duration(elapsed_us)))
 
 /// Print a check step line.
 pub fn checking(module_name: String) -> Nil:
-  echo action("Checking") <> module_name
+  io.println(action("Checking") <> module_name)
 
 /// Print a check success line with elapsed time.
 pub fn check_ok(elapsed_us: Int) -> Nil:
-  echo action("Checked") <> "in " <> colors.dim(format_duration(elapsed_us))
+  io.println(action("Checked") <> "in " <> colors.dim(format_duration(elapsed_us)))
 
 /// Format a check summary line using the same aligned action label.
 pub fn check_success(message: String) -> String:
@@ -64,34 +65,34 @@ pub fn check_success(message: String) -> String:
 
 /// Print a generic successful output line with elapsed time.
 pub fn success(label: String, path: String, elapsed_us: Int) -> Nil:
-  echo action(label) <> "→ " <> colors.path(path) <> colors.dim("  " <> format_duration(elapsed_us))
+  io.println(action(label) <> "→ " <> colors.path(path) <> colors.dim("  " <> format_duration(elapsed_us)))
 
 /// Print an error line.
 pub fn error(message: String) -> Nil:
-  echo colors.red("error") <> ": " <> message
+  io.println(colors.red("error") <> ": " <> message)
 
 /// Print a warning line.
 pub fn warn(message: String) -> Nil:
-  echo colors.yellow("warning") <> ": " <> message
+  io.println(colors.yellow("warning") <> ": " <> message)
 
 /// Print an indented hint line.
 pub fn hint(message: String) -> Nil:
-  echo colors.dim("  hint: " <> message)
+  io.println(colors.dim("  hint: " <> message))
 
 /// Print an indented informational line.
 pub fn info(message: String) -> Nil:
-  echo colors.dim("  " <> message)
+  io.println(colors.dim("  " <> message))
 
 /// Print an error and warning summary.
 pub fn summary(errors: Int, warnings: Int) -> Nil:
   case errors == 0:
     False ->
-      echo "Donna found " <> int.to_string(errors) <> " error(s) and " <> int.to_string(warnings) <> " warning(s)."
+      io.println("Donna found " <> int.to_string(errors) <> " error(s) and " <> int.to_string(warnings) <> " warning(s).")
     True ->
       case warnings == 0:
-        True -> echo ""
+        True -> io.println("")
         False ->
-          echo "Donna found " <> int.to_string(errors) <> " error(s) and " <> int.to_string(warnings) <> " warning(s)."
+          io.println("Donna found " <> int.to_string(errors) <> " error(s) and " <> int.to_string(warnings) <> " warning(s).")
 
 fn action(label: String) -> String:
   colors.orange("  " <> pad_left(label, 10) <> " ")

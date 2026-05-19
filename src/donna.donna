@@ -3,6 +3,7 @@
 import argparse
 import cli/cli
 import version
+import donna/io
 
 @external("c", "exit")
 fn process_exit(code: Int) -> Nil
@@ -11,5 +12,5 @@ fn process_exit(code: Int) -> Nil
 pub fn main() -> Nil:
   let args = argparse.from_argv()
   let text = cli.run(version.version, args)
-  echo text
+  io.println(text)
   process_exit(cli.exit_code_for_output(text))

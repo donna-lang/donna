@@ -4,6 +4,7 @@
 
 import utilities/colors
 import donna/files
+import donna/path
 import donna/string
 
 /// Run `donna new` and create a project scaffold.
@@ -19,7 +20,7 @@ pub fn run(args: List(#(String, String))) -> String:
           create_project(name)
 
 fn create_project(path: String) -> String:
-  let name = files.basename(path)
+  let name = path.basename(path)
   files.mkdir(path)
   files.mkdir(path <> "/src")
   files.mkdir(path <> "/test")

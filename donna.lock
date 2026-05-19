@@ -2,7 +2,7 @@
 
 [packages.donna]
 git = "https://github.com/donna-lang/donna_stdlib"
-rev = "8ce1745379cd7a620478e888bd4c47d005937abb"
+rev = "f870802a6a20fe0ca8917b7cb051d36ad8641f61"
 
 [packages.argparse]
 git = "https://github.com/donna-lang/argparse"
@@ -14,7 +14,7 @@ rev = "ebbfe9671c3b36dc364cf271c5e3534df20b709b"
 
 [packages.markdown]
 git = "https://github.com/NikolasSkyl/markdown"
-rev = "f8f9a50f3eb4ab7e0e88fa6660fa291efeb781ba"
+rev = "c18e110aa0c1162b3221e9603e0cd0500973d9a7"
 
 [packages.unittest]
 git = "https://github.com/donna-lang/unittest"

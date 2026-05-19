@@ -1,6 +1,5 @@
 //// Renders extracted Donna documentation and package metadata into the generated HTML docs site.
 
-import tools/docgen/extractor
 import tools/docgen/assets
 import builder/scanner
 import markdown/markdown

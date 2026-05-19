@@ -1,7 +1,5 @@
 //// Defines compiler diagnostic types and helpers for accessing their source spans.
 
-import utilities/location
-
 /// Structured compiler error with source location.
 pub type DonnaError:
   LexUnexpectedChar(ch: String, span: location.Span)
@@ -33,6 +31,7 @@ pub type DonnaWarning:
   WarnUnusedImport(name: String, span: location.Span)
   WarnUnreachableCode(span: location.Span)
   WarnTodo(span: location.Span)
+  WarnDebugEcho(span: location.Span)
 
 /// Return the source span attached to an error.
 pub fn error_span(e: DonnaError) -> location.Span:
@@ -67,3 +66,4 @@ pub fn warning_span(w: DonnaWarning) -> location.Span:
     WarnUnusedImport(_, s) -> s
     WarnUnreachableCode(s) -> s
     WarnTodo(s) -> s
+    WarnDebugEcho(s) -> s

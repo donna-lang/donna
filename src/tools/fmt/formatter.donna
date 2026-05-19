@@ -4,13 +4,10 @@
 
 import compiler/lexer/lexer
 import compiler/parser/parser
-import compiler/parser/ast
-import errors/error
 import errors/reporter
 import utilities/location
 import donna/string
 import donna/list
-import donna/option
 import donna/result
 
 /// Preferred formatter line width.

@@ -2,10 +2,10 @@
 //// Provides dependency-cache maintenance and lockfile refresh operations.
 
 import donna/files
+import donna/path
 import donna/list
 import donna/shell
 import donna/string
-import donna/result
 import utilities/colors
 import builder/dependencies
 import builder/lock
@@ -25,7 +25,7 @@ fn clean(args: List(#(String, String))) -> String:
   let cache = dependencies.cache_dir()
   let path = case string.is_empty(name):
     True -> cache
-    False -> files.join(cache, name)
+    False -> path.join(cache, name)
   case files.exists(path):
     False -> colors.dim("nothing to clean")
     True ->
@@ -35,17 +35,17 @@ fn clean(args: List(#(String, String))) -> String:
 fn update(args: List(#(String, String))) -> String:
   let name = second_positional(args)
   let dir = "."
-  let toml_path = files.join(dir, "donna.toml")
+  let toml_path = path.join(dir, "donna.toml")
   case files.exists(toml_path):
     False -> colors.red("error") <> ": donna.toml not found"
     True ->
-      let lock_path = files.join(dir, "donna.lock")
+      let lock_path = path.join(dir, "donna.lock")
       let cache = dependencies.cache_dir()
       let _ = case string.is_empty(name):
         True ->
           files.delete(lock_path)
         False ->
-          let _ = shell.exec("rm", ["-rf", files.join(cache, name)])
+          let _ = shell.exec("rm", ["-rf", path.join(cache, name)])
           lock.write(lock_path, lock.remove(lock.read(lock_path), name))
       case dependencies.resolve_all_checked(toml_path, dir):
         result.Error(e) -> e
@@ -54,9 +54,9 @@ fn update(args: List(#(String, String))) -> String:
             " " <> string.from_int(list.length(deps)) <> " dependencies"
           )
 
-fn tree(args: List(#(String, String))) -> String:
+fn tree(_args: List(#(String, String))) -> String:
   let dir = "."
-  let toml_path = files.join(dir, "donna.toml")
+  let toml_path = path.join(dir, "donna.toml")
   case dependencies.resolve_all_checked(toml_path, dir):
     result.Error(e) -> e
     result.Ok(deps) ->

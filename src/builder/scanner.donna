@@ -3,6 +3,7 @@
 //// by build, test, docs, clean, and run commands.
 
 import donna/files
+import donna/path
 import donna/string
 import donna/list
 import donna/option
@@ -23,7 +24,7 @@ pub type ProjectMeta:
 
 /// Scan a directory for `donna.toml` and return the project paths needed by commands.
 pub fn scan(dir: String) -> ScanResult:
-  let toml_path = files.join(dir, "donna.toml")
+  let toml_path = path.join(dir, "donna.toml")
   case files.exists(toml_path):
     False ->
       ScanErr(
@@ -43,7 +44,7 @@ pub fn scan(dir: String) -> ScanResult:
             False ->
               let name = parsetoml.unwrap_string(name_result)
               ScanOk(
-                Project(name, files.join(dir, "src"), files.join(dir, "build"))
+                Project(name, path.join(dir, "src"), path.join(dir, "build"))
               )
 
 /// Return the configured project name.
@@ -63,31 +64,31 @@ pub fn project_build_dir(p: Project) -> String:
 
 /// Return the directory where executable binaries are written.
 pub fn project_bin_dir(p: Project) -> String:
-  files.join(project_build_dir(p), "bin")
+  path.join(project_build_dir(p), "bin")
 
 /// Return the build directory used for dev-dependency artifacts.
 pub fn project_dev_dir(p: Project) -> String:
-  files.join(project_build_dir(p), "dev")
+  path.join(project_build_dir(p), "dev")
 
 /// Return the artifact directory used for dev-dependency compilation.
 pub fn project_dev_artifacts_dir(p: Project) -> String:
-  files.join(project_dev_dir(p), "artifacts")
+  path.join(project_dev_dir(p), "artifacts")
 
 /// Return the directory where fetched package dependencies are built.
 pub fn project_packages_dir(p: Project) -> String:
-  files.join(project_build_dir(p), "packages")
+  path.join(project_build_dir(p), "packages")
 
 /// Return the build directory for one dependency package.
 pub fn project_package_dir(p: Project, pkg_name: String) -> String:
-  files.join(project_packages_dir(p), pkg_name)
+  path.join(project_packages_dir(p), pkg_name)
 
 /// Return the artifact directory for one dependency package.
 pub fn project_package_artifacts_dir(p: Project, pkg_name: String) -> String:
-  files.join(project_package_dir(p, pkg_name), "artifacts")
+  path.join(project_package_dir(p, pkg_name), "artifacts")
 
 /// Return the build directory used for generated test runners and test binaries.
 pub fn project_test_dir(p: Project) -> String:
-  files.join(project_build_dir(p), "test")
+  path.join(project_build_dir(p), "test")
 
 /// Return the package name from project metadata.
 pub fn meta_name(m: ProjectMeta) -> String:
@@ -138,7 +139,7 @@ pub fn meta_links(m: ProjectMeta) -> List(#(String, String)):
 /// Missing or invalid metadata fields are returned as empty strings or lists so
 /// docs generation can continue for incomplete projects.
 pub fn scan_meta(dir: String) -> ProjectMeta:
-  let toml_path = files.join(dir, "donna.toml")
+  let toml_path = path.join(dir, "donna.toml")
   case files.exists(toml_path):
     False -> empty_meta()
     True ->

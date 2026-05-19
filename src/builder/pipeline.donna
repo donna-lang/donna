@@ -8,6 +8,7 @@ import compiler/parser/parser
 import compiler/typesystem/checker
 import compiler/typesystem/typed_ast
 import compiler/codegen/codegen
+import donna/path
 import builder/interface_cache
 import errors/reporter
 import errors/error
@@ -34,7 +35,7 @@ pub fn compile_module(
   force: Bool
 ) -> result.Result(#(typed_ast.ModuleInterface, String, Bool), String):
   let stem = mod_name_to_stem(mod_name)
-  let ssa_path = files.join(artifacts_dir, stem <> ".ssa")
+  let ssa_path = path.join(artifacts_dir, stem <> ".ssa")
   let iface_path = interface_cache.path_for(ssa_path)
   let ssa_cached = case force:
     True -> False
@@ -195,7 +196,7 @@ fn compile_loop(
   case paths:
     [] -> result.Ok(#(list.reverse(iface_acc), list.reverse(ssa_acc), dirty))
     [path, ..rest] ->
-      let stem = files.drop_extension(files.basename(path))
+      let stem = path.drop_extension(path.basename(path))
       let mod_name = case string.is_empty(mod_prefix):
         True -> stem
         False -> mod_prefix <> "/" <> stem
@@ -284,7 +285,7 @@ pub fn release_c_command(args: List(String)) -> String:
 /// An empty string means QBE failed. Callers should check `qbe_available()`
 /// before calling this function so missing QBE produces a clear user error.
 pub fn run_qbe(ssa_path: String) -> String:
-  let s_path = files.drop_extension(ssa_path) <> ".s"
+  let s_path = path.drop_extension(ssa_path) <> ".s"
   case file_is_current(ssa_path, s_path):
     True -> s_path
     False ->
@@ -300,7 +301,7 @@ pub fn run_qbe(ssa_path: String) -> String:
 /// Release builds use this to emit target-specific assembly into the release
 /// target directory.
 pub fn run_qbe_target(ssa_path: String, target: String) -> String:
-  let s_path = files.drop_extension(ssa_path) <> ".s"
+  let s_path = path.drop_extension(ssa_path) <> ".s"
   case file_is_current(ssa_path, s_path):
     True -> s_path
     False ->
@@ -419,7 +420,7 @@ pub fn compile_c_target(
 ///
 /// Projects without FFI return an empty object list.
 pub fn compile_ffi(dep_path: String, artifacts_dir: String) -> List(String):
-  let ffi_dir = files.join(dep_path, "ffi")
+  let ffi_dir = path.join(dep_path, "ffi")
   case files.is_dir(ffi_dir):
     False -> []
     True ->
@@ -431,7 +432,7 @@ pub fn compile_ffi_target(
   artifacts_dir: String,
   target: String
 ) -> List(String):
-  let ffi_dir = files.join(dep_path, "ffi")
+  let ffi_dir = path.join(dep_path, "ffi")
   case files.is_dir(ffi_dir):
     False -> []
     True ->
@@ -455,8 +456,8 @@ fn compile_c_files(
       case string.ends_with(name, ".c"):
         False -> compile_c_files(rest, ffi_dir, artifacts_dir, acc)
         True ->
-          let src = files.join(ffi_dir, name)
-          let obj = files.join(artifacts_dir, files.drop_extension(name) <> ".o")
+          let src = path.join(ffi_dir, name)
+          let obj = path.join(artifacts_dir, path.drop_extension(name) <> ".o")
           let objs = compile_c(src, obj)
           compile_c_files(rest, ffi_dir, artifacts_dir, list.append(objs, acc))
 
@@ -474,8 +475,8 @@ fn compile_c_files_target(
         False ->
           compile_c_files_target(rest, ffi_dir, artifacts_dir, target, acc)
         True ->
-          let src = files.join(ffi_dir, name)
-          let obj = files.join(artifacts_dir, files.drop_extension(name) <> ".o")
+          let src = path.join(ffi_dir, name)
+          let obj = path.join(artifacts_dir, path.drop_extension(name) <> ".o")
           let objs = compile_c_target(src, obj, target)
           compile_c_files_target(
             rest,
@@ -563,7 +564,7 @@ fn collect_donna(
     [] -> list.reverse(acc)
     [name, ..rest] ->
       case string.ends_with(name, ".donna"):
-        True -> collect_donna(rest, dir, [files.join(dir, name), ..acc])
+        True -> collect_donna(rest, dir, [path.join(dir, name), ..acc])
         False -> collect_donna(rest, dir, acc)
 
 fn collect_pairs_recursive(
@@ -575,10 +576,10 @@ fn collect_pairs_recursive(
   case entries:
     [] -> list.reverse(acc)
     [name, ..rest] ->
-      let full_path = files.join(dir, name)
+      let full_path = path.join(dir, name)
       case string.ends_with(name, ".donna"):
         True ->
-          let stem = files.drop_extension(name)
+          let stem = path.drop_extension(name)
           let mod_name = case string.is_empty(prefix):
             True -> stem
             False -> prefix <> "/" <> stem
