@@ -4,6 +4,9 @@ All notable changes to `donna` will be documented in this file.
 
 ## Unreleased
 
+## [0.2.2] — 2026-05-19
+- Fix a bug in doc generation 
+
 ## [0.2.1] — 2026-05-19
 
 ### Changed
