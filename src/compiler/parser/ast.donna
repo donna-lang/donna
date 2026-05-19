@@ -7,83 +7,136 @@ import donna/option
 
 /// A parsed Donna module.
 pub type Module:
-  Module(List(String), List(Import), List(Const), List(TypeDef), List(Function))
+  Module(
+    is_name: List(String),
+    is_imports: List(Import),
+    is_consts: List(Const),
+    is_types: List(TypeDef),
+    is_fns: List(Function)
+  )
 
 /// A top-level import with its module path, alias, and source span.
 pub type Import:
-  Import(List(String), String, location.Span)
+  Import(is_path: List(String), is_alias: String, is_span: location.Span)
 
 /// A top-level constant declaration.
 pub type Const:
-  Const(String, Bool, option.Option(TypeAnnotation), Expr, location.Span)
+  Const(
+    is_name: String,
+    is_pub: Bool,
+    is_annotation: option.Option(TypeAnnotation),
+    is_value: Expr,
+    is_span: location.Span
+  )
 
 /// A normal or external function declaration, or a section comment between declarations.
 pub type Function:
-  Function(String, Bool, List(Param), option.Option(TypeAnnotation), Expr, location.Span)
-  ExternalFn(String, Bool, List(Param), option.Option(TypeAnnotation), String, String, location.Span)
+  Function(
+    is_name: String,
+    is_pub: Bool,
+    is_params: List(Param),
+    is_ret: option.Option(TypeAnnotation),
+    is_body: Expr,
+    is_span: location.Span
+  )
+  ExternalFn(
+    is_name: String,
+    is_pub: Bool,
+    is_params: List(Param),
+    is_ret: option.Option(TypeAnnotation),
+    is_module: String,
+    is_symbol: String,
+    is_span: location.Span
+  )
 
 /// A function or lambda parameter.
 pub type Param:
-  Param(String, option.Option(TypeAnnotation), location.Span)
+  Param(
+    is_name: String,
+    is_annotation: option.Option(TypeAnnotation),
+    is_span: location.Span
+  )
 
 /// A top-level algebraic data type declaration.
 pub type TypeDef:
-  TypeDef(String, Bool, Bool, List(String), List(ConstructorDef), location.Span)
+  TypeDef(
+    is_name: String,
+    is_pub: Bool,
+    is_opaque: Bool,
+    is_params: List(String),
+    is_constructors: List(ConstructorDef),
+    is_span: location.Span
+  )
 
 /// A constructor inside a type declaration.
 pub type ConstructorDef:
-  ConstructorDef(String, List(String), List(TypeAnnotation), location.Span)
+  ConstructorDef(
+    is_name: String,
+    is_field_names: List(String),
+    is_field_types: List(TypeAnnotation),
+    is_span: location.Span
+  )
 
 /// A parsed type annotation.
 pub type TypeAnnotation:
-  TyName(String, List(TypeAnnotation), location.Span)
-  TyTuple(List(TypeAnnotation), location.Span)
-  TyFn(List(TypeAnnotation), TypeAnnotation, location.Span)
+  TyName(is_name: String, is_args: List(TypeAnnotation), is_span: location.Span)
+  TyTuple(is_types: List(TypeAnnotation), is_span: location.Span)
+  TyFn(is_args: List(TypeAnnotation), is_ret: TypeAnnotation, is_span: location.Span)
 
 /// A parsed expression.
 pub type Expr:
-  IntLit(String, location.Span)
-  FloatLit(String, location.Span)
-  StringLit(String, location.Span)
-  BoolLit(Bool, location.Span)
-  Var(String, location.Span)
-  FieldAccess(Expr, String, location.Span)
-  Tuple(List(Expr), location.Span)
-  EList(List(Expr), location.Span)
-  ListSpread(List(Expr), Expr, location.Span)
-  Call(Expr, List(Expr), location.Span)
-  BinOp(BinOpKind, Expr, Expr, location.Span)
-  UnaryOp(UnaryKind, Expr, location.Span)
-  Case(Expr, List(CaseClause), location.Span)
-  Block(List(Stmt), location.Span)
-  Pipe(Expr, Expr, location.Span)
-  Lambda(List(Param), Expr, location.Span)
-  Echo(Expr, location.Span)
-  Panic(Expr, location.Span)
-  Todo(location.Span)
+  IntLit(is_value: String, is_span: location.Span)
+  FloatLit(is_value: String, is_span: location.Span)
+  StringLit(is_value: String, is_span: location.Span)
+  BoolLit(is_value: Bool, is_span: location.Span)
+  Var(is_name: String, is_span: location.Span)
+  FieldAccess(is_object: Expr, is_field: String, is_span: location.Span)
+  Tuple(is_items: List(Expr), is_span: location.Span)
+  EList(is_items: List(Expr), is_span: location.Span)
+  ListSpread(is_items: List(Expr), is_spread: Expr, is_span: location.Span)
+  Call(is_callee: Expr, is_args: List(Expr), is_span: location.Span)
+  BinOp(is_kind: BinOpKind, is_left: Expr, is_right: Expr, is_span: location.Span)
+  UnaryOp(is_kind: UnaryKind, is_operand: Expr, is_span: location.Span)
+  Case(is_value: Expr, is_clauses: List(CaseClause), is_span: location.Span)
+  Block(is_stmts: List(Stmt), is_span: location.Span)
+  Pipe(is_left: Expr, is_right: Expr, is_span: location.Span)
+  Lambda(is_params: List(Param), is_body: Expr, is_span: location.Span)
+  Echo(is_value: Expr, is_span: location.Span)
+  Panic(is_value: Expr, is_span: location.Span)
+  Todo(is_span: location.Span)
 
 /// A statement inside an indented block.
 pub type Stmt:
-  LetStmt(String, option.Option(TypeAnnotation), Expr, location.Span)
-  LetPatStmt(Pattern, Expr, location.Span)
-  ExprStmt(Expr, location.Span)
+  LetStmt(
+    is_name: String,
+    is_annotation: option.Option(TypeAnnotation),
+    is_value: Expr,
+    is_span: location.Span
+  )
+  LetPatStmt(is_pattern: Pattern, is_value: Expr, is_span: location.Span)
+  ExprStmt(is_expr: Expr, is_span: location.Span)
 
 /// One `case` arm with pattern, optional guard, and body.
 pub type CaseClause:
-  CaseClause(Pattern, option.Option(Expr), Expr, location.Span)
+  CaseClause(
+    is_pattern: Pattern,
+    is_guard: option.Option(Expr),
+    is_body: Expr,
+    is_span: location.Span
+  )
 
 /// A pattern used by `case` or destructuring `let`.
 pub type Pattern:
-  PWild(location.Span)
-  PDiscard(String, location.Span)
-  PVar(String, location.Span)
-  PInt(String, location.Span)
-  PFloat(String, location.Span)
-  PString(String, location.Span)
-  PBool(Bool, location.Span)
-  PTuple(List(Pattern), location.Span)
-  PList(List(Pattern), option.Option(String), location.Span)
-  PCons(option.Option(String), String, List(Pattern), location.Span)
+  PWild(is_span: location.Span)
+  PDiscard(is_name: String, is_span: location.Span)
+  PVar(is_name: String, is_span: location.Span)
+  PInt(is_value: String, is_span: location.Span)
+  PFloat(is_value: String, is_span: location.Span)
+  PString(is_value: String, is_span: location.Span)
+  PBool(is_value: Bool, is_span: location.Span)
+  PTuple(is_patterns: List(Pattern), is_span: location.Span)
+  PList(is_patterns: List(Pattern), is_rest: option.Option(String), is_span: location.Span)
+  PCons(is_module: option.Option(String), is_name: String, is_args: List(Pattern), is_span: location.Span)
 
 /// Binary operators supported by Donna expressions.
 pub type BinOpKind:
