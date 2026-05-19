@@ -4,7 +4,9 @@
 
 import compiler/lexer/lexer
 import compiler/parser/parser
+import compiler/parser/ast
 import errors/reporter
+import donna/option
 import utilities/location
 import donna/string
 import donna/list
