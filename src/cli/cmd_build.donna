@@ -13,6 +13,7 @@ import utilities/logger
 import builder/scanner
 import builder/pipeline
 import builder/dependencies
+import compiler/typesystem/typed_ast
 import donna/time
 
 /// Result of building a project and whether it produced an application binary.

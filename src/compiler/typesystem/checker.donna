@@ -82,7 +82,7 @@ fn add_imports_to_env(
 
 fn add_iface_ctors_to_env(
   alias: String,
-  ctors: List(#(String, #(String, List(types.Type), Int))),
+  ctors: List(#(String, #(String, List(types.Type), Int, Bool))),
   e: env.Env
 ) -> env.Env:
   case ctors:
@@ -122,7 +122,7 @@ fn filter_imports_by_alias(
 
 fn iface_ctor_info(
   iface: typed_ast.ModuleInterface
-) -> List(#(String, #(String, List(types.Type), Int))):
+) -> List(#(String, #(String, List(types.Type), Int, Bool))):
   case iface:
     typed_ast.ModuleInterface(_, ctor_info) -> ctor_info
 
@@ -154,12 +154,12 @@ fn check_type_def(
   e: env.Env
 ) -> #(typed_ast.TypedTypeDef, env.Env):
   case td:
-    ast.TypeDef(name, is_pub, _, type_params, ctors, _) ->
+    ast.TypeDef(name, is_pub, is_opaque, type_params, ctors, _) ->
       let #(param_vars, e2) = collect_param_vars(type_params, [], e)
       let param_types = list.map(param_vars, pair_snd)
       let named_type = types.TNamedType(name, param_types)
-      let #(typed_ctors, e3) = check_ctors(ctors, named_type, name, param_vars, e2, 0, [])
-      #(typed_ast.TypedTypeDef(name, is_pub, typed_ctors), e3)
+      let #(typed_ctors, e3) = check_ctors(ctors, named_type, name, param_vars, e2, is_opaque, 0, [])
+      #(typed_ast.TypedTypeDef(name, is_pub, is_opaque, typed_ctors), e3)
 
 fn collect_param_vars(
   params: List(String),
@@ -182,6 +182,7 @@ fn check_ctors(
   type_name: String,
   param_vars: List(#(String, types.Type)),
   e: env.Env,
+  is_opaque: Bool,
   tag: Int,
   acc: List(typed_ast.TypedConstructor)
 ) -> #(List(typed_ast.TypedConstructor), env.Env):
@@ -197,13 +198,14 @@ fn check_ctors(
             True -> named_type
             False -> types.TFnType(field_types, named_type)
           let e2 = env.env_bind(e, ctor_name, ctor_type)
-          let e3 = env.env_add_ctor(e2, ctor_name, #(type_name, field_types, tag))
+          let e3 = env.env_add_ctor(e2, ctor_name, #(type_name, field_types, tag, is_opaque))
           check_ctors(
             rest,
             named_type,
             type_name,
             param_vars,
             e3,
+            is_opaque,
             tag + 1,
             [typed_ctor, ..acc]
           )
@@ -684,16 +686,19 @@ fn infer_clauses_loop(
     [clause, ..rest] ->
       case clause:
         ast.CaseClause(pattern, guard_opt, body, _) ->
-          let clause_env = bind_pattern_typed(pattern, subject_type, e)
-          case infer_guard(guard_opt, clause_env):
-            result.Error(err) -> result.Error(err)
-            result.Ok(typed_guard) ->
-              case infer_expr(body, clause_env):
+          let #(clause_env, pat_errs) = bind_pattern_typed(pattern, subject_type, e)
+          case pat_errs:
+            [first_err, .._] -> result.Error(first_err)
+            [] ->
+              case infer_guard(guard_opt, clause_env):
                 result.Error(err) -> result.Error(err)
-                result.Ok(#(typed_body, _)) ->
-                  let t = types.typed_expr_type(typed_body)
-                  let tc = types.TypedClause(pattern, typed_guard, typed_body, t)
-                  infer_clauses_loop(rest, e, subject_type, [tc, ..acc], t)
+                result.Ok(typed_guard) ->
+                  case infer_expr(body, clause_env):
+                    result.Error(err) -> result.Error(err)
+                    result.Ok(#(typed_body, _)) ->
+                      let t = types.typed_expr_type(typed_body)
+                      let tc = types.TypedClause(pattern, typed_guard, typed_body, t)
+                      infer_clauses_loop(rest, e, subject_type, [tc, ..acc], t)
 
 fn infer_guard(
   guard_opt: option.Option(ast.Expr),
@@ -738,8 +743,11 @@ fn check_stmt(
       case infer_expr(value, e):
         result.Error(err) -> result.Error(err)
         result.Ok(#(typed_val, _)) ->
-          let e2 = bind_pattern_typed(pattern, types.typed_expr_type(typed_val), e)
-          result.Ok(#(types.TStmtLetPat(pattern, typed_val), types.TNil, e2))
+          let #(e2, pat_errs) = bind_pattern_typed(pattern, types.typed_expr_type(typed_val), e)
+          case pat_errs:
+            [first_err, .._] -> result.Error(first_err)
+            [] ->
+              result.Ok(#(types.TStmtLetPat(pattern, typed_val), types.TNil, e2))
     ast.ExprStmt(expr, _) ->
       case infer_expr(expr, e):
         result.Error(err) -> result.Error(err)
@@ -775,68 +783,72 @@ fn bind_pattern_typed(
   pattern: ast.Pattern,
   expected: types.Type,
   e: env.Env
-) -> env.Env:
+) -> #(env.Env, List(error.DonnaError)):
   case pattern:
     ast.PVar(name, _) ->
-      env.env_bind(e, name, expected)
-    ast.PWild(_) -> e
-    ast.PDiscard(_, _) -> e
-    ast.PInt(_, _) -> e
-    ast.PFloat(_, _) -> e
-    ast.PString(_, _) -> e
-    ast.PBool(_, _) -> e
+      #(env.env_bind(e, name, expected), [])
+    ast.PWild(_) -> #(e, [])
+    ast.PDiscard(_, _) -> #(e, [])
+    ast.PInt(_, _) -> #(e, [])
+    ast.PFloat(_, _) -> #(e, [])
+    ast.PString(_, _) -> #(e, [])
+    ast.PBool(_, _) -> #(e, [])
     ast.PTuple(elems, _) ->
       case expected:
         types.TTupleType(elem_types) ->
           bind_pattern_typed_list(elems, elem_types, e)
-        _ -> bind_pattern_list(elems, e)
+        _ -> #(bind_pattern_list(elems, e), [])
     ast.PList(elems, rest_opt, _) ->
       let elem_type = case expected:
         types.TListType(t) -> t
         _ -> types.TTypeVar(env.env_next_var(e))
-      let e2 = bind_pattern_typed_repeated(elems, elem_type, e)
+      let #(e2, errs) = bind_pattern_typed_repeated(elems, elem_type, e)
       case rest_opt:
-        option.None -> e2
-        option.Some("_") -> e2
-        option.Some(name) -> env.env_bind(e2, name, types.TListType(elem_type))
-    ast.PCons(_, name, args, _) ->
-      case env.env_lookup_ctor(e, pattern_ctor_key(pattern)):
-        option.None -> bind_pattern_list(args, e)
-        option.Some(#(_, field_types, _)) ->
-          bind_pattern_typed_list(args, field_types, e)
-
-fn pattern_ctor_key(pattern: ast.Pattern) -> String:
-  case pattern:
-    ast.PCons(option.Some(module), name, _, _) -> module <> "." <> name
-    ast.PCons(option.None, name, _, _) -> name
-    _ -> ""
+        option.None -> #(e2, errs)
+        option.Some("_") -> #(e2, errs)
+        option.Some(name) -> #(env.env_bind(e2, name, types.TListType(elem_type)), errs)
+    ast.PCons(option.Some(module), name, args, span) ->
+      let key = module <> "." <> name
+      case env.env_lookup_ctor(e, key):
+        option.None ->
+          let e2 = bind_pattern_list(args, e)
+          #(e2, [error.TypeUndefinedConstructor(key, span)])
+        option.Some(#(_, field_types, _, is_opaque)) ->
+          case is_opaque:
+            True ->
+              let e2 = bind_pattern_list(args, e)
+              #(e2, [error.TypeOpaqueConstructor(key, span)])
+            False ->
+              bind_pattern_typed_list(args, field_types, e)
+    ast.PCons(option.None, _, args, _) ->
+      #(bind_pattern_list(args, e), [])
 
 fn bind_pattern_typed_list(
   patterns: List(ast.Pattern),
   expected: List(types.Type),
   e: env.Env
-) -> env.Env:
+) -> #(env.Env, List(error.DonnaError)):
   case patterns:
-    [] -> e
+    [] -> #(e, [])
     [p, ..prest] ->
       case expected:
-        [] -> bind_pattern_list(patterns, e)
+        [] -> #(bind_pattern_list(patterns, e), [])
         [t, ..trest] ->
-          bind_pattern_typed_list(prest, trest, bind_pattern_typed(p, t, e))
+          let #(e2, errs1) = bind_pattern_typed(p, t, e)
+          let #(e3, errs2) = bind_pattern_typed_list(prest, trest, e2)
+          #(e3, list.append(errs1, errs2))
 
 fn bind_pattern_typed_repeated(
   patterns: List(ast.Pattern),
   item_type: types.Type,
   e: env.Env
-) -> env.Env:
+) -> #(env.Env, List(error.DonnaError)):
   case patterns:
-    [] -> e
+    [] -> #(e, [])
     [p, ..rest] ->
-      bind_pattern_typed_repeated(
-        rest,
-        item_type,
-        bind_pattern_typed(p, item_type, e)
-      )
+      let #(e2, errs1) = bind_pattern_typed(p, item_type, e)
+      let #(e3, errs2) = bind_pattern_typed_repeated(rest, item_type, e2)
+      #(e3, list.append(errs1, errs2))
 
 fn bind_pattern_list(patterns: List(ast.Pattern), e: env.Env) -> env.Env:
   case patterns:
@@ -1184,8 +1196,8 @@ fn pub_type_defs_to_ctor_bindings(
     [] -> []
     [td, ..rest] ->
       case td:
-        typed_ast.TypedTypeDef(type_name, is_pub, ctors) ->
-          case is_pub:
+        typed_ast.TypedTypeDef(type_name, is_pub, is_opaque, ctors) ->
+          case is_pub && !is_opaque:
             False -> pub_type_defs_to_ctor_bindings(rest)
             True ->
               let named_type = types.TNamedType(type_name, [])
@@ -1208,25 +1220,26 @@ fn ctors_to_bindings(
 
 fn pub_type_defs_to_ctor_info(
   type_defs: List(typed_ast.TypedTypeDef)
-) -> List(#(String, #(String, List(types.Type), Int))):
+) -> List(#(String, #(String, List(types.Type), Int, Bool))):
   case type_defs:
     [] -> []
     [td, ..rest] ->
       case td:
-        typed_ast.TypedTypeDef(type_name, is_pub, ctors) ->
+        typed_ast.TypedTypeDef(type_name, is_pub, is_opaque, ctors) ->
           case is_pub:
             False -> pub_type_defs_to_ctor_info(rest)
             True ->
-              let info = ctors_to_info(ctors, type_name)
+              let info = ctors_to_info(ctors, type_name, is_opaque)
               list.append(info, pub_type_defs_to_ctor_info(rest))
 
 fn ctors_to_info(
   ctors: List(typed_ast.TypedConstructor),
-  type_name: String
-) -> List(#(String, #(String, List(types.Type), Int))):
+  type_name: String,
+  is_opaque: Bool
+) -> List(#(String, #(String, List(types.Type), Int, Bool))):
   case ctors:
     [] -> []
     [c, ..rest] ->
       case c:
         typed_ast.TypedConstructor(name, fields, tag) ->
-          [#(name, #(type_name, fields, tag)), ..ctors_to_info(rest, type_name)]
+          [#(name, #(type_name, fields, tag, is_opaque)), ..ctors_to_info(rest, type_name, is_opaque)]

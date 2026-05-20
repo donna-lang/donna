@@ -47,7 +47,7 @@ fn typed_type_defs(m: typed_ast.TypedModule) -> List(typed_ast.TypedTypeDef):
   case m:
     typed_ast.TypedModule(_, _, _, tds, _) -> tds
 
-fn typed_ctor_info(m: typed_ast.TypedModule) -> List(#(String, #(String, List(types.Type), Int))):
+fn typed_ctor_info(m: typed_ast.TypedModule) -> List(#(String, #(String, List(types.Type), Int, Bool))):
   case m:
     typed_ast.TypedModule(_, _, _, _, info) -> info
 
@@ -89,11 +89,11 @@ fn const_type_of(c: typed_ast.TypedConstant) -> types.Type:
 
 fn typedef_name(td: typed_ast.TypedTypeDef) -> String:
   case td:
-    typed_ast.TypedTypeDef(name, _, _) -> name
+    typed_ast.TypedTypeDef(name, _, _, _) -> name
 
 fn typedef_ctors(td: typed_ast.TypedTypeDef) -> List(typed_ast.TypedConstructor):
   case td:
-    typed_ast.TypedTypeDef(_, _, ctors) -> ctors
+    typed_ast.TypedTypeDef(_, _, _, ctors) -> ctors
 
 fn ctor_name_of(c: typed_ast.TypedConstructor) -> String:
   case c:
@@ -111,7 +111,7 @@ fn iface_bindings_of(iface: typed_ast.ModuleInterface) -> List(#(String, types.T
   case iface:
     typed_ast.ModuleInterface(bs, _) -> bs
 
-fn iface_ctor_info_of(iface: typed_ast.ModuleInterface) -> List(#(String, #(String, List(types.Type), Int))):
+fn iface_ctor_info_of(iface: typed_ast.ModuleInterface) -> List(#(String, #(String, List(types.Type), Int, Bool))):
   case iface:
     typed_ast.ModuleInterface(_, ci) -> ci
 
@@ -125,6 +125,31 @@ fn binding_type(bs: List(#(String, types.Type)), name: String) -> option.Option(
       case string.equal(k, name):
         True  -> option.Some(v)
         False -> binding_type(rest, name)
+
+fn error_name(e: error.DonnaError) -> String:
+  case e:
+    error.LexUnexpectedChar(_, _) -> "LexUnexpectedChar"
+    error.LexUnterminatedString(_) -> "LexUnterminatedString"
+    error.LexInvalidEscape(_, _) -> "LexInvalidEscape"
+    error.LexInvalidHexEscape(_) -> "LexInvalidHexEscape"
+    error.LexInvalidUnicodeEscape(_) -> "LexInvalidUnicodeEscape"
+    error.LexEmptyNumberLiteral(_, _) -> "LexEmptyNumberLiteral"
+    error.ParseUnexpectedToken(_, _, _) -> "ParseUnexpectedToken"
+    error.ParseUnexpectedEof(_, _) -> "ParseUnexpectedEof"
+    error.ParseInvalidIndent(_) -> "ParseInvalidIndent"
+    error.ParseMissingColon(_) -> "ParseMissingColon"
+    error.ParseMissingArrow(_) -> "ParseMissingArrow"
+    error.ParseUppercaseFnName(_, _) -> "ParseUppercaseFnName"
+    error.ParseLowercaseTypeName(_, _) -> "ParseLowercaseTypeName"
+    error.TypeMismatch(_, _, _) -> "TypeMismatch"
+    error.TypeUndefinedVar(_, _) -> "TypeUndefinedVar"
+    error.TypeUndefinedModule(_, _) -> "TypeUndefinedModule"
+    error.TypeWrongArgCount(_, _, _) -> "TypeWrongArgCount"
+    error.TypeNotAFunction(_, _) -> "TypeNotAFunction"
+    error.TypeDuplicateFunction(_, _) -> "TypeDuplicateFunction"
+    error.TypeInvalidReturn(_, _, _) -> "TypeInvalidReturn"
+    error.TypeUndefinedConstructor(_, _) -> "TypeUndefinedConstructor"
+    error.TypeOpaqueConstructor(_, _) -> "TypeOpaqueConstructor"
 
 // ── Module-level checks ───────────────────────────────────────────────────────
 
@@ -879,7 +904,68 @@ pub fn check_constructor_wrong_arg_count_error_test() -> String:
         _ -> should.fail("expected constructor argument count error")
     result.Ok(_) -> should.fail("should have rejected missing constructor argument")
 
-// ── Generic functions ─────────────────────────────────────────────────────────
+// ── Constructor pattern validation ─────────────────────────────────────────
+
+pub fn check_local_ctor_unqualified_pattern_ok_test() -> String:
+  let src = "type Color:\n  Red\n  Green\n  Blue\nfn f(c: Color) -> Int:\n  case c:\n    Red -> 0\n    Green -> 1\n    Blue -> 2"
+  case check_src(src):
+    result.Error(errs) ->
+      case errs:
+        [e, ..] ->
+          should.fail("expected Ok, got: " <> error_name(e))
+        [] -> should.fail("expected Ok, got empty errors")
+    result.Ok(m) ->
+      case typed_fns(m):
+        [f, ..] -> type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("Int")
+        [] -> should.fail("no functions")
+
+pub fn check_undefined_qualified_ctor_error_test() -> String:
+  let src = "type Color:\n  Red\n  Green\nfn f(c: Color) -> Int:\n  case c:\n    test.Red -> 0\n    _ -> 1"
+  case check_src(src):
+    result.Error(errs) ->
+      case errs:
+        [error.TypeUndefinedConstructor(name, _), ..] ->
+          name |> should.equal_string("test.Red")
+        [e, ..] ->
+          should.fail("expected TypeUndefinedConstructor, got: " <> error_name(e))
+        [] -> should.fail("expected TypeUndefinedConstructor, got empty errors")
+    result.Ok(_) -> should.fail("should have rejected qualified constructor without import")
+
+pub fn check_undefined_qualified_multi_ctor_error_test() -> String:
+  let src = "type Color:\n  Red\n  Green\nfn f(c: Color) -> Int:\n  case c:\n    test.Red -> 0\n    test.Green -> 1\n    _ -> 2"
+  case check_src(src):
+    result.Error(errs) ->
+      case errs:
+        [error.TypeUndefinedConstructor("test.Red", _), ..] -> ""
+        [e, ..] ->
+          should.fail("expected TypeUndefinedConstructor(test.Red), got: " <> error_name(e))
+        [] -> should.fail("expected TypeUndefinedConstructor, got empty errors")
+    result.Ok(_) -> should.fail("should have rejected qualified constructors without import")
+
+// ── Opaque types ───────────────────────────────────────────────────────────
+
+pub fn check_opaque_type_parses_and_checks_test() -> String:
+  let src = "opaque type Secret:\n  Hidden\nfn f(s: Secret) -> Secret:\n  s"
+  case check_src(src):
+    result.Error(errs) ->
+      case errs:
+        [e, ..] ->
+          should.fail("expected Ok, got: " <> error_name(e))
+        [] -> should.fail("expected Ok, got empty errors")
+    result.Ok(m) ->
+      case typed_type_defs(m):
+        [td, ..] ->
+          typedef_name(td) |> should.equal_string("Secret")
+        [] -> should.fail("no type defs")
+
+pub fn check_opaque_pub_type_interface_test() -> String:
+  let src = "pub opaque type Token:\n  Bearer(String)\nfn f() -> Token:\n  Bearer(\"abc\")"
+  case check_src(src):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let iface = checker.extract_interface(m)
+      let ctors = iface_ctor_info_of(iface)
+      list.length(ctors) |> should.equal_int(1)
 
 pub fn check_generic_identity_ret_type_test() -> String:
   case check_src("fn identity(x: a) -> a:\n  x"):
@@ -937,3 +1023,38 @@ pub fn check_generic_call_list_instantiates_test() -> String:
         [_, f, ..] ->
           type_str(types.typed_expr_type(fn_body(f))) |> should.equal_string("List(Int)")
         _ -> should.fail("expected two functions")
+
+fn check_src_with_imports(
+  src: String,
+  imports: List(#(String, typed_ast.ModuleInterface))
+) -> result.Result(typed_ast.TypedModule, List(error.DonnaError)):
+  case lexer.lex(src, "test"):
+    lexer.LexErrors(errs) ->
+      result.Error(errs)
+    lexer.LexOk(toks) ->
+      case parser.parse(toks):
+        parser.ParseErrors(errs) ->
+          result.Error(errs)
+        parser.ParseOk(m) ->
+          checker.check_module_with_imports(m, "test", imports)
+
+pub fn check_opaque_ctor_rejected_from_other_module_test() -> String:
+  let opaque_src = "pub opaque type Token:\n  Bearer(String)"
+  let iface = case check_src(opaque_src):
+    result.Error(errs) ->
+      case errs:
+        [e, ..] -> should.fail("expected Ok, got: " <> error_name(e))
+        [] -> should.fail("expected Ok, got empty errors")
+    result.Ok(m) -> checker.extract_interface(m)
+  let import_src = "import test\nfn f(t: test.Token) -> Int:\n  case t:\n    test.Bearer(s) -> 0"
+  case check_src_with_imports(import_src, [#("test", iface)]):
+    result.Error(errs) ->
+      case errs:
+        [error.TypeOpaqueConstructor(name, _), ..] ->
+          name |> should.equal_string("test.Bearer")
+        [e, ..] ->
+          should.fail("expected TypeOpaqueConstructor, got: " <> error_name(e))
+        [] ->
+          should.fail("expected TypeOpaqueConstructor, got empty errors")
+    result.Ok(_) ->
+      should.fail("should have rejected opaque constructor from other module")

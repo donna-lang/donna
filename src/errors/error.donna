@@ -22,7 +22,9 @@ pub type DonnaError:
   TypeNotAFunction(ty: String, span: location.Span)
   TypeDuplicateFunction(name: String, span: location.Span)
   TypeInvalidReturn(expected: String, found: String, span: location.Span)
-
+  TypeUndefinedConstructor(name: String, span: location.Span)
+  TypeOpaqueConstructor(name: String, span: location.Span)
+ 
 /// Structured non-fatal compiler warning with source location.
 pub type DonnaWarning:
   WarnUnusedVariable(name: String, span: location.Span)
@@ -56,7 +58,9 @@ pub fn error_span(e: DonnaError) -> location.Span:
     TypeNotAFunction(_, s) -> s
     TypeDuplicateFunction(_, s) -> s
     TypeInvalidReturn(_, _, s) -> s
-
+    TypeUndefinedConstructor(_, s) -> s
+    TypeOpaqueConstructor(_, s) -> s
+ 
 /// Return the source span attached to a warning.
 pub fn warning_span(w: DonnaWarning) -> location.Span:
   case w:

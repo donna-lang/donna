@@ -5,6 +5,7 @@
 import donna/list
 import donna/string
 import donna/int
+import donna/option
 
 /// Typechecker representation of Donna types.
 pub type Type:

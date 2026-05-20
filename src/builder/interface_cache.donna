@@ -35,7 +35,7 @@ pub fn read(path: String) -> option.Option(typed_ast.ModuleInterface):
 fn encode(iface: typed_ast.ModuleInterface) -> String:
   case iface:
     typed_ast.ModuleInterface(bindings, ctors) ->
-      "donna-iface-v1\n" <> encode_bindings(bindings) <> encode_ctors(ctors)
+      "donna-iface-v2\n" <> encode_bindings(bindings) <> encode_ctors(ctors)
 
 fn encode_bindings(bindings: List(#(String, types.Type))) -> String:
   case bindings:
@@ -44,12 +44,15 @@ fn encode_bindings(bindings: List(#(String, types.Type))) -> String:
       "B|" <> name <> "|" <> encode_type(ty) <> "\n" <> encode_bindings(rest)
 
 fn encode_ctors(
-  ctors: List(#(String, #(String, List(types.Type), Int)))
+  ctors: List(#(String, #(String, List(types.Type), Int, Bool)))
 ) -> String:
   case ctors:
     [] -> ""
-    [#(name, #(type_name, fields, tag)), ..rest] ->
-      "C|" <> name <> "|" <> type_name <> "|" <> int.to_string(tag) <> "|" <> encode_type_list(fields) <> "\n" <> encode_ctors(rest)
+    [#(name, #(type_name, fields, tag, is_opaque)), ..rest] ->
+      let opaque_flag = case is_opaque:
+          True -> "1"
+          False -> "0"
+      "C|" <> name <> "|" <> type_name <> "|" <> int.to_string(tag) <> "|" <> opaque_flag <> "|" <> encode_type_list(fields) <> "\n" <> encode_ctors(rest)
 
 fn encode_type_list(ts: List(types.Type)) -> String:
   case ts:
@@ -88,13 +91,14 @@ fn encode_type_tokens(ts: List(types.Type)) -> String:
 fn decode(src: String) -> option.Option(typed_ast.ModuleInterface):
   let lines = string.split(src, "\n")
   case lines:
-    ["donna-iface-v1", ..rest] -> decode_lines(rest, [], [])
+    ["donna-iface-v2", ..rest] -> decode_lines(rest, [], [])
+    ["donna-iface-v1", ..rest] -> option.None
     _ -> option.None
 
 fn decode_lines(
   lines: List(String),
   bindings: List(#(String, types.Type)),
-  ctors: List(#(String, #(String, List(types.Type), Int)))
+  ctors: List(#(String, #(String, List(types.Type), Int, Bool)))
 ) -> option.Option(typed_ast.ModuleInterface):
   case lines:
     [] ->
@@ -112,17 +116,20 @@ fn decode_lines(
                 option.None -> option.None
                 option.Some(ty) ->
                   decode_lines(rest, [#(name, ty), ..bindings], ctors)
-            ["C", name, type_name, tag_src, ..field_srcs] ->
+            ["C", name, type_name, tag_src, opaque_src, ..field_srcs] ->
               case parse_int(tag_src):
                 option.None -> option.None
                 option.Some(tag) ->
+                  let is_opaque = case opaque_src:
+                    "1" -> True
+                    _ -> False
                   case parse_type_strings(field_srcs, []):
                     option.None -> option.None
                     option.Some(fields) ->
                       decode_lines(
                         rest,
                         bindings,
-                        [#(name, #(type_name, fields, tag)), ..ctors]
+                        [#(name, #(type_name, fields, tag, is_opaque)), ..ctors]
                       )
             _ -> option.None
 

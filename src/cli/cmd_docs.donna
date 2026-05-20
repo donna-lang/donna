@@ -8,6 +8,7 @@ import donna/list
 import donna/string
 import utilities/colors
 import utilities/logger
+import donna/option
 import builder/scanner
 import tools/docgen/extractor
 import tools/docgen/render

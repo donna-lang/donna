@@ -402,7 +402,7 @@ fn collect_ctor_names(
 ) -> List(String):
   case type_defs:
     [] -> list.reverse(acc)
-    [typed_ast.TypedTypeDef(_, _, ctors), ..rest] ->
+    [typed_ast.TypedTypeDef(_, _, _, ctors), ..rest] ->
       let names = collect_ctor_name_list(ctors, [])
       collect_ctor_names(rest, list.append(list.reverse(names), acc))
 
@@ -448,21 +448,21 @@ fn collect_extern_aliases(
           collect_extern_aliases(rest, [#(name, sym), ..acc])
 
 fn extract_ctor_tags(
-  ctor_info: List(#(String, #(String, List(types.Type), Int))),
+  ctor_info: List(#(String, #(String, List(types.Type), Int, Bool))),
   acc: List(#(String, Int))
 ) -> List(#(String, Int)):
   case ctor_info:
     [] -> list.reverse(acc)
-    [#(name, #(_, _, tag)), ..rest] ->
+    [#(name, #(_, _, tag, _)), ..rest] ->
       extract_ctor_tags(rest, [#(name, tag), ..acc])
 
 fn extract_ctor_field_types(
-  ctor_info: List(#(String, #(String, List(types.Type), Int))),
+  ctor_info: List(#(String, #(String, List(types.Type), Int, Bool))),
   acc: List(#(String, List(types.Type)))
 ) -> List(#(String, List(types.Type))):
   case ctor_info:
     [] -> list.reverse(acc)
-    [#(name, #(_, fields, _)), ..rest] ->
+    [#(name, #(_, fields, _, _)), ..rest] ->
       extract_ctor_field_types(rest, [#(name, fields), ..acc])
 
 fn gen_type_defs(
@@ -483,7 +483,7 @@ fn gen_type_def(
   state: CgState
 ) -> #(List(il.Function), CgState):
   case td:
-    typed_ast.TypedTypeDef(_, _, ctors) ->
+    typed_ast.TypedTypeDef(_, _, _, ctors) ->
       let state2 = register_ctors(ctors, state)
       gen_constructors(ctors, fn_prefix, state2, [])
 

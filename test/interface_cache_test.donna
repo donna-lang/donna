@@ -35,8 +35,8 @@ fn sample_iface() -> typed_ast.ModuleInterface:
       #("unit", types.TTupleType([]))
     ],
     [
-      #("Some", #("Option", [types.TTypeVar(1)], 0)),
-      #("None", #("Option", [], 1))
+      #("Some", #("Option", [types.TTypeVar(1)], 0, False)),
+      #("None", #("Option", [], 1, False))
     ]
   )
 
@@ -46,7 +46,7 @@ fn bindings_of(iface: typed_ast.ModuleInterface) -> List(#(String, types.Type)):
 
 fn ctors_of(
   iface: typed_ast.ModuleInterface
-) -> List(#(String, #(String, List(types.Type), Int))):
+) -> List(#(String, #(String, List(types.Type), Int, Bool))):
   case iface:
     typed_ast.ModuleInterface(_, ctors) -> ctors
 
@@ -62,9 +62,9 @@ fn binding_type(
         False -> binding_type(rest, name)
 
 fn ctor_info(
-  ctors: List(#(String, #(String, List(types.Type), Int))),
+  ctors: List(#(String, #(String, List(types.Type), Int, Bool))),
   name: String
-) -> option.Option(#(String, List(types.Type), Int)):
+) -> option.Option(#(String, List(types.Type), Int, Bool)):
   case ctors:
     [] -> option.None
     [#(key, info), ..rest] ->
@@ -124,10 +124,11 @@ pub fn interface_cache_roundtrips_constructors_test() -> String:
         list.length(ctors) |> should.equal_int(2),
         case ctor_info(ctors, "Some"):
           option.None -> should.fail("missing Some constructor")
-          option.Some(#(type_name, fields, tag)) ->
+          option.Some(#(type_name, fields, tag, is_opaque)) ->
             should.all([
               type_name |> should.equal_string("Option"),
               tag |> should.equal_int(0),
+              !is_opaque |> should.be_true(),
               list.length(fields) |> should.equal_int(1),
               case fields:
                 [ty] -> type_string(ty) |> should.equal_string("a1")
@@ -135,7 +136,7 @@ pub fn interface_cache_roundtrips_constructors_test() -> String:
             ]),
         case ctor_info(ctors, "None"):
           option.None -> should.fail("missing None constructor")
-          option.Some(#(type_name, fields, tag)) ->
+          option.Some(#(type_name, fields, tag, _)) ->
             should.all([
               type_name |> should.equal_string("Option"),
               tag |> should.equal_int(1),

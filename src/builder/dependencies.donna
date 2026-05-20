@@ -8,6 +8,7 @@ import donna/path
 import donna/list
 import donna/shell
 import donna/string
+import donna/option
 import donna/result
 import parsetoml/parsetoml
 import utilities/colors

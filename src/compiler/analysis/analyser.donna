@@ -1,9 +1,11 @@
 //// Runs lightweight static analysis over parsed Donna modules and emits warnings for unused code and bindings.
 
 import compiler/analysis/scope
+import compiler/parser/ast
 import errors/error
 import donna/list
 import donna/string
+import donna/option
 
 /// Analyse a parsed module and return non-fatal compiler warnings.
 pub fn analyse(m: ast.Module) -> List(error.DonnaWarning):

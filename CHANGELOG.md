@@ -4,6 +4,22 @@ All notable changes to `donna` will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Checker now validates qualified constructor patterns (`module.Name`) against imported constructor metadata, reporting `TypeUndefinedConstructor` when the constructor is not found. Unqualified patterns (`Name`) are unchanged.
+- Opaque type support: `opaque type` declares a type whose constructors are hidden from importing modules. The checker includes opaque constructors in the module interface with an `is_opaque` flag, registers them in the importing module's environment, and reports `TypeOpaqueConstructor` when a qualified pattern attempts to destructure an opaque constructor from another module. Within the defining module, opaque constructors remain fully accessible.
+
+### Changed
+
+- Interface cache format updated from `donna-iface-v1` to `donna-iface-v2`: constructor entries now carry an `is_opaque` flag. Old v1 caches are silently discarded, triggering recompilation.
+- `TypedTypeDef` changed from 3 to 4 fields (added `is_opaque: Bool`). Constructor info tuples changed from `#(String, List(types.Type), Int)` to `#(String, List(types.Type), Int, Bool)` (added `is_opaque` flag). All `Env`, `ModuleInterface`, and `TypedModule` field counts remain unchanged.
+
+### Fixed
+
+- Missing imports added across the codebase to satisfy stricter v0.2.2 release binary checks.
+- `bind_pattern_typed`, `bind_pattern_typed_list`, and `bind_pattern_typed_repeated` now propagate pattern errors through the typechecker, reporting `TypeUndefinedConstructor` errors in case clauses and let-pattern statements instead of silently falling through.
+- `cmd_build.donna` `iface_has_main` matched `ModuleInterface` with an extra wildcard field that no longer exists.
+
 ## [0.2.2] — 2026-05-19
 - Fix a bug in doc generation 
 

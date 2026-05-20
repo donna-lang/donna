@@ -1,5 +1,6 @@
 //// Maps compiler diagnostics to user-facing titles, labels, and repair hints.
 
+import errors/error
 import donna/int
 
 /// Convert an error into a title, source label, and repair hint.
@@ -125,7 +126,19 @@ pub fn error_message(e: error.DonnaError) -> #(String, String, String):
         "function returns `" <> found <> "`, declared as `" <> expected <> "`",
         "change the return type annotation to `" <> found <> "` or fix the function body"
       )
-
+    error.TypeUndefinedConstructor(name, _) ->
+      #(
+        "undefined constructor",
+        "`" <> name <> "` is not defined in this scope",
+        "add the missing import at the top of the file, e.g. `import donna/option`"
+      )
+    error.TypeOpaqueConstructor(name, _) ->
+      #(
+        "opaque constructor",
+        "`" <> name <> "` is an opaque type constructor",
+        "opaque constructors cannot be used outside their defining module"
+      )
+ 
 fn hint_for_unexpected(expected: String) -> String:
   case expected:
     "function name" -> "function names must start with a lowercase letter"

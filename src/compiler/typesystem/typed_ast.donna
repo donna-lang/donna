@@ -3,18 +3,20 @@
 //// importing modules.
 
 import compiler/typesystem/types
+import donna/option
+import donna/list
 
 /// Public bindings and constructor metadata exported by a module.
 pub type ModuleInterface:
-  ModuleInterface(List(#(String, types.Type)), List(#(String, #(String, List(types.Type), Int))))
+  ModuleInterface(List(#(String, types.Type)), List(#(String, #(String, List(types.Type), Int, Bool))))
 
 /// A fully typechecked module ready for code generation.
 pub type TypedModule:
-  TypedModule(String, List(TypedFunction), List(TypedConstant), List(TypedTypeDef), List(#(String, #(String, List(types.Type), Int))))
+  TypedModule(String, List(TypedFunction), List(TypedConstant), List(TypedTypeDef), List(#(String, #(String, List(types.Type), Int, Bool))))
 
 /// A typechecked type declaration.
 pub type TypedTypeDef:
-  TypedTypeDef(String, Bool, List(TypedConstructor))
+  TypedTypeDef(String, Bool, Bool, List(TypedConstructor))
 
 /// A typechecked data constructor with field types and runtime tag.
 pub type TypedConstructor:
