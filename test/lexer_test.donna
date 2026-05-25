@@ -27,9 +27,6 @@ fn lex_err(src: String) -> Bool:
 fn tok_strings(toks: List(token.Token)) -> List(String):
   list.map(toks, token.to_string)
 
-fn lex_strings(src: String) -> List(String):
-  tok_strings(lex_ok(src))
-
 // ── Empty input ───────────────────────────────────────────────────────────────
 
 pub fn lex_empty_gives_eof_test() -> String:

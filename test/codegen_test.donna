@@ -369,6 +369,44 @@ pub fn qualified_constructor_pattern_uses_imported_tag_test() -> String:
       let text = codegen.generate(m)
       should.contains_string(text, ", 3")
 
+pub fn capturing_lambda_generates_closure_environment_test() -> String:
+  let src = "pub fn add_by(n: Int) -> fn(Int) -> Int:\n  fn(x: Int) -> x + n\n\npub fn main() -> Nil:\n  let add_two = add_by(2)\n  let _ = add_two(40)\n  Nil"
+  case check_src_with_imports(src, []):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let text = codegen.generate(m)
+      should.all([
+        should.contains_string(text, "function l $__lambda_"),
+        should.contains_string(text, "l %__env, l %x"),
+        should.contains_string(text, "loadl %__env"),
+        should.contains_string(text, "call %")
+      ])
+
+pub fn named_function_value_generates_closure_adapter_test() -> String:
+  let src = "fn inc(x: Int) -> Int:\n  x + 1\n\nfn apply(f: fn(Int) -> Int, x: Int) -> Int:\n  f(x)\n\npub fn main() -> Nil:\n  let _ = apply(inc, 41)\n  Nil"
+  case check_src_with_imports(src, []):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let text = codegen.generate(m)
+      should.all([
+        should.contains_string(text, "$__closure_adapter_test_inc"),
+        should.contains_string(text, "function l $__closure_adapter_test_inc(l %__env, l %__arg0)"),
+        should.contains_string(text, "call $test_inc(l %__arg0)"),
+        should.contains_string(text, "call %")
+      ])
+
+pub fn generic_named_function_value_generates_closure_adapter_test() -> String:
+  let src = "fn inc(x: Int) -> Int:\n  x + 1\n\nfn apply(f: fn(a) -> b, x: a) -> b:\n  f(x)\n\npub fn main() -> Nil:\n  let _ = apply(inc, 41)\n  Nil"
+  case check_src_with_imports(src, []):
+    result.Error(_) -> should.fail("expected Ok")
+    result.Ok(m) ->
+      let text = codegen.generate(m)
+      should.all([
+        should.contains_string(text, "$__closure_adapter_test_inc"),
+        should.contains_string(text, "function l $__closure_adapter_test_inc(l %__env, l %__arg0)"),
+        should.contains_string(text, "call $test_inc(l %__arg0)")
+      ])
+
 fn constructor_collision_ifaces() -> List(#(String, typed_ast.ModuleInterface)):
   let value_type = types.TNamedType("Value", [])
   let ctor_type = types.TFnType([types.TString], value_type)

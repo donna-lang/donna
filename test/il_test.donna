@@ -2,7 +2,6 @@
 
 import compiler/codegen/il
 import donna/option
-import donna/list
 import unittest/should
 
 // ── display_value ─────────────────────────────────────────────────────────────

@@ -4,6 +4,13 @@ All notable changes to `donna` will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Lambda expressions now generate closure values with heap-allocated capture environments, allowing lambdas to reference values from their enclosing scope. Named functions used as values now get closure adapters so higher-order calls use the same closure ABI.
+
+### Changed
+
+- Updated `donna_stdlib` dependency to v0.3.1 and changed new-project templates to require `>=0.3.1`.
 
 ## [0.3.0] — 2026-05-25
 

@@ -104,7 +104,7 @@ Donna uses `donna.toml` and `donna.lock` for package dependencies. Use git depen
 
 ```toml
 [dependencies]
-donna = { git = "https://github.com/donna-lang/donna_stdlib", version = "0.3.0" }
+donna = { git = "https://github.com/donna-lang/donna_stdlib", version = "0.3.1" }
 json = { git = "https://github.com/donna-lang/json", rev = "abc1234" }
 ```
 

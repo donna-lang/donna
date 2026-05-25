@@ -1,6 +1,4 @@
 import builder/tester
-import donna/list
-import donna/string
 import unittest/should
 
 pub fn find_test_fns_discovers_public_tests_test() -> String:

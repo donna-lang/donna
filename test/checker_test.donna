@@ -9,17 +9,14 @@
 
 import compiler/lexer/lexer
 import compiler/parser/parser
-import compiler/parser/ast
 import compiler/typesystem/checker
 import compiler/typesystem/types
 import compiler/typesystem/typed_ast
-import utilities/location
 import errors/error
 import donna/result
 import donna/list
 import donna/option
 import donna/string
-import donna/int
 import unittest/should
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

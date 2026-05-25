@@ -6,7 +6,7 @@ repository = { type = "github", user = "donna-lang", repo = "donna" }
 links = [{ title = "Donna", href = "https://donna-lang.org" }]
 
 [dependencies]
-donna = { git = "https://github.com/donna-lang/donna_stdlib", version = ">=0.3.0 and <1.0.0" }
+donna = { git = "https://github.com/donna-lang/donna_stdlib", version = ">=0.3.1 and <1.0.0" }
 argparse = { git = "https://github.com/donna-lang/argparse", version = ">=0.1.1 and <1.0.0" }
 parsetoml = { git = "https://github.com/donna-lang/parsetoml", version = ">=0.1.1 and <1.0.0" }
 markdown = { git = "https://github.com/NikolasSkyl/markdown", version = ">=0.1.1 and <1.0.0" }
