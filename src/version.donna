@@ -1,3 +1,3 @@
 //// Stores the compiler version string used by the CLI and release tooling.
 
-pub const version = "0.2.2"
+pub const version = "0.3.0"

@@ -4,6 +4,9 @@ All notable changes to `donna` will be documented in this file.
 
 ## Unreleased
 
+
+## [0.3.0] — 2026-05-25
+
 ### Added
 
 - Checker now validates qualified constructor patterns (`module.Name`) against imported constructor metadata, reporting `TypeUndefinedConstructor` when the constructor is not found. Unqualified patterns (`Name`) are unchanged.
