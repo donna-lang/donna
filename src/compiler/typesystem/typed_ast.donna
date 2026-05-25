@@ -4,7 +4,6 @@
 
 import compiler/typesystem/types
 import donna/option
-import donna/list
 
 /// Public bindings and constructor metadata exported by a module.
 pub type ModuleInterface:

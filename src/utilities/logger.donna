@@ -86,13 +86,22 @@ pub fn info(message: String) -> Nil:
 /// Print an error and warning summary.
 pub fn summary(errors: Int, warnings: Int) -> Nil:
   case errors == 0:
-    False ->
-      io.println("Donna found " <> int.to_string(errors) <> " error(s) and " <> int.to_string(warnings) <> " warning(s).")
     True ->
       case warnings == 0:
-        True -> io.println("")
-        False ->
-          io.println("Donna found " <> int.to_string(errors) <> " error(s) and " <> int.to_string(warnings) <> " warning(s).")
+        True -> Nil
+        False -> io.println(format_summary_line(errors, warnings))
+    False ->
+      io.println(format_summary_line(errors, warnings))
+
+/// Format a styled error/warning summary line.
+pub fn format_summary_line(errors: Int, warnings: Int) -> String:
+  let err_part = case errors > 0:
+    True -> colors.paint(colors.bold_red, int.to_string(errors) <> " error(s)")
+    False -> colors.dim(int.to_string(errors) <> " error(s)")
+  let warn_part = case warnings > 0:
+    True -> colors.paint(colors.bold_yellow, int.to_string(warnings) <> " warning(s)")
+    False -> colors.dim(int.to_string(warnings) <> " warning(s)")
+  "Found " <> err_part <> " and " <> warn_part
 
 fn action(label: String) -> String:
   colors.orange("  " <> pad_left(label, 10) <> " ")

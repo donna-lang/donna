@@ -42,7 +42,7 @@ fn success_message(name: String) -> String:
   string.join([line1, line2, "", cmd1, cmd2, ""], "\n")
 
 fn toml_content(name: String) -> String:
-  "name = \"" <> name <> "\"\nversion = \"0.1.0\"\n# description = \"\"\n# authors = [\"Your Name <you@example.com>\"]\n# licences = [\"MIT\"]\n# repository = { type = \"github\", user = \"\", repo = \"\" }\n# links = [{ title = \"Website\", href = \"\" }]\n\n[dependencies]\ndonna = { git = \"https://github.com/donna-lang/donna_stdlib\", version = \">=0.3.0 and <1.0.0\" }\n\n[dev-dependencies]\nunittest = { git = \"https://github.com/donna-lang/unittest\", version = \">=0.1.0 and <1.0.0\" }\n"
+  "name = \"" <> name <> "\"\nversion = \"0.1.0\"\n# description = \"\"\n# authors = [\"Your Name <you@example.com>\"]\n# licences = [\"MIT\"]\n# repository = { type = \"github\", user = \"\", repo = \"\" }\n# links = [{ title = \"Website\", href = \"\" }]\n\n[dependencies]\ndonna = { git = \"https://github.com/donna-lang/donna_stdlib\", version = \">=0.3.0 and <1.0.0\" }\n\n[dev-dependencies]\nunittest = { git = \"https://github.com/donna-lang/unittest\", version = \">=0.2.0 and <1.0.0\" }\n"
 
 fn main_content(name: String) -> String:
   "import donna/io\n\n// " <> name <> " entry point\npub fn main() -> Nil:\n  io.println(\"Hello from " <> name <> "\")\n"

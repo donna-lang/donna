@@ -112,12 +112,13 @@ fn build_project_target(
           let src_dir = scanner.project_src_dir(project)
           case pipeline.compile_dir(src_dir, "", artifacts_dir, dep_ifaces, deps_rebuilt):
             result.Error(e) -> BuildFailed(e)
-            result.Ok(#(src_ifaces, src_ssa, _)) ->
+            result.Ok(#(src_ifaces, src_ssa, _, src_warn_count)) ->
               case has_public_main(src_ifaces):
                 False ->
                   let out_path = path.join(bin_dir, scanner.project_name(project))
                   let _ = files.delete(out_path)
                   let _ = logger.ok("", time.now_us() - t0)
+                  let _ = logger.summary(0, src_warn_count)
                   BuildOk(False)
                 True ->
                   let all_ssa = list.append(dep_ssa, src_ssa)
@@ -160,6 +161,7 @@ fn build_project_target(
                                   let _ = files.delete(link_log)
                                   let _ = maybe_codesign(out_path)
                                   let _ = logger.ok("", time.now_us() - t0)
+                                  let _ = logger.summary(0, src_warn_count)
                                   BuildOk(True)
 
 fn target_root_dir(
@@ -295,7 +297,7 @@ fn compile_deps(
         False
       ):
         result.Error(e) -> result.Error(e)
-        result.Ok(#(new_ifaces, new_ssa, rebuilt)) ->
+        result.Ok(#(new_ifaces, new_ssa, rebuilt, _)) ->
           let new_objs = compile_ffi_for_mode(
             dependencies.dep_path(dep),
             art_dir,

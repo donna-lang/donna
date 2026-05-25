@@ -22,6 +22,7 @@ pub type DonnaError:
   TypeNotAFunction(ty: String, span: location.Span)
   TypeDuplicateFunction(name: String, span: location.Span)
   TypeInvalidReturn(expected: String, found: String, span: location.Span)
+  TypePanic(message_type: String, span: location.Span)
   TypeUndefinedConstructor(name: String, span: location.Span)
   TypeOpaqueConstructor(name: String, span: location.Span)
  
@@ -58,6 +59,7 @@ pub fn error_span(e: DonnaError) -> location.Span:
     TypeNotAFunction(_, s) -> s
     TypeDuplicateFunction(_, s) -> s
     TypeInvalidReturn(_, _, s) -> s
+    TypePanic(_, s) -> s
     TypeUndefinedConstructor(_, s) -> s
     TypeOpaqueConstructor(_, s) -> s
  

@@ -8,11 +8,13 @@ import compiler/parser/parser
 import compiler/typesystem/checker
 import compiler/typesystem/typed_ast
 import compiler/codegen/codegen
+import compiler/analysis/analyser
 import donna/path
 import builder/interface_cache
 import errors/reporter
 import errors/error
 import donna/files
+import donna/io
 import donna/list
 import donna/option
 import donna/result
@@ -33,7 +35,7 @@ pub fn compile_module(
   artifacts_dir: String,
   ifaces: List(#(String, typed_ast.ModuleInterface)),
   force: Bool
-) -> result.Result(#(typed_ast.ModuleInterface, String, Bool), String):
+) -> result.Result(#(typed_ast.ModuleInterface, String, Bool, Int), String):
   let stem = mod_name_to_stem(mod_name)
   let ssa_path = path.join(artifacts_dir, stem <> ".ssa")
   let iface_path = interface_cache.path_for(ssa_path)
@@ -46,7 +48,9 @@ pub fn compile_module(
   case ssa_cached && iface_cached:
     True ->
       case interface_cache.read(iface_path):
-        option.Some(iface) -> result.Ok(#(iface, ssa_path, False))
+        option.Some(iface) ->
+          let warn_count = analyse_cached_module(path)
+          result.Ok(#(iface, ssa_path, False, warn_count))
         option.None ->
           compile_module_uncached(
             path,
@@ -66,6 +70,18 @@ pub fn compile_module(
         ssa_cached
       )
 
+fn analyse_cached_module(path: String) -> Int:
+  let src = files.read(path)
+  case lexer.lex(src, path):
+    lexer.LexErrors(_) -> 0
+    lexer.LexOk(toks) ->
+      case parser.parse(toks):
+        parser.ParseErrors(_) -> 0
+        parser.ParseOk(module) ->
+          let ws = analyser.analyse(module)
+          let _ = print_warnings(ws, src)
+          list.length(ws)
+
 fn compile_module_uncached(
   path: String,
   mod_name: String,
@@ -73,27 +89,35 @@ fn compile_module_uncached(
   iface_path: String,
   ifaces: List(#(String, typed_ast.ModuleInterface)),
   ssa_cached: Bool
-) -> result.Result(#(typed_ast.ModuleInterface, String, Bool), String):
+) -> result.Result(#(typed_ast.ModuleInterface, String, Bool, Int), String):
   let _ = logger.step(mod_name)
   let src = files.read(path)
   case lexer.lex(src, path):
-    lexer.LexErrors(errs) -> result.Error(render_error_block(errs, src))
+    lexer.LexErrors(errs) ->
+      let #(block, count) = render_error_block_with_count(errs, src)
+      result.Error(block <> render_error_summary(count, 0))
     lexer.LexOk(toks) ->
       case parser.parse(toks):
-        parser.ParseErrors(errs) -> result.Error(render_error_block(errs, src))
+        parser.ParseErrors(errs) ->
+          let #(block, count) = render_error_block_with_count(errs, src)
+          result.Error(block <> render_error_summary(count, 0))
         parser.ParseOk(module) ->
+          let ws = analyser.analyse(module)
+          let _ = print_warnings(ws, src)
+          let warn_count = list.length(ws)
           case checker.check_module_with_imports(module, mod_name, ifaces):
             result.Error(errs) ->
-              result.Error(render_error_block(errs, src))
+              let #(block, count) = render_error_block_with_count(errs, src)
+              result.Error(block <> render_error_summary(count, warn_count))
             result.Ok(typed_module) ->
               let iface = checker.extract_interface(typed_module)
               let _ = interface_cache.write(iface_path, iface)
               case ssa_cached:
-                True -> result.Ok(#(iface, ssa_path, False))
+                True -> result.Ok(#(iface, ssa_path, False, warn_count))
                 False ->
                   let ir = codegen.generate(typed_module)
                   let _ = files.write(ssa_path, ir)
-                  result.Ok(#(iface, ssa_path, True))
+                  result.Ok(#(iface, ssa_path, True, warn_count))
 
 /// Compile an explicit list of Donna source files.
 ///
@@ -104,7 +128,7 @@ pub fn compile_file_list(
   mod_prefix: String,
   artifacts_dir: String,
   ifaces: List(#(String, typed_ast.ModuleInterface))
-) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool), String):
+) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool, Int), String):
   compile_loop(
     sort_by_import_count(paths),
     mod_prefix,
@@ -112,6 +136,7 @@ pub fn compile_file_list(
     ifaces,
     [],
     [],
+    0,
     False
   )
 
@@ -125,13 +150,14 @@ pub fn compile_named_file_list(
   artifacts_dir: String,
   ifaces: List(#(String, typed_ast.ModuleInterface)),
   force: Bool
-) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool), String):
+) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool, Int), String):
   compile_pairs_loop(
     topo_sort_pairs(pairs),
     artifacts_dir,
     ifaces,
     [],
     [],
+    0,
     force
   )
 
@@ -146,7 +172,7 @@ pub fn compile_dir(
   artifacts_dir: String,
   ifaces: List(#(String, typed_ast.ModuleInterface)),
   force: Bool
-) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool), String):
+) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool, Int), String):
   let pairs = collect_pairs_recursive(files.list_dir(dir), dir, mod_prefix, [])
   compile_pairs_loop(
     topo_sort_pairs(pairs),
@@ -154,6 +180,7 @@ pub fn compile_dir(
     ifaces,
     [],
     [],
+    0,
     force
   )
 
@@ -163,15 +190,16 @@ fn compile_pairs_loop(
   ifaces: List(#(String, typed_ast.ModuleInterface)),
   iface_acc: List(#(String, typed_ast.ModuleInterface)),
   ssa_acc: List(String),
+  warn_acc: Int,
   dirty: Bool
-) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool), String):
+) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool, Int), String):
   case pairs:
-    [] -> result.Ok(#(list.reverse(iface_acc), list.reverse(ssa_acc), dirty))
+    [] -> result.Ok(#(list.reverse(iface_acc), list.reverse(ssa_acc), dirty, warn_acc))
     [#(path, mod_name), ..rest] ->
       let cur_ifaces = list.append(ifaces, iface_acc)
       case compile_module(path, mod_name, artifacts_dir, cur_ifaces, dirty):
         result.Error(e) -> result.Error(e)
-        result.Ok(#(iface, ssa, rebuilt)) ->
+        result.Ok(#(iface, ssa, rebuilt, warn_count)) ->
           let next_dirty = case rebuilt:
             True -> True
             False -> dirty
@@ -181,6 +209,7 @@ fn compile_pairs_loop(
             ifaces,
             [#(mod_name, iface), ..iface_acc],
             [ssa, ..ssa_acc],
+            warn_acc + warn_count,
             next_dirty
           )
 
@@ -191,10 +220,11 @@ fn compile_loop(
   ifaces: List(#(String, typed_ast.ModuleInterface)),
   iface_acc: List(#(String, typed_ast.ModuleInterface)),
   ssa_acc: List(String),
+  warn_acc: Int,
   dirty: Bool
-) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool), String):
+) -> result.Result(#(List(#(String, typed_ast.ModuleInterface)), List(String), Bool, Int), String):
   case paths:
-    [] -> result.Ok(#(list.reverse(iface_acc), list.reverse(ssa_acc), dirty))
+    [] -> result.Ok(#(list.reverse(iface_acc), list.reverse(ssa_acc), dirty, warn_acc))
     [path, ..rest] ->
       let stem = path.drop_extension(path.basename(path))
       let mod_name = case string.is_empty(mod_prefix):
@@ -203,7 +233,7 @@ fn compile_loop(
       let cur_ifaces = list.append(ifaces, iface_acc)
       case compile_module(path, mod_name, artifacts_dir, cur_ifaces, dirty):
         result.Error(e) -> result.Error(e)
-        result.Ok(#(iface, ssa, rebuilt)) ->
+        result.Ok(#(iface, ssa, rebuilt, warn_count)) ->
           let next_dirty = case rebuilt:
             True -> True
             False -> dirty
@@ -214,6 +244,7 @@ fn compile_loop(
             ifaces,
             [#(mod_name, iface), ..iface_acc],
             [ssa, ..ssa_acc],
+            warn_acc + warn_count,
             next_dirty
           )
 
@@ -516,8 +547,11 @@ fn zig_target_for_qbe(target: String) -> String:
     _ -> ""
 
 /// Convert a module path such as `donna/string` into an artifact-safe stem.
+///
+/// Hyphens are replaced with underscores so the stem is safe to embed in QBE
+/// identifiers. Slashes become underscores for filesystem compatibility.
 pub fn mod_name_to_stem(mod_name: String) -> String:
-  string.replace(mod_name, "/", "_")
+  string.replace(string.replace(mod_name, "/", "_"), "-", "_")
 
 fn file_is_current(src: String, output: String) -> Bool:
   case files.exists(output):
@@ -534,6 +568,16 @@ fn join_shell_args(args: List(String)) -> String:
     [arg] -> sh_quote(arg)
     [arg, ..rest] -> sh_quote(arg) <> " " <> join_shell_args(rest)
 
+fn print_warnings(ws: List(error.DonnaWarning), src: String) -> Nil:
+  case ws:
+    [] -> Nil
+    [w, ..rest] ->
+      let _ = io.println(reporter.render_warning(w, src))
+      print_warnings(rest, src)
+
+fn render_error_summary(errors: Int, warnings: Int) -> String:
+  "\n\n" <> logger.format_summary_line(errors, warnings)
+
 fn render_errors(
   errs: List(error.DonnaError),
   src: String,
@@ -544,8 +588,12 @@ fn render_errors(
     [e, ..rest] ->
       render_errors(rest, src, [reporter.render_error(e, src), ..acc])
 
-fn render_error_block(errs: List(error.DonnaError), src: String) -> String:
-  string.join(unique_strings(render_errors(errs, src, []), []), "\n\n")
+fn render_error_block_with_count(
+  errs: List(error.DonnaError),
+  src: String
+) -> #(String, Int):
+  let unique = unique_strings(render_errors(errs, src, []), [])
+  #(string.join(unique, "\n\n"), list.length(unique))
 
 fn unique_strings(xs: List(String), acc: List(String)) -> List(String):
   case xs:

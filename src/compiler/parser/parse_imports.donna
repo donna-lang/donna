@@ -13,18 +13,18 @@ pub fn parse_import(
   ps: List(#(token.Token, location.Span))
 ) -> parse_result.ParseResult(ast.Import):
   case ps:
-    [#(token.TokImport, sp), ..rest] ->
+    [#(token.TokImport, _), ..rest] ->
       case parse_import_path(rest, []):
         parse_result.PErr(e) -> parse_result.PErr(e)
-        parse_result.POk(path, ps2) ->
+        parse_result.POk(#(path, last_sp), ps2) ->
           let ps3 = parse_result.skip_newlines(ps2)
           case ps3:
-            [#(token.TokAs, _), #(token.TokName(alias), _), ..ps4] ->
+            [#(token.TokAs, _), #(token.TokName(alias), alias_sp), ..ps4] ->
               let ps5 = parse_result.skip_newlines(ps4)
-              parse_result.POk(ast.Import(path, alias, sp), ps5)
+              parse_result.POk(ast.Import(path, alias, alias_sp), ps5)
             _ ->
               let alias = last_segment(path)
-              parse_result.POk(ast.Import(path, alias, sp), ps3)
+              parse_result.POk(ast.Import(path, alias, last_sp), ps3)
     [#(tok, sp), .._] ->
       parse_result.PErr(
         error.ParseUnexpectedToken(token.to_string(tok), "import", sp)
@@ -37,14 +37,14 @@ pub fn parse_import(
 fn parse_import_path(
   ps: List(#(token.Token, location.Span)),
   acc: List(String)
-) -> parse_result.ParseResult(List(String)):
+) -> parse_result.ParseResult(#(List(String), location.Span)):
   case ps:
-    [#(token.TokName(seg), _), ..rest] ->
+    [#(token.TokName(seg), seg_sp), ..rest] ->
       case rest:
         [#(token.TokSlash, _), ..rest2] ->
           parse_import_path(rest2, [seg, ..acc])
         _ ->
-          parse_result.POk(list.reverse([seg, ..acc]), rest)
+          parse_result.POk(#(list.reverse([seg, ..acc]), seg_sp), rest)
     [#(tok, sp), .._] ->
       parse_result.PErr(
         error.ParseUnexpectedToken(token.to_string(tok), "module name", sp)

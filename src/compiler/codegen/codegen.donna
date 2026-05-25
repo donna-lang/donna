@@ -222,7 +222,7 @@ fn add_data_defs_list(datas: List(il.DataDef), s: CgState) -> CgState:
     [d, ..rest] -> add_data_defs_list(rest, add_data_def(s, d))
 
 fn module_qbe_prefix(module_name: String) -> String:
-  string.replace(module_name, "/", "_")
+  string.replace(string.replace(module_name, "/", "_"), "-", "_")
 
 fn ensure_nil_singleton(s: CgState) -> CgState:
   case list.contains_str(state_emitted_helpers(s), "donna_nil"):
@@ -1258,25 +1258,26 @@ fn gen_expr(
       #(il.Global(lambda_name), block, state6)
     types.TEPanic(inner, _) ->
       let #(msg_val, block2, state2) = gen_expr(inner, block, state)
-      let #(fmt_name, state3) = intern_string(state2, "%s\n")
       let block3 = il.volatile_inst(
         block2,
-        il.VaCall(
-          il.Global("fprintf"),
-          [#(il.Long, il.Global("stderr")), #(il.Long, il.Global(fmt_name))],
-          [#(il.Long, msg_val)]
-        )
+        il.Call(il.Global("puts"), [#(il.Long, msg_val)])
       )
-      let block4 = il.volatile_inst(block3, il.Call(il.Global("abort"), []))
+      let block4 = il.volatile_inst(
+        block3,
+        il.Call(il.Global("exit"), [#(il.Long, il.Const(1))])
+      )
       let block5 = il.volatile_inst(block4, il.Ret(option.Some(il.Const(0))))
-      #(il.Const(0), block5, state3)
+      #(il.Const(0), block5, state2)
     types.TETodo(_) ->
       let #(msg_name, state2) = intern_string(state, "not yet implemented")
       let block2 = il.volatile_inst(
         block,
         il.Call(il.Global("puts"), [#(il.Long, il.Global(msg_name))])
       )
-      let block3 = il.volatile_inst(block2, il.Call(il.Global("abort"), []))
+      let block3 = il.volatile_inst(
+        block2,
+        il.Call(il.Global("exit"), [#(il.Long, il.Const(1))])
+      )
       let block4 = il.volatile_inst(block3, il.Ret(option.Some(il.Const(0))))
       #(il.Const(0), block4, state2)
 
@@ -1403,12 +1404,12 @@ fn gen_case_clauses(
             option.None ->
               let #(block1, state1) = emit_pattern_bindings(pattern, subj, block, state)
               let #(body_val, block2, state2) = gen_expr(body, block1, state1)
-              let block3 = il.volatile_inst(
-                block2,
-                store_result(body_val, slot, is_float_res)
-              )
-              let block4 = il.volatile_inst(block3, il.Jmp(end_label))
-              let state3 = push_block(state2, block4)
+              let #(block_done, state_done) = case block_jumps(block2):
+                True -> #(block2, state2)
+                False ->
+                  let b3 = il.volatile_inst(block2, store_result(body_val, slot, is_float_res))
+                  #(il.volatile_inst(b3, il.Jmp(end_label)), state2)
+              let state3 = push_block(state_done, block_done)
               let end_block = il.new_block(end_label)
               #(end_block, state3)
             option.Some(guard_expr) ->
@@ -1430,12 +1431,12 @@ fn gen_case_clauses(
               let then_block = il.new_block(then_label)
               let #(then_block1, state6) = emit_pattern_bindings(pattern, subj, then_block, state5)
               let #(body_val, then_block2, state7) = gen_expr(body, then_block1, state6)
-              let then_block3 = il.volatile_inst(
-                then_block2,
-                store_result(body_val, slot, is_float_res)
-              )
-              let then_block4 = il.volatile_inst(then_block3, il.Jmp(end_label))
-              let state8 = push_block(state7, then_block4)
+              let #(then_block_done, state7b) = case block_jumps(then_block2):
+                True -> #(then_block2, state7)
+                False ->
+                  let b3 = il.volatile_inst(then_block2, store_result(body_val, slot, is_float_res))
+                  #(il.volatile_inst(b3, il.Jmp(end_label)), state7)
+              let state8 = push_block(state7b, then_block_done)
               let end_block = il.new_block(end_label)
               #(end_block, state8)
         _ ->
@@ -1459,12 +1460,12 @@ fn gen_case_clauses(
           let then_block = il.new_block(then_label)
           let #(then_block1, state6) = emit_pattern_bindings(pattern, subj, then_block, state5)
           let #(body_val, then_block2, state7) = gen_expr(body, then_block1, state6)
-          let then_block3 = il.volatile_inst(
-            then_block2,
-            store_result(body_val, slot, is_float_res)
-          )
-          let then_block4 = il.volatile_inst(then_block3, il.Jmp(end_label))
-          let state8 = push_block(state7, then_block4)
+          let #(then_block_done, state7b) = case block_jumps(then_block2):
+            True -> #(then_block2, state7)
+            False ->
+              let b3 = il.volatile_inst(then_block2, store_result(body_val, slot, is_float_res))
+              #(il.volatile_inst(b3, il.Jmp(end_label)), state7)
+          let state8 = push_block(state7b, then_block_done)
           let next_block = il.new_block(next_label)
           gen_case_clauses(
             rest,

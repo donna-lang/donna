@@ -73,11 +73,56 @@ pub fn bound_by_pattern(p: ast.Pattern) -> List(#(String, location.Span)):
 
 fn refs_in_clause(clause: ast.CaseClause) -> List(String):
   case clause:
-    ast.CaseClause(_, guard_opt, body, _) ->
+    ast.CaseClause(pat, guard_opt, body, _) ->
+      let pat_refs = refs_in_pattern(pat)
       let guard_refs = case guard_opt:
         option.None -> []
         option.Some(g) -> refs_in_expr(g)
-      list.append(guard_refs, refs_in_expr(body))
+      list.append(pat_refs, list.append(guard_refs, refs_in_expr(body)))
+
+/// Collect module references from a pattern (qualified constructors like `option.Some`).
+pub fn refs_in_pattern(p: ast.Pattern) -> List(String):
+  case p:
+    ast.PWild(_) -> []
+    ast.PDiscard(_, _) -> []
+    ast.PVar(_, _) -> []
+    ast.PInt(_, _) -> []
+    ast.PFloat(_, _) -> []
+    ast.PString(_, _) -> []
+    ast.PBool(_, _) -> []
+    ast.PTuple(elems, _) ->
+      list.flat_map(elems, refs_in_pattern)
+    ast.PList(elems, _, _) ->
+      list.flat_map(elems, refs_in_pattern)
+    ast.PCons(mod_opt, _, args, _) ->
+      let mod_refs = case mod_opt:
+        option.None -> []
+        option.Some(m) -> [m]
+      list.append(mod_refs, list.flat_map(args, refs_in_pattern))
+
+/// Collect module references from a type annotation (qualified names like `option.Option`).
+pub fn refs_in_annotation(ann: ast.TypeAnnotation) -> List(String):
+  case ann:
+    ast.TyName(name, args, _) ->
+      list.append(type_name_module(name), list.flat_map(args, refs_in_annotation))
+    ast.TyTuple(types, _) ->
+      list.flat_map(types, refs_in_annotation)
+    ast.TyFn(arg_types, ret, _) ->
+      list.append(list.flat_map(arg_types, refs_in_annotation), refs_in_annotation(ret))
+
+/// Collect the module reference from a potentially qualified type name like `"option.Option"`.
+fn type_name_module(name: String) -> List(String):
+  case string.index_of(name, "."):
+    -1 -> []
+    i -> [string.slice(name, 0, i)]
+
+/// Collect module references from a function parameter's type annotation.
+pub fn refs_in_param(p: ast.Param) -> List(String):
+  case p:
+    ast.Param(_, ann_opt, _) ->
+      case ann_opt:
+        option.None -> []
+        option.Some(ann) -> refs_in_annotation(ann)
 
 /// Return whether a list of names contains the requested name.
 pub fn contains_name(names: List(String), name: String) -> Bool:

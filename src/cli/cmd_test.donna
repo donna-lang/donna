@@ -110,7 +110,7 @@ fn build_and_run(
                 deps_rebuilt
               ):
                 result.Error(e) -> e
-                result.Ok(#(src_ifaces, src_ssa, _)) ->
+                result.Ok(#(src_ifaces, src_ssa, _, _)) ->
                   let scrub_dir = path.join(test_dir, "scrubbed")
                   let _ = files.mkdir(scrub_dir)
                   let scrubbed_ssa = scrub_main_from_ssa(src_ssa, scrub_dir, [])
@@ -129,7 +129,7 @@ fn build_and_run(
                         all_ifaces2
                       ):
                         result.Error(e) -> e
-                        result.Ok(#(test_ifaces, test_ssa, _)) ->
+                        result.Ok(#(test_ifaces, test_ssa, _, _)) ->
                           let all_ifaces3 = list.append(all_ifaces2, test_ifaces)
                           case pipeline.compile_module(
                             runner_path,
@@ -139,7 +139,7 @@ fn build_and_run(
                             False
                           ):
                             result.Error(e) -> e
-                            result.Ok(#(_, runner_ssa, _)) ->
+                            result.Ok(#(_, runner_ssa, _, _)) ->
                               let all_ssa = list.append(
                                 dep_ssa,
                                 list.append(
@@ -466,7 +466,7 @@ fn compile_self_alias(
       let _ = files.mkdir(alias_art)
       case pipeline.compile_dir(src_dir, "donna", alias_art, dep_ifaces, False):
         result.Error(_) -> #([], [])
-        result.Ok(#(ifaces, ssa, _)) -> #(ifaces, ssa)
+        result.Ok(#(ifaces, ssa, _, _)) -> #(ifaces, ssa)
 
 fn compile_deps(
   deps: List(dependencies.Dep),
@@ -492,7 +492,7 @@ fn compile_deps(
         False
       ):
         result.Error(e) -> result.Error(e)
-        result.Ok(#(new_ifaces, new_ssa, rebuilt)) ->
+        result.Ok(#(new_ifaces, new_ssa, rebuilt, _)) ->
           let new_objs = pipeline.compile_ffi(dependencies.dep_path(dep), art_dir)
           let next_ifaces = list.append(iface_acc, new_ifaces)
           let next_ssa = list.append(ssa_acc, new_ssa)

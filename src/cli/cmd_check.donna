@@ -49,9 +49,10 @@ fn check_project(dir: String, project: scanner.Project) -> String:
             False
           ):
             result.Error(e) -> e
-            result.Ok(_) ->
+            result.Ok(#(_, _, _, warn_count)) ->
               let elapsed = time.now_us() - t0
               let _ = logger.check_ok(elapsed)
+              let _ = logger.summary(0, warn_count)
               logger.check_success("successful without errors")
 
 fn compile_deps(
@@ -75,7 +76,7 @@ fn compile_deps(
         False
       ):
         result.Error(e) -> result.Error(e)
-        result.Ok(#(new_ifaces, _, _)) ->
+        result.Ok(#(new_ifaces, _, _, _)) ->
           compile_deps(rest, build_dir, list.append(iface_acc, new_ifaces))
 
 

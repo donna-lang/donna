@@ -72,12 +72,12 @@ fn parse_let(
   sp: location.Span
 ) -> parse_result.ParseResult(ast.Stmt):
   case ps:
-    [#(token.TokName(name), _), ..rest] ->
-      parse_let_name(rest, sp, name)
-    [#(token.TokDiscard(""), _), ..rest] ->
-      parse_let_name(rest, sp, "_")
-    [#(token.TokDiscard(n), _), ..rest] ->
-      parse_let_name(rest, sp, "_" <> n)
+    [#(token.TokName(name), name_sp), ..rest] ->
+      parse_let_name(rest, name_sp, name)
+    [#(token.TokDiscard(""), discard_sp), ..rest] ->
+      parse_let_name(rest, discard_sp, "_")
+    [#(token.TokDiscard(n), discard_sp), ..rest] ->
+      parse_let_name(rest, discard_sp, "_" <> n)
     _ ->
       case parse_patterns.parse_pattern(ps):
         parse_result.PErr(e) -> parse_result.PErr(e)
@@ -381,11 +381,14 @@ fn parse_call_loop(
   expr: ast.Expr
 ) -> parse_result.ParseResult(ast.Expr):
   case ps:
-    [#(token.TokLParen, sp), ..rest] ->
+    [#(token.TokLParen, _), ..rest] ->
       case parse_call_args(rest, []):
         parse_result.PErr(e) -> parse_result.PErr(e)
-        parse_result.POk(args, ps2) ->
-          parse_call_loop(ps2, ast.Call(expr, args, sp))
+        parse_result.POk(#(args, end_sp), ps2) ->
+          parse_call_loop(
+            ps2,
+            ast.Call(expr, args, location.merge(expr_span(expr), end_sp))
+          )
     [#(token.TokDot, _), #(token.TokName(field), sp), ..rest] ->
       parse_call_loop(rest, ast.FieldAccess(expr, field, sp))
     [#(token.TokDot, _), #(token.TokUpperName(field), sp), ..rest] ->
@@ -396,12 +399,12 @@ fn parse_call_loop(
 fn parse_call_args(
   ps: List(#(token.Token, location.Span)),
   acc: List(ast.Expr)
-) -> parse_result.ParseResult(List(ast.Expr)):
+) -> parse_result.ParseResult(#(List(ast.Expr), location.Span)):
   let ps1 = parse_result.skip_newlines(ps)
   let ps2 = strip_arg_label(ps1)
   case ps2:
-    [#(token.TokRParen, _), ..rest] ->
-      parse_result.POk(list.reverse(acc), rest)
+    [#(token.TokRParen, sp), ..rest] ->
+      parse_result.POk(#(list.reverse(acc), sp), rest)
     _ ->
       case parse_expr(ps2):
         parse_result.PErr(e) -> parse_result.PErr(e)
@@ -409,8 +412,8 @@ fn parse_call_args(
           case ps3:
             [#(token.TokComma, _), ..ps4] ->
               parse_call_args(parse_result.skip_newlines(ps4), [arg, ..acc])
-            [#(token.TokRParen, _), ..rest] ->
-              parse_result.POk(list.reverse([arg, ..acc]), rest)
+            [#(token.TokRParen, sp), ..rest] ->
+              parse_result.POk(#(list.reverse([arg, ..acc]), sp), rest)
             [#(tok, sp), .._] ->
               parse_result.PErr(
                 error.ParseUnexpectedToken(token.to_string(tok), ", or )", sp)

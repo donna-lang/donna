@@ -3,6 +3,7 @@
 import compiler/analysis/scope
 import compiler/parser/ast
 import errors/error
+import utilities/location
 import donna/list
 import donna/string
 import donna/option
@@ -10,8 +11,8 @@ import donna/option
 /// Analyse a parsed module and return non-fatal compiler warnings.
 pub fn analyse(m: ast.Module) -> List(error.DonnaWarning):
   case m:
-    ast.Module(_, imports, _, _, fns) ->
-      let import_ws = analyse_imports(imports, fns)
+    ast.Module(_, imports, consts, type_defs, fns) ->
+      let import_ws = analyse_imports(imports, consts, type_defs, fns)
       let unused_fns = analyse_unused_fns(fns)
       let fn_ws = list.flat_map(fns, analyse_fn)
       list.append(import_ws, list.append(unused_fns, fn_ws))
@@ -43,15 +44,48 @@ fn check_unused_fns(
 
 fn analyse_imports(
   imports: List(ast.Import),
+  consts: List(ast.Const),
+  type_defs: List(ast.TypeDef),
   fns: List(ast.Function)
 ) -> List(error.DonnaWarning):
-  let all_refs = list.flat_map(fns, fn_refs)
+  let fn_refs_list = list.flat_map(fns, fn_refs)
+  let const_refs = list.flat_map(consts, refs_in_const)
+  let type_def_refs = list.flat_map(type_defs, refs_in_type_def)
+  let all_refs = list.append(fn_refs_list, list.append(const_refs, type_def_refs))
   check_imports(imports, all_refs)
 
 fn fn_refs(f: ast.Function) -> List(String):
   case f:
-    ast.Function(_, _, _, _, body, _) -> scope.refs_in_expr(body)
-    ast.ExternalFn(_, _, _, _, _, _, _) -> []
+    ast.Function(_, _, params, ret_ann, body, _) ->
+      let param_refs = list.flat_map(params, scope.refs_in_param)
+      let ret_refs = case ret_ann:
+        option.None -> []
+        option.Some(ann) -> scope.refs_in_annotation(ann)
+      list.append(param_refs, list.append(ret_refs, scope.refs_in_expr(body)))
+    ast.ExternalFn(_, _, params, ret_ann, _, _, _) ->
+      let param_refs = list.flat_map(params, scope.refs_in_param)
+      let ret_refs = case ret_ann:
+        option.None -> []
+        option.Some(ann) -> scope.refs_in_annotation(ann)
+      list.append(param_refs, ret_refs)
+
+fn refs_in_const(c: ast.Const) -> List(String):
+  case c:
+    ast.Const(_, _, ann_opt, val, _) ->
+      let ann_refs = case ann_opt:
+        option.None -> []
+        option.Some(ann) -> scope.refs_in_annotation(ann)
+      list.append(ann_refs, scope.refs_in_expr(val))
+
+fn refs_in_type_def(td: ast.TypeDef) -> List(String):
+  case td:
+    ast.TypeDef(_, _, _, _, ctors, _) ->
+      list.flat_map(ctors, refs_in_ctor)
+
+fn refs_in_ctor(ctor: ast.ConstructorDef) -> List(String):
+  case ctor:
+    ast.ConstructorDef(_, _, field_types, _) ->
+      list.flat_map(field_types, scope.refs_in_annotation)
 
 fn check_imports(
   imports: List(ast.Import),

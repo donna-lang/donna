@@ -7,7 +7,9 @@ import compiler/typesystem/types
 import compiler/typesystem/typed_ast
 import compiler/typesystem/env
 import compiler/parser/ast
+import compiler/parser/parse_exprs
 import errors/error
+import utilities/location
 import donna/result
 import donna/list
 import donna/string
@@ -30,15 +32,17 @@ pub fn check_module_with_imports(
     ast.Module(_, module_imports, consts, type_defs, fns) ->
       let declared = collect_declared_aliases(module_imports, [])
       let relevant = filter_imports_by_alias(imports, declared)
-      let env0 = env.new_env()
-      let env0b = register_import_aliases(module_imports, env0)
-      let env1 = add_imports_to_env(relevant, env0b)
+      let env0_raw = env.new_env()
+      let env0 = env.env_bind(env0_raw, "Nil", types.TNil)
+      let env0b = add_builtin_bindings(env0)
+      let env0c = register_import_aliases(module_imports, env0b)
+      let env1 = add_imports_to_env(relevant, env0c)
       let imported_ctor_info = env.env_ctor_info(env1)
       let #(typed_type_defs, env2) = check_type_defs(type_defs, env1)
       case check_constants(consts, env2, []):
         result.Error(e) -> result.Error([e])
         result.Ok(#(env3, typed_consts)) ->
-          let #(env4, typed_fns, fn_errors) = check_functions(fns, env3)
+          let #(_env4, typed_fns, fn_errors) = check_functions(fns, env3)
           case list.is_empty(fn_errors):
             False -> result.Error(fn_errors)
             True ->
@@ -54,6 +58,15 @@ pub fn check_module_with_imports(
                   )
                 )
               )
+
+fn add_builtin_bindings(e: env.Env) -> env.Env:
+  let e1 = env.env_bind(e, "char_at", types.TFnType([types.TString, types.TInt], types.TInt))
+  let e2 = env.env_bind(e1, "string_length", types.TFnType([types.TString], types.TInt))
+  let e3 = env.env_bind(e2, "string_equal", types.TFnType([types.TString, types.TString], types.TBool))
+  let e4 = env.env_bind(e3, "substring", types.TFnType([types.TString, types.TInt, types.TInt], types.TString))
+  let e5 = env.env_bind(e4, "int_to_string", types.TFnType([types.TInt], types.TString))
+  let e6 = env.env_bind(e5, "string_to_int", types.TFnType([types.TString], types.TInt))
+  env.env_bind(e6, "print_str", types.TFnType([types.TString], types.TNil))
 
 /// Extract the public interface exported by a typed module.
 pub fn extract_interface(m: typed_ast.TypedModule) -> typed_ast.ModuleInterface:
@@ -280,9 +293,10 @@ fn check_functions(
   fns: List(ast.Function),
   e: env.Env
 ) -> #(env.Env, List(typed_ast.TypedFunction), List(error.DonnaError)):
-  let e1 = register_fn_sigs(fns, e)
+  let #(e1, dup_errors) = register_fn_sigs(fns, e)
   let e2 = infer_return_types(fns, e1)
-  check_function_bodies(fns, e2, [], [])
+  let #(e3, typed_fns, body_errors) = check_function_bodies(fns, e2, [], [])
+  #(e3, typed_fns, list.append(dup_errors, body_errors))
 
 fn infer_return_types(fns: List(ast.Function), e: env.Env) -> env.Env:
   case fns:
@@ -307,17 +321,43 @@ fn infer_return_type_one(f: ast.Function, e: env.Env) -> env.Env:
               let param_types = list.map(param_pairs, pair_snd)
               env.env_bind(e, name, types.TFnType(param_types, body_type))
 
-fn register_fn_sigs(fns: List(ast.Function), e: env.Env) -> env.Env:
+fn register_fn_sigs(
+  fns: List(ast.Function),
+  e: env.Env
+) -> #(env.Env, List(error.DonnaError)):
+  register_fn_sigs_loop(fns, e, [], [])
+
+fn register_fn_sigs_loop(
+  fns: List(ast.Function),
+  e: env.Env,
+  seen: List(String),
+  errs: List(error.DonnaError)
+) -> #(env.Env, List(error.DonnaError)):
   case fns:
-    [] -> e
+    [] -> #(e, list.reverse(errs))
     [f, ..rest] ->
-      let e2 = env.env_bind(e, fn_name(f), function_sig_type(f))
-      register_fn_sigs(rest, e2)
+      let name = fn_name(f)
+      case list.contains_str(seen, name):
+        True ->
+          register_fn_sigs_loop(
+            rest,
+            e,
+            seen,
+            [error.TypeDuplicateFunction(name, fn_span(f)), ..errs]
+          )
+        False ->
+          let e2 = env.env_bind(e, name, function_sig_type(f))
+          register_fn_sigs_loop(rest, e2, [name, ..seen], errs)
 
 fn fn_name(f: ast.Function) -> String:
   case f:
     ast.Function(name, _, _, _, _, _) -> name
     ast.ExternalFn(name, _, _, _, _, _, _) -> name
+
+fn fn_span(f: ast.Function) -> location.Span:
+  case f:
+    ast.Function(_, _, _, _, _, sp) -> sp
+    ast.ExternalFn(_, _, _, _, _, _, sp) -> sp
 
 fn function_sig_type(f: ast.Function) -> types.Type:
   let params = fn_params(f)
@@ -434,7 +474,7 @@ fn check_function(
                   let err = error.TypeInvalidReturn(
                     types.type_to_string(declared_ret),
                     types.type_to_string(body_type),
-                    fn_span
+                    return_expr_span(body)
                   )
                   #(option.None, [err], e2)
                 True ->
@@ -453,6 +493,23 @@ fn check_function(
                     [],
                     e2
                   )
+
+fn return_expr_span(body: ast.Expr) -> location.Span:
+  case body:
+    ast.Block(stmts, sp) -> last_stmt_span(stmts, sp)
+    _ -> parse_exprs.expr_span(body)
+
+fn last_stmt_span(stmts: List(ast.Stmt), fallback: location.Span) -> location.Span:
+  case stmts:
+    [] -> fallback
+    [stmt] -> stmt_span(stmt)
+    [_, ..rest] -> last_stmt_span(rest, fallback)
+
+fn stmt_span(stmt: ast.Stmt) -> location.Span:
+  case stmt:
+    ast.LetStmt(_, _, _, sp) -> sp
+    ast.LetPatStmt(_, _, sp) -> sp
+    ast.ExprStmt(expr, _) -> parse_exprs.expr_span(expr)
 
 fn build_param_pairs(
   params: List(ast.Param),
@@ -487,35 +544,42 @@ pub fn infer_expr(
       result.Ok(#(types.TEStringLit(v, types.TString), e))
     ast.BoolLit(v, _) ->
       result.Ok(#(types.TEBoolLit(v, types.TBool), e))
-    ast.Var(name, _) ->
-      let t = case env.env_lookup(e, name):
-        option.Some(found) -> found
+    ast.Var(name, sp) ->
+      case env.env_lookup(e, name):
+        option.Some(found) ->
+          result.Ok(#(types.TEVar(name, found), e))
         option.None ->
-          let #(tv, _) = env.fresh_var(e)
-          tv
-      result.Ok(#(types.TEVar(name, t), e))
+          result.Error(error.TypeUndefinedVar(name, sp))
     ast.FieldAccess(obj, field, span) ->
-      case infer_expr(obj, e):
-        result.Error(err) -> result.Error(err)
-        result.Ok(#(typed_obj, e2)) ->
-          case typed_obj:
-            types.TEVar(alias, _) ->
-              case env.env_lookup_module(e2, alias):
+      case obj:
+        ast.Var(alias, _) ->
+          case env.env_lookup_module(e, alias):
+            option.Some(iface) ->
+              let full_path = case env.env_lookup_alias(e, alias):
+                option.Some(p) -> p
+                option.None -> alias
+              case lookup_binding(iface_bindings(iface), field):
+                option.Some(bt) ->
+                  result.Ok(
+                    #(types.TEFieldAccess(types.TEVar(alias, bt), field, full_path, bt), e)
+                  )
+                option.None ->
+                  result.Error(
+                    error.TypeUndefinedVar(alias <> "." <> field, span)
+                  )
+            option.None ->
+              case env.env_lookup(e, alias):
                 option.None ->
                   result.Error(error.TypeUndefinedModule(alias, span))
-                option.Some(iface) ->
-                  let full_path = case env.env_lookup_alias(e2, alias):
-                    option.Some(p) -> p
-                    option.None -> alias
-                  let t = case lookup_binding(iface_bindings(iface), field):
-                    option.Some(bt) -> bt
-                    option.None ->
-                      let #(tv, _) = env.fresh_var(e2)
-                      tv
+                option.Some(obj_type) ->
+                  let #(t, e2) = env.fresh_var(e)
                   result.Ok(
-                    #(types.TEFieldAccess(typed_obj, field, full_path, t), e2)
+                    #(types.TEFieldAccess(types.TEVar(alias, obj_type), field, "", t), e2)
                   )
-            _ ->
+        _ ->
+          case infer_expr(obj, e):
+            result.Error(err) -> result.Error(err)
+            result.Ok(#(typed_obj, e2)) ->
               let #(t, e3) = env.fresh_var(e2)
               result.Ok(#(types.TEFieldAccess(typed_obj, field, "", t), e3))
     ast.Call(fn_expr, args, call_span) ->
@@ -543,9 +607,18 @@ pub fn infer_expr(
                       result.Ok(
                         #(types.TECall(typed_fn, typed_args, ret_type), e3)
                       )
-                _ ->
-                  let #(tv, _) = env.fresh_var(e3)
-                  result.Ok(#(types.TECall(typed_fn, typed_args, tv), e3))
+                callee_type ->
+                  case callee_type:
+                    types.TTypeVar(_) ->
+                      let #(tv, _) = env.fresh_var(e3)
+                      result.Ok(#(types.TECall(typed_fn, typed_args, tv), e3))
+                    _ ->
+                      result.Error(
+                        error.TypeNotAFunction(
+                          types.type_to_string(callee_type),
+                          call_span
+                        )
+                      )
     ast.BinOp(op, left, right, sp) ->
       case infer_expr(left, e):
         result.Error(err) -> result.Error(err)
@@ -642,12 +715,20 @@ pub fn infer_expr(
           let param_types = list.map(param_pairs, pair_snd)
           let fn_type = types.TFnType(param_types, body_type)
           result.Ok(#(types.TELambda(param_pairs, typed_body, fn_type), e))
-    ast.Panic(inner, _) ->
+    ast.Panic(inner, sp) ->
       case infer_expr(inner, e):
         result.Error(err) -> result.Error(err)
         result.Ok(#(typed_inner, e2)) ->
-          let #(tv, e3) = env.fresh_var(e2)
-          result.Ok(#(types.TEPanic(typed_inner, tv), e3))
+          let inner_type = types.typed_expr_type(typed_inner)
+          case inner_type:
+            types.TString ->
+              result.Error(error.TypePanic(types.type_to_string(inner_type), sp))
+            types.TTypeVar(_) ->
+              result.Error(error.TypePanic(types.type_to_string(inner_type), sp))
+            _ ->
+              result.Error(
+                error.TypeMismatch("String", types.type_to_string(inner_type), sp)
+              )
     ast.Todo(_) ->
       let #(tv, e2) = env.fresh_var(e)
       result.Ok(#(types.TETodo(tv), e2))
@@ -1124,7 +1205,7 @@ fn check_binop_types(
           result.Error(error.TypeMismatch("Bool", types.type_to_string(lt), sp))
     _ -> result.Ok(True)
 
-fn binop_result_type(op: ast.BinOpKind, left_type: types.Type) -> types.Type:
+fn binop_result_type(op: ast.BinOpKind, _left_type: types.Type) -> types.Type:
   case op:
     ast.BAdd -> types.TInt
     ast.BSub -> types.TInt

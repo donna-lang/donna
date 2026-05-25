@@ -148,6 +148,7 @@ fn error_name(e: error.DonnaError) -> String:
     error.TypeNotAFunction(_, _) -> "TypeNotAFunction"
     error.TypeDuplicateFunction(_, _) -> "TypeDuplicateFunction"
     error.TypeInvalidReturn(_, _, _) -> "TypeInvalidReturn"
+    error.TypePanic(_, _) -> "TypePanic"
     error.TypeUndefinedConstructor(_, _) -> "TypeUndefinedConstructor"
     error.TypeOpaqueConstructor(_, _) -> "TypeOpaqueConstructor"
 
@@ -218,6 +219,21 @@ pub fn check_nil_ret_type_test() -> String:
       case typed_fns(m):
         [f, ..] -> type_str(fn_ret_type(f)) |> should.equal_string("Nil")
         [] -> should.fail("no functions")
+
+pub fn check_invalid_return_type_error_test() -> String:
+  let src = "pub fn get_number() -> Int:\n  42\npub fn main() -> Nil:\n  get_number()"
+  case check_src(src):
+    result.Error(errs) ->
+      case errs:
+        [error.TypeInvalidReturn(expected, found, _), ..] ->
+          should.all([
+            expected |> should.equal_string("Nil"),
+            found |> should.equal_string("Int")
+          ])
+        [e, ..] ->
+          should.fail("expected TypeInvalidReturn, got: " <> error_name(e))
+        [] -> should.fail("expected TypeInvalidReturn, got empty errors")
+    result.Ok(_) -> should.fail("should have rejected invalid return type")
 
 // ── Function signature types ──────────────────────────────────────────────────
 
@@ -639,8 +655,12 @@ pub fn check_todo_type_test() -> String:
 pub fn check_panic_type_test() -> String:
   let src = "fn f() -> Int:\n  panic \"unreachable\""
   case check_src(src):
-    result.Error(_) -> should.fail("expected Ok")
-    result.Ok(m) -> list.length(typed_fns(m)) |> should.equal_int(1)
+    result.Error(errs) ->
+      case errs:
+        [error.TypePanic("String", _), ..] -> ""
+        [e, ..] -> should.fail("expected TypePanic, got: " <> error_name(e))
+        [] -> should.fail("expected TypePanic, got empty errors")
+    result.Ok(_) -> should.fail("should have rejected panic")
 
 // ── External functions ────────────────────────────────────────────────────────
 
@@ -869,6 +889,17 @@ pub fn check_bool_op_on_int_error_test() -> String:
     result.Error(_) -> ""
     result.Ok(_) -> should.fail("should have rejected non-bool in &&")
 
+pub fn check_undefined_var_error_test() -> String:
+  case check_src("fn f() -> Int:\n  missing"):
+    result.Error(errs) ->
+      case errs:
+        [error.TypeUndefinedVar(name, _), ..] ->
+          name |> should.equal_string("missing")
+        [e, ..] ->
+          should.fail("expected TypeUndefinedVar, got: " <> error_name(e))
+        [] -> should.fail("expected TypeUndefinedVar, got empty errors")
+    result.Ok(_) -> should.fail("should have rejected undefined variable")
+
 pub fn check_missing_module_import_error_test() -> String:
   case check_src("fn f() -> String:\n  string.to_slug(\"Language Tour\")"):
     result.Error(errs) ->
@@ -877,6 +908,19 @@ pub fn check_missing_module_import_error_test() -> String:
           name |> should.equal_string("string")
         _ -> should.fail("expected undefined module error")
     result.Ok(_) -> should.fail("should have rejected module call without import")
+
+pub fn check_missing_imported_field_error_test() -> String:
+  let src = "import donna/io\nfn f() -> Nil:\n  io.stderr(\"bad\")"
+  let imports = [#("donna/io", typed_ast.ModuleInterface([#("eprint", types.TFnType([types.TString], types.TNil))], []))]
+  case check_src_with_imports(src, imports):
+    result.Error(errs) ->
+      case errs:
+        [error.TypeUndefinedVar(name, _), ..] ->
+          name |> should.equal_string("io.stderr")
+        [e, ..] ->
+          should.fail("expected TypeUndefinedVar, got: " <> error_name(e))
+        [] -> should.fail("expected TypeUndefinedVar, got empty errors")
+    result.Ok(_) -> should.fail("should have rejected missing imported field")
 
 pub fn check_function_wrong_arg_count_error_test() -> String:
   let src = "fn add(a: Int, b: Int) -> Int:\n  a + b\nfn f() -> Int:\n  add(1)"

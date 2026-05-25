@@ -847,7 +847,7 @@ fn lex_token(
         src,
         pos + 1,
         line,
-        col,
+        col + 1,
         file,
         stack,
         acc,
@@ -897,6 +897,7 @@ fn lex_string(
     False ->
       case string.char_str(src, pos):
         "\"" ->
+          let string_sp = location.merge(sp, span(file, line, col, pos))
           lex_loop(
             src,
             pos + 1,
@@ -904,7 +905,7 @@ fn lex_string(
             col + 1,
             file,
             stack,
-            [#(token.TokString(buf), sp), ..acc],
+            [#(token.TokString(buf), string_sp), ..acc],
             errs,
             depth
           )

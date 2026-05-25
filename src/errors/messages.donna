@@ -46,7 +46,7 @@ pub fn error_message(e: error.DonnaError) -> #(String, String, String):
       #(
         "unexpected token",
         "found `" <> got <> "`, expected " <> expected,
-        hint_for_unexpected(expected)
+        hint_for_unexpected_token(got, expected)
       )
     error.ParseUnexpectedEof(expected, _) ->
       #(
@@ -86,9 +86,9 @@ pub fn error_message(e: error.DonnaError) -> #(String, String, String):
       )
     error.TypeMismatch(expected, found, _) ->
       #(
-        "type mismatch",
-        "expected `" <> expected <> "`, found `" <> found <> "`",
-        "check that the types match or update the annotation"
+        "Type mismatch",
+        "",
+        ""
       )
     error.TypeUndefinedVar(name, _) ->
       #(
@@ -122,15 +122,21 @@ pub fn error_message(e: error.DonnaError) -> #(String, String, String):
       )
     error.TypeInvalidReturn(expected, found, _) ->
       #(
-        "invalid return type",
-        "function returns `" <> found <> "`, declared as `" <> expected <> "`",
-        "change the return type annotation to `" <> found <> "` or fix the function body"
+        "Type mismatch",
+        "",
+        ""
+      )
+    error.TypePanic(message_type, _) ->
+      #(
+        "panic is not allowed",
+        "panic stops compilation; message has type `" <> message_type <> "`",
+        "return an error value or remove the panic"
       )
     error.TypeUndefinedConstructor(name, _) ->
       #(
         "undefined constructor",
         "`" <> name <> "` is not defined in this scope",
-        "add the missing import at the top of the file, e.g. `import donna/option`"
+        "check the constructor name is spelled correctly and the right module is imported"
       )
     error.TypeOpaqueConstructor(name, _) ->
       #(
@@ -139,6 +145,29 @@ pub fn error_message(e: error.DonnaError) -> #(String, String, String):
         "opaque constructors cannot be used outside their defining module"
       )
  
+fn hint_for_unexpected_token(got: String, expected: String) -> String:
+  case is_keyword(got):
+    True -> "`" <> got <> "` is a reserved keyword and cannot be used as a name"
+    False -> hint_for_unexpected(expected)
+
+fn is_keyword(s: String) -> Bool:
+  case s:
+    "as" -> True
+    "case" -> True
+    "const" -> True
+    "echo" -> True
+    "external" -> True
+    "fn" -> True
+    "if" -> True
+    "import" -> True
+    "let" -> True
+    "opaque" -> True
+    "panic" -> True
+    "pub" -> True
+    "todo" -> True
+    "type" -> True
+    _ -> False
+
 fn hint_for_unexpected(expected: String) -> String:
   case expected:
     "function name" -> "function names must start with a lowercase letter"

@@ -12,7 +12,31 @@ pub fn render_error(e: error.DonnaError, src: String) -> String:
   let span = error.error_span(e)
   let #(title, label, hint) = messages.error_message(e)
   let header = colors.error_header("error") <> colors.bold(": " <> title)
-  render(header, label, hint, span, src, colors.error_header)
+  case e:
+    error.TypeMismatch(expected, found, _) ->
+      render_type_mismatch(
+        header,
+        type_mismatch_body(
+          "The type of this value doesn't match the expected type.",
+          expected,
+          found
+        ),
+        span,
+        src
+      )
+    error.TypeInvalidReturn(expected, found, _) ->
+      render_type_mismatch(
+        header,
+        type_mismatch_body(
+          "The type of this returned value doesn't match the return type\nannotation of this function.",
+          expected,
+          found
+        ),
+        span,
+        src
+      )
+    _ ->
+      render(header, label, hint, span, src, colors.error_header)
 
 /// Render a compiler warning with source context.
 pub fn render_warning(w: error.DonnaWarning, src: String) -> String:
@@ -37,7 +61,10 @@ fn render(
   let loc_line = colors.light_blue(pad <> " ┌─ ") <> colors.light_blue(location.short_label(span))
   let src_line = get_line(src, line_num)
   let carets = string.repeat("^", len)
-  let pointer = string.repeat(" ", col - 1) <> color(carets <> " " <> label)
+  let pointer_label = case string.is_empty(label):
+    True -> carets
+    False -> carets <> " " <> label
+  let pointer = string.repeat(" ", col - 1) <> color(pointer_label)
   let code_row = colors.light_blue(int.to_string(line_num) <> " │") <> "  " <> src_line
   let ptr_row = gutter <> "  " <> pointer
   let hint_row = case string.is_empty(hint):
@@ -47,6 +74,17 @@ fn render(
     [header, loc_line, colors.light_blue(pad <> " │"), code_row, ptr_row],
     "\n"
   ) <> hint_row
+
+fn render_type_mismatch(
+  header: String,
+  body: String,
+  span: location.Span,
+  src: String
+) -> String:
+  render(header, "", "", span, src, colors.error_header) <> "\n\n" <> body
+
+fn type_mismatch_body(intro: String, expected: String, found: String) -> String:
+  intro <> "\n\nExpected type:\n\n    " <> expected <> "\n\nFound type:\n\n    " <> found
 
 fn get_line(src: String, line_num: Int) -> String:
   let lines = string.split(src, "\n")
