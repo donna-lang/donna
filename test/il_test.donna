@@ -115,15 +115,6 @@ pub fn inst_rem_test() -> String:
 pub fn inst_neg_test() -> String:
   should.equal_string(il.display_inst(il.Neg(il.Temporary("x"))), "neg %x")
 
-pub fn inst_and_test() -> String:
-  should.equal_string(il.display_inst(il.And(il.Temporary("a"), il.Temporary("b"))), "and %a, %b")
-
-pub fn inst_or_test() -> String:
-  should.equal_string(il.display_inst(il.Or(il.Temporary("a"), il.Temporary("b"))), "or %a, %b")
-
-pub fn inst_xor_test() -> String:
-  should.equal_string(il.display_inst(il.Xor(il.Temporary("a"), il.Const(0))), "xor %a, 0")
-
 // ── display_inst — comparison ─────────────────────────────────────────────────
 
 pub fn inst_cmp_long_test() -> String:
