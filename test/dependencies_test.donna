@@ -7,38 +7,38 @@ import donna/result
 import donna/string
 import unittest/should
 
-fn reset_dir(path: String) -> Nil:
-  let _ = shell.run("rm -rf " <> path)
-  let _ = files.mkdir(path)
+fn reset_dir(dir: String) -> Nil:
+  let _ = shell.run("rm -rf " <> dir)
+  let _ = files.mkdir(dir)
   Nil
 
-fn write_project(path: String, name: String, deps: String) -> Nil:
-  let _ = files.mkdir(path)
-  let _ = files.mkdir(path.join(path, "src"))
+fn write_project(dir: String, name: String, deps: String) -> Nil:
+  let _ = files.mkdir(dir)
+  let _ = files.mkdir(path.join(dir, "src"))
   let _ = files.write(
-    path.join(path, "donna.toml"),
+    path.join(dir, "donna.toml"),
     "name = \"" <> name <> "\"\nversion = \"0.1.0\"\n\n" <> deps
   )
   let _ = files.write(
-    path.join(path.join(path, "src"), name <> ".donna"),
+    path.join(path.join(dir, "src"), name <> ".donna"),
     "pub fn value() -> Int:\n  1\n"
   )
   Nil
 
 fn write_project_with_repo(
-  path: String,
+  dir: String,
   name: String,
   repo: String,
   deps: String
 ) -> Nil:
-  let _ = files.mkdir(path)
-  let _ = files.mkdir(path.join(path, "src"))
+  let _ = files.mkdir(dir)
+  let _ = files.mkdir(path.join(dir, "src"))
   let _ = files.write(
-    path.join(path, "donna.toml"),
+    path.join(dir, "donna.toml"),
     "name = \"" <> name <> "\"\nversion = \"0.1.0\"\nrepository = { type = \"github\", user = \"me\", repo = \"" <> repo <> "\" }\n\n" <> deps
   )
   let _ = files.write(
-    path.join(path.join(path, "src"), name <> ".donna"),
+    path.join(path.join(dir, "src"), name <> ".donna"),
     "pub fn value() -> Int:\n  1\n"
   )
   Nil
