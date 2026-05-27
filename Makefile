@@ -31,7 +31,7 @@ ci: build
 	rm -f "$(DONNA)"
 	ulimit -s unlimited || ulimit -s 32768 || true; PATH="$(CI_PATH)" "$(BOOTSTRAP_DONNA)" build
 	test -x "$(DONNA)"
-	ulimit -s unlimited || ulimit -s 32768 || true; PATH="$(CI_PATH)" "$(DONNA)" test
+	ulimit -s unlimited || ulimit -s 32768 || true; PATH="$(CI_PATH)" DONNA="$(DONNA)" ./scripts/ci-test-modules.sh
 	PATH="$(CI_PATH)" DONNA="$(DONNA)" ./scripts/smoke-fresh-project.sh
 	"$(DONNA)" version
 
