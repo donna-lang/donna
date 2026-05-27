@@ -1,0 +1,491 @@
+//// Completion support for Donna LSP.
+////
+//// This is intentionally source-based for now: keyword completions plus
+//// top-level functions/types from the nearest Donna package.
+
+import donna/string
+import donna/files
+import donna/shell
+import donna/path
+import json
+import tools/lsp/lsp
+import tools/lsp/uri
+
+pub fn completions_at(
+  uri: String,
+  line_no: Int,
+  character: Int,
+  root_path: String
+) -> json.Json:
+  let source = files.read(uri.uri_to_path(uri))
+  completions_in_source(source, line_no, character, root_path)
+
+pub fn completions_in_source(
+  source: String,
+  line_no: Int,
+  character: Int,
+  root_path: String
+) -> json.Json:
+  let line = line_at(string.split(source, "\n"), line_no)
+  let query = prefix_at(line, character)
+  let qualifier = qualifier_at(line, character)
+  let rng = completion_range(line_no, character, query)
+  case string.is_empty(qualifier):
+    True -> completions_for_source(root_path, source, query, rng)
+    False -> imported_completions(root_path, source, qualifier, query, rng)
+
+pub fn completions(root_path: String, query: String, rng: json.Json) -> json.Json:
+  completions_for_source(root_path, "", query, rng)
+
+pub fn completions_for_source(
+  root_path: String,
+  source: String,
+  query: String,
+  rng: json.Json
+) -> json.Json:
+  json.Array(
+    keyword_items(
+      query,
+      rng,
+      imported_unqualified_items(root_path, source, query, rng, symbol_items(root_path, query, rng, []))
+    )
+  )
+
+pub fn imported_completions(
+  root_path: String,
+  source: String,
+  qualifier: String,
+  query: String,
+  rng: json.Json
+) -> json.Json:
+  json.Array(import_items(root_path, string.split(source, "\n"), qualifier, query, rng, []))
+
+fn keyword_items(query: String, rng: json.Json, acc: List(json.Json)) -> List(json.Json):
+  add_keywords([
+    "as",
+    "case",
+    "const",
+    "echo",
+    "external",
+    "False",
+    "fn",
+    "if",
+    "import",
+    "let",
+    "Nil",
+    "opaque",
+    "panic",
+    "pub",
+    "todo",
+    "True",
+    "type"
+  ], query, rng, acc)
+
+fn add_keywords(
+  words: List(String),
+  query: String,
+  rng: json.Json,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case words:
+    [] -> acc
+    [word, ..rest] ->
+      case matches_query(word, query):
+        True -> add_keywords(rest, query, rng, [lsp.completion_item_edit(word, 14, "", rng), ..acc])
+        False -> add_keywords(rest, query, rng, acc)
+
+fn symbol_items(
+  root_path: String,
+  query: String,
+  rng: json.Json,
+  acc: List(json.Json)
+) -> List(json.Json):
+  let output = shell.capture(
+    "find " <> shell_quote(root_path) <> " -name '*.donna' -type f 2>/dev/null"
+  )
+  scan_files(string.split(output, "\n"), query, rng, acc)
+
+fn scan_files(
+  paths: List(String),
+  query: String,
+  rng: json.Json,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case paths:
+    [] -> reverse_json(acc)
+    [p, ..rest] ->
+      let path = string.trim(p)
+      case string.is_empty(path):
+        True -> scan_files(rest, query, rng, acc)
+        False ->
+          let uri = uri.file_uri("", path)
+          scan_files(rest, query, rng, scan_lines(string.split(files.read(path), "\n"), uri, query, rng, acc))
+
+fn scan_lines(
+  lines: List(String),
+  uri: String,
+  query: String,
+  rng: json.Json,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case lines:
+    [] -> acc
+    [line, ..rest] ->
+      scan_lines(rest, uri, query, rng, add_symbol_item(line, uri, query, rng, acc))
+
+fn import_items(
+  root_path: String,
+  lines: List(String),
+  qualifier: String,
+  query: String,
+  rng: json.Json,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case lines:
+    [] -> reverse_json(acc)
+    [line, ..rest] ->
+      case parse_import(line):
+        json.Null -> import_items(root_path, rest, qualifier, query, rng, acc)
+        imp ->
+          case string.equal(get_str(imp, "alias"), qualifier):
+            True ->
+              let module_name = get_str(imp, "module")
+              let paths = module_source_paths(root_path, module_name)
+              import_items(
+                root_path,
+                rest,
+                qualifier,
+                query,
+                rng,
+                scan_import_paths(paths, module_name, query, rng, acc)
+              )
+            False -> import_items(root_path, rest, qualifier, query, rng, acc)
+
+fn imported_unqualified_items(
+  root_path: String,
+  source: String,
+  query: String,
+  rng: json.Json,
+  acc: List(json.Json)
+) -> List(json.Json):
+  scan_all_imports(root_path, string.split(source, "\n"), query, rng, acc)
+
+fn scan_all_imports(
+  root_path: String,
+  lines: List(String),
+  query: String,
+  rng: json.Json,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case lines:
+    [] -> acc
+    [line, ..rest] ->
+      case parse_import(line):
+        json.Null -> scan_all_imports(root_path, rest, query, rng, acc)
+        imp ->
+          let module_name = get_str(imp, "module")
+          scan_all_imports(
+            root_path,
+            rest,
+            query,
+            rng,
+            scan_import_paths(module_source_paths(root_path, module_name), module_name, query, rng, acc)
+          )
+
+fn scan_import_paths(
+  paths: List(String),
+  module_name: String,
+  query: String,
+  rng: json.Json,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case paths:
+    [] -> acc
+    [p, ..rest] ->
+      let file_path = string.trim(p)
+      case string.is_empty(file_path):
+        True -> scan_import_paths(rest, module_name, query, rng, acc)
+        False ->
+          scan_import_paths(
+            rest,
+            module_name,
+            query,
+            rng,
+            scan_import_lines(
+              string.split(files.read(file_path), "\n"),
+              module_name,
+              query,
+              rng,
+              acc
+            )
+          )
+
+fn scan_import_lines(
+  lines: List(String),
+  module_name: String,
+  query: String,
+  rng: json.Json,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case lines:
+    [] -> acc
+    [line, ..rest] ->
+      scan_import_lines(rest, module_name, query, rng, add_import_symbol(line, module_name, query, rng, acc))
+
+fn add_import_symbol(
+  line: String,
+  module_name: String,
+  query: String,
+  rng: json.Json,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case parse_public_decl(line, "pub fn ", 3, module_name, rng):
+    json.Null ->
+      case parse_public_decl(line, "pub type ", 22, module_name, rng):
+        json.Null -> acc
+        item -> add_if_match(item, query, acc)
+    item -> add_if_match(item, query, acc)
+
+fn parse_import(line: String) -> json.Json:
+  let trimmed = string.trim(line)
+  case string.starts_with(trimmed, "import "):
+    False -> json.Null
+    True ->
+      let rest = string.trim(string.slice(trimmed, 7, string.length(trimmed) - 7))
+      let module_name = read_import_path(rest, 0, "")
+      case string.is_empty(module_name):
+        True -> json.Null
+        False ->
+          json.Object([
+            #("module", json.Str(module_name)),
+            #("alias", json.Str(import_alias(module_name, rest)))
+          ])
+
+fn read_import_path(s: String, i: Int, acc: String) -> String:
+  case i >= string.length(s):
+    True -> acc
+    False ->
+      let ch = string.char_str(s, i)
+      case is_import_char(ch):
+        True -> read_import_path(s, i + 1, acc <> ch)
+        False -> acc
+
+fn import_alias(module_name: String, import_rest: String) -> String:
+  let as_i = string.index_of(import_rest, " as ")
+  case as_i == -1:
+    True -> basename_slash(module_name)
+    False ->
+      let raw = string.slice(import_rest, as_i + 4, string.length(import_rest) - as_i - 4)
+      let alias = read_identifier(string.trim(raw), 0, "")
+      case string.is_empty(alias):
+        True -> basename_slash(module_name)
+        False -> alias
+
+fn module_source_paths(root_path: String, module_name: String) -> List(String):
+  let local_full = path.join(path.join(root_path, "src"), module_name <> ".donna")
+  let local_tail = path.join(path.join(root_path, "src"), module_tail(module_name) <> ".donna")
+  let found = shell.capture(
+    "find " <> shell_quote(workspace_root(root_path)) <>
+      " -path '*/src/" <> module_tail(module_name) <> ".donna' -type f 2>/dev/null"
+  )
+  [local_full, local_tail, ..string.split(found, "\n")]
+
+fn workspace_root(dir: String) -> String:
+  case files.exists(path.join(dir, "donna official packages")):
+    True -> dir
+    False ->
+      case files.exists(path.join(dir, "donna personal packages")):
+        True -> dir
+        False ->
+          let parent = path.dirname(dir)
+          case string.equal(parent, dir):
+            True -> dir
+            False -> workspace_root(parent)
+
+fn module_tail(module_name: String) -> String:
+  case string.index_of(module_name, "/") == -1:
+    True -> module_name
+    False -> drop_first_segment(module_name)
+
+fn drop_first_segment(s: String) -> String:
+  let i = string.index_of(s, "/")
+  case i == -1:
+    True -> s
+    False -> string.slice(s, i + 1, string.length(s) - i - 1)
+
+fn add_symbol_item(
+  line: String,
+  uri: String,
+  query: String,
+  rng: json.Json,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case parse_decl(line, "pub fn ", 3, uri, rng):
+    json.Null ->
+      case parse_decl(line, "fn ", 3, uri, rng):
+        json.Null ->
+          case parse_decl(line, "pub type ", 22, uri, rng):
+            json.Null -> add_if_match(parse_decl(line, "type ", 22, uri, rng), query, acc)
+            item -> add_if_match(item, query, acc)
+        item -> add_if_match(item, query, acc)
+    item -> add_if_match(item, query, acc)
+
+fn add_if_match(item: json.Json, query: String, acc: List(json.Json)) -> List(json.Json):
+  case item:
+    json.Null -> acc
+    _ ->
+      case matches_query(get_str(item, "label"), query):
+        True -> [item, ..acc]
+        False -> acc
+
+fn parse_decl(line: String, prefix: String, kind: Int, uri: String, rng: json.Json) -> json.Json:
+  case is_top_level(line):
+    False -> json.Null
+    True ->
+      case string.starts_with(line, prefix):
+        False -> json.Null
+        True ->
+          let name = read_identifier(line, string.length(prefix), "")
+          case string.is_empty(name):
+            True -> json.Null
+            False -> lsp.completion_item_edit(name, kind, line <> "\n" <> uri, rng)
+
+fn parse_public_decl(
+  line: String,
+  prefix: String,
+  kind: Int,
+  module_name: String,
+  rng: json.Json
+) -> json.Json:
+  case is_top_level(line):
+    False -> json.Null
+    True ->
+      case string.starts_with(line, prefix):
+        False -> json.Null
+        True ->
+          let name = read_identifier(line, string.length(prefix), "")
+          case string.is_empty(name):
+            True -> json.Null
+            False -> lsp.completion_item_edit(name, kind, line <> "\nimport " <> module_name, rng)
+
+fn read_identifier(line: String, i: Int, acc: String) -> String:
+  case i >= string.length(line):
+    True -> acc
+    False ->
+      let ch = string.char_str(line, i)
+      case is_identifier_char(ch):
+        True -> read_identifier(line, i + 1, acc <> ch)
+        False -> acc
+
+fn line_at(lines: List(String), target: Int) -> String:
+  case lines:
+    [] -> ""
+    [line, ..rest] ->
+      case target <= 0:
+        True -> line
+        False -> line_at(rest, target - 1)
+
+fn prefix_at(line: String, character: Int) -> String:
+  let end = clamp_end(line, character)
+  let start = prefix_start(line, end)
+  string.slice(line, start, end - start)
+
+fn completion_range(line_no: Int, character: Int, query: String) -> json.Json:
+  let start = character - string.length(query)
+  case start < 0:
+    True -> lsp.range(line_no, 0, line_no, character)
+    False -> lsp.range(line_no, start, line_no, character)
+
+fn qualifier_at(line: String, character: Int) -> String:
+  let end = clamp_end(line, character)
+  let prefix_start_i = prefix_start(line, end)
+  case prefix_start_i <= 0:
+    True -> ""
+    False ->
+      case string.char_str(line, prefix_start_i - 1):
+        "." -> qualifier_before_dot(line, prefix_start_i - 1)
+        _ -> ""
+
+fn qualifier_before_dot(line: String, dot_i: Int) -> String:
+  case dot_i <= 0:
+    True -> ""
+    False ->
+      let start = prefix_start(line, dot_i)
+      string.slice(line, start, dot_i - start)
+
+fn clamp_end(line: String, character: Int) -> Int:
+  let len = string.length(line)
+  case character > len:
+    True -> len
+    False ->
+      case character < 0:
+        True -> 0
+        False -> character
+
+fn prefix_start(line: String, i: Int) -> Int:
+  case i <= 0:
+    True -> 0
+    False ->
+      case is_identifier_char(string.char_str(line, i - 1)):
+        True -> prefix_start(line, i - 1)
+        False -> i
+
+fn is_top_level(line: String) -> Bool:
+  case string.is_empty(line):
+    True -> False
+    False ->
+      case string.starts_with(line, " "):
+        True -> False
+        False ->
+          case string.starts_with(line, "\t"):
+            True -> False
+            False -> True
+
+fn is_identifier_char(ch: String) -> Bool:
+  string.contains(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+    ch
+  )
+
+fn is_import_char(ch: String) -> Bool:
+  string.contains(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/-",
+    ch
+  )
+
+fn basename_slash(s: String) -> String:
+  basename_slash_loop(s, 0, 0)
+
+fn basename_slash_loop(s: String, start: Int, i: Int) -> String:
+  case i >= string.length(s):
+    True -> string.slice(s, start, string.length(s) - start)
+    False ->
+      case string.char_str(s, i):
+        "/" -> basename_slash_loop(s, i + 1, i + 1)
+        _ -> basename_slash_loop(s, start, i + 1)
+
+fn matches_query(label: String, query: String) -> Bool:
+  case string.is_empty(query):
+    True -> True
+    False -> string.starts_with(string.lowercase(label), string.lowercase(query))
+
+fn get_str(obj: json.Json, key: String) -> String:
+  case json.as_string(get_field(obj, key)):
+    json.Ok(s) -> s
+    json.Err(_) -> ""
+
+fn get_field(obj: json.Json, key: String) -> json.Json:
+  case json.get(obj, key):
+    json.Err(_) -> json.Null
+    json.Ok(v) -> v
+
+fn reverse_json(xs: List(json.Json)) -> List(json.Json):
+  reverse_json_acc(xs, [])
+
+fn reverse_json_acc(xs: List(json.Json), acc: List(json.Json)) -> List(json.Json):
+  case xs:
+    [] -> acc
+    [x, ..rest] -> reverse_json_acc(rest, [x, ..acc])
+
+fn shell_quote(s: String) -> String:
+  "'" <> string.replace(s, "'", "'\\''") <> "'"

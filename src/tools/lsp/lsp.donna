@@ -1,0 +1,163 @@
+//// LSP response and notification builders.
+////
+//// All functions return json.Json values ready to be encoded and sent
+//// over the wire via rpc.write_message(json.encode(...)).
+
+import donna/string
+import json
+
+/// Build a success response for a request.
+pub fn response(id: json.Json, result: json.Json) -> json.Json:
+  json.Object([
+    #("jsonrpc", json.Str("2.0")),
+    #("id", id),
+    #("result", result)
+  ])
+
+/// Build a null/void success response (for shutdown, initialized, etc).
+pub fn null_response(id: json.Json) -> json.Json:
+  response(id, json.Null)
+
+/// Build a server-to-client notification (no id, no response expected).
+pub fn notification(method: String, params: json.Json) -> json.Json:
+  json.Object([
+    #("jsonrpc", json.Str("2.0")),
+    #("method", json.Str(method)),
+    #("params", params)
+  ])
+
+/// Build the result for the initialize request.
+pub fn initialize_result() -> json.Json:
+  json.Object([
+    #("capabilities", json.Object([
+      #("textDocumentSync", json.Object([
+        #("openClose", json.Bool(True)),
+        #("change", json.Int(1)),
+        #("save", json.Bool(True))
+      ])),
+      #("hoverProvider", json.Bool(True)),
+      #("definitionProvider", json.Bool(True)),
+      #("completionProvider", json.Object([
+        #("triggerCharacters", json.Array([
+          json.Str(".")
+        ]))
+      ])),
+      #("codeActionProvider", json.Bool(True)),
+      #("documentSymbolProvider", json.Bool(True)),
+      #("workspaceSymbolProvider", json.Bool(True))
+    ])),
+    #("serverInfo", json.Object([
+      #("name", json.Str("donna-lsp")),
+      #("version", json.Str("0.1.0"))
+    ]))
+  ])
+
+/// Build an LSP position (0-based line and character).
+pub fn position(line: Int, character: Int) -> json.Json:
+  json.Object([
+    #("line", json.Int(line)),
+    #("character", json.Int(character))
+  ])
+
+/// Build an LSP range from (start_line, start_char) to (end_line, end_char).
+pub fn range(
+  start_line: Int,
+  start_char: Int,
+  end_line: Int,
+  end_char: Int
+) -> json.Json:
+  json.Object([
+    #("start", position(start_line, start_char)),
+    #("end", position(end_line, end_char))
+  ])
+
+/// Build a diagnostic. severity: 1=Error 2=Warning 3=Info 4=Hint.
+pub fn diagnostic(rng: json.Json, severity: Int, message: String) -> json.Json:
+  json.Object([
+    #("range", rng),
+    #("severity", json.Int(severity)),
+    #("message", json.Str(message)),
+    #("source", json.Str("donna"))
+  ])
+
+/// Build a SymbolInformation item. kind: 12=Function 23=Struct/type.
+pub fn symbol_information(
+  name: String,
+  kind: Int,
+  uri: String,
+  rng: json.Json
+) -> json.Json:
+  json.Object([
+    #("name", json.Str(name)),
+    #("kind", json.Int(kind)),
+    #("location", json.Object([
+      #("uri", json.Str(uri)),
+      #("range", rng)
+    ]))
+  ])
+
+/// Build a textDocument/hover response.
+pub fn hover(contents: String, rng: json.Json) -> json.Json:
+  json.Object([
+    #("contents", json.Object([
+      #("kind", json.Str("markdown")),
+      #("value", json.Str(contents))
+    ])),
+    #("range", rng)
+  ])
+
+/// Build a Location item for go-to-definition.
+pub fn location(uri: String, rng: json.Json) -> json.Json:
+  json.Object([
+    #("uri", json.Str(uri)),
+    #("range", rng)
+  ])
+
+/// Build a CompletionItem. kind: 3=Function 14=Keyword 22=Struct/type.
+pub fn completion_item(label: String, kind: Int, detail: String) -> json.Json:
+  let base = [
+    #("label", json.Str(label)),
+    #("kind", json.Int(kind))
+  ]
+  case string_is_empty(detail):
+    True -> json.Object(base)
+    False ->
+      json.Object([
+        #("label", json.Str(label)),
+        #("kind", json.Int(kind)),
+        #("detail", json.Str(detail))
+      ])
+
+/// Build a CompletionItem with an explicit edit range.
+pub fn completion_item_edit(
+  label: String,
+  kind: Int,
+  detail: String,
+  rng: json.Json
+) -> json.Json:
+  json.Object([
+    #("label", json.Str(label)),
+    #("kind", json.Int(kind)),
+    #("detail", json.Str(detail)),
+    #("textEdit", json.Object([
+      #("range", rng),
+      #("newText", json.Str(label))
+    ]))
+  ])
+
+fn string_is_empty(s: String) -> Bool:
+  string.is_empty(s)
+
+/// Build a textDocument/publishDiagnostics notification.
+pub fn publish_diagnostics(uri: String, diags: List(json.Json)) -> json.Json:
+  notification(
+    "textDocument/publishDiagnostics",
+    json.Object([
+      #("uri", json.Str(uri)),
+      #("diagnostics", json.Array(diags))
+    ])
+  )
+
+/// Clear all diagnostics for a file.
+pub fn clear_diagnostics(uri: String) -> json.Json:
+  publish_diagnostics(uri, [])

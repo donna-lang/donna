@@ -6,11 +6,16 @@ All notable changes to `donna` will be documented in this file.
 
 ### Added
 
+- `donna lsp` starts the built-in Donna Language Server over stdio. The server currently provides diagnostics, hover, go-to-definition, document/workspace symbols, and completions.
+- Completion items now include explicit LSP `textEdit` ranges so editors replace the typed prefix instead of guessing the completion span.
+- LSP completions and document symbols now include public symbols from imported modules.
+- The LSP now keeps the latest opened/changed document text in memory, so completions use unsaved editor buffers. Qualified completions such as `string.` now return module members without falling back to keyword/global suggestions before the file is saved.
+- LSP code actions now provide quick fixes for common warnings: remove an import, prefix a binding with `_`, and make a private function public.
 - Lambda expressions now generate closure values with heap-allocated capture environments, allowing lambdas to reference values from their enclosing scope. Named functions used as values now get closure adapters so higher-order calls use the same closure ABI.
 
 ### Changed
 
-- Updated `donna_stdlib` dependency to v0.3.1 and changed new-project templates to require `>=0.3.1`.
+- Updated `donna_stdlib` dependency to v0.3.2, which includes the `io.read_n` helper used by `donna lsp`.
 
 ## [0.3.0] — 2026-05-25
 

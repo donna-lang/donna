@@ -1,0 +1,387 @@
+//// LSP method dispatch and server state.
+////
+//// Handles the LSP lifecycle (initialize → serve → shutdown/exit) and
+//// textDocument notifications.  Diagnostics are published on every
+//// didSave event by running `donna check` on the project root.
+
+import donna/string
+import donna/shell
+import donna/io
+import donna/list
+import donna/files
+import donna/path
+import json
+import tools/lsp/lsp
+import tools/lsp/rpc
+import tools/lsp/diagnostics
+import tools/lsp/symbols
+import tools/lsp/completions
+import tools/lsp/code_actions
+import tools/lsp/uri
+
+/// Persistent server state threaded through the main loop.
+pub type State:
+  State(root_uri: String, root_path: String, initialized: Bool, docs: List(Document))
+
+type Document:
+  Document(uri: String, text: String)
+
+type DiagnosticGroup:
+  DiagnosticGroup(uri: String, diags: List(json.Json))
+
+pub fn initial_state() -> State:
+  State("", "", False, [])
+
+/// Handle one raw JSON-RPC message.
+/// Returns #(new_state, should_exit).
+pub fn handle(raw: String, state: State) -> #(State, Bool):
+  case json.parse(raw):
+    json.Err(_) ->
+      // Malformed JSON — log to stderr and continue
+      let _ = io.eprintln("donna-lsp: malformed message: " <> raw)
+      #(state, False)
+    json.Ok(msg) ->
+      let method = get_str_or_empty(msg, "method")
+      let id = get_field(msg, "id")
+      let params = get_field(msg, "params")
+      dispatch(method, id, params, state)
+
+fn dispatch(
+  method: String,
+  id: json.Json,
+  params: json.Json,
+  state: State
+) -> #(State, Bool):
+  case method:
+    "initialize" ->
+      handle_initialize(id, params, state)
+    "initialized" ->
+      #(state, False)
+    "shutdown" ->
+      let _ = rpc.write_message(json.encode(lsp.null_response(id)))
+      #(state, False)
+    "exit" ->
+      #(state, True)
+    "textDocument/didOpen" ->
+      handle_did_open(params, state)
+    "textDocument/didSave" ->
+      handle_did_save(params, state)
+    "textDocument/didChange" ->
+      handle_did_change(params, state)
+    "textDocument/didClose" ->
+      handle_did_close(params, state)
+    "textDocument/hover" ->
+      handle_hover(id, params, state)
+    "textDocument/definition" ->
+      handle_definition(id, params, state)
+    "textDocument/completion" ->
+      handle_completion(id, params, state)
+    "textDocument/codeAction" ->
+      handle_code_action(id, params, state)
+    "textDocument/documentSymbol" ->
+      handle_document_symbol(id, params, state)
+    "workspace/symbol" ->
+      handle_workspace_symbol(id, params, state)
+    _ ->
+      handle_unknown(id, state)
+
+fn handle_initialize(
+  id: json.Json,
+  params: json.Json,
+  _state: State
+) -> #(State, Bool):
+  let root_uri = get_root_uri(params)
+  let root_path = uri.uri_to_path(root_uri)
+  let result = lsp.initialize_result()
+  let _ = rpc.write_message(json.encode(lsp.response(id, result)))
+  #(State(root_uri, root_path, True, []), False)
+
+fn handle_did_open(params: json.Json, state: State) -> #(State, Bool):
+  case state:
+    State(root_uri, root_path, initialized, docs) ->
+      let doc = get_field(params, "textDocument")
+      let doc_uri = get_str_or_empty(doc, "uri")
+      let text = get_str_or_empty(doc, "text")
+      let next = State(root_uri, root_path, initialized, upsert_document(doc_uri, text, docs))
+      run_diagnostics(doc_uri, next)
+
+fn handle_did_change(params: json.Json, state: State) -> #(State, Bool):
+  case state:
+    State(root_uri, root_path, initialized, docs) ->
+      let doc_uri = text_document_uri(params)
+      let text = change_text(params)
+      let next_docs = case string.is_empty(text):
+        True -> docs
+        False -> upsert_document(doc_uri, text, docs)
+      let next = State(root_uri, root_path, initialized, next_docs)
+      run_diagnostics(doc_uri, next)
+
+fn handle_did_save(params: json.Json, state: State) -> #(State, Bool):
+  let doc_uri = text_document_uri(params)
+  run_diagnostics(doc_uri, state)
+
+fn run_diagnostics(doc_uri: String, state: State) -> #(State, Bool):
+  case state:
+    State(_root_uri, root_path, _, _) ->
+      case string.is_empty(root_path):
+        True -> #(state, False)
+        False ->
+          let _ = clear_if_present(doc_uri)
+          let check_path = project_path_for_uri(doc_uri, root_path)
+          let check_uri = uri.file_uri("", check_path)
+          let output = shell.capture(
+            "NO_COLOR=1 donna check " <> shell_quote(check_path) <> " 2>&1"
+          )
+          let diags = diagnostics.parse(output, check_uri)
+          let _ = publish_all(diags)
+          #(state, False)
+
+fn handle_did_close(params: json.Json, state: State) -> #(State, Bool):
+  case state:
+    State(root_uri, root_path, initialized, docs) ->
+      let doc_uri = text_document_uri(params)
+      case string.is_empty(doc_uri):
+        True -> #(state, False)
+        False ->
+          let _ = rpc.write_message(json.encode(lsp.clear_diagnostics(doc_uri)))
+          #(State(root_uri, root_path, initialized, remove_document(doc_uri, docs)), False)
+
+fn handle_document_symbol(
+  id: json.Json,
+  params: json.Json,
+  state: State
+) -> #(State, Bool):
+  let uri = text_document_uri(params)
+  let result = case string.is_empty(uri):
+    True -> json.Array([])
+    False ->
+      case state:
+        State(_, root_path, _, docs) ->
+          symbols.document_symbols_source(document_text(uri, docs), uri, root_path)
+  let _ = rpc.write_message(json.encode(lsp.response(id, result)))
+  #(state, False)
+
+fn handle_workspace_symbol(
+  id: json.Json,
+  params: json.Json,
+  state: State
+) -> #(State, Bool):
+  case state:
+    State(_, root_path, _, _) ->
+      let query = get_str_or_empty(params, "query")
+      let result = case string.is_empty(root_path):
+        True -> json.Array([])
+        False -> symbols.workspace_symbols(root_path, query)
+      let _ = rpc.write_message(json.encode(lsp.response(id, result)))
+      #(state, False)
+
+fn handle_hover(
+  id: json.Json,
+  params: json.Json,
+  state: State
+) -> #(State, Bool):
+  case state:
+    State(_, root_path, _, _) ->
+      let uri = text_document_uri(params)
+      let pos = get_field(params, "position")
+      let line = get_int_or_zero(pos, "line")
+      let character = get_int_or_zero(pos, "character")
+      let check_path = project_path_for_uri(uri, root_path)
+      let result = case string.is_empty(uri):
+        True -> json.Null
+        False -> symbols.hover(uri, line, character, check_path)
+      let _ = rpc.write_message(json.encode(lsp.response(id, result)))
+      #(state, False)
+
+fn handle_definition(
+  id: json.Json,
+  params: json.Json,
+  state: State
+) -> #(State, Bool):
+  case state:
+    State(_, root_path, _, _) ->
+      let uri = text_document_uri(params)
+      let pos = get_field(params, "position")
+      let line = get_int_or_zero(pos, "line")
+      let character = get_int_or_zero(pos, "character")
+      let check_path = project_path_for_uri(uri, root_path)
+      let result = case string.is_empty(uri):
+        True -> json.Null
+        False -> symbols.definition(uri, line, character, check_path)
+      let _ = rpc.write_message(json.encode(lsp.response(id, result)))
+      #(state, False)
+
+fn handle_completion(
+  id: json.Json,
+  params: json.Json,
+  state: State
+) -> #(State, Bool):
+  case state:
+    State(_, root_path, _, docs) ->
+      let uri = text_document_uri(params)
+      let pos = get_field(params, "position")
+      let line = get_int_or_zero(pos, "line")
+      let character = get_int_or_zero(pos, "character")
+      let check_path = project_path_for_uri(uri, root_path)
+      let result = case string.is_empty(uri):
+        True -> json.Array([])
+        False -> completions.completions_in_source(document_text(uri, docs), line, character, check_path)
+      let _ = rpc.write_message(json.encode(lsp.response(id, result)))
+      #(state, False)
+
+fn handle_code_action(
+  id: json.Json,
+  params: json.Json,
+  state: State
+) -> #(State, Bool):
+  case state:
+    State(_, _, _, docs) ->
+      let uri = text_document_uri(params)
+      let result = case string.is_empty(uri):
+        True -> json.Array([])
+        False -> code_actions.actions(uri, document_text(uri, docs), params)
+      let _ = rpc.write_message(json.encode(lsp.response(id, result)))
+      #(state, False)
+
+fn change_text(params: json.Json) -> String:
+  case json.at(get_field(params, "contentChanges"), 0):
+    json.Err(_) -> ""
+    json.Ok(change) -> get_str_or_empty(change, "text")
+
+fn document_text(doc_uri: String, docs: List(Document)) -> String:
+  case docs:
+    [] -> files.read(uri.uri_to_path(doc_uri))
+    [Document(uri, text), ..rest] ->
+      case string.equal(uri, doc_uri):
+        True -> text
+        False -> document_text(doc_uri, rest)
+
+fn upsert_document(
+  doc_uri: String,
+  text: String,
+  docs: List(Document)
+) -> List(Document):
+  case string.is_empty(doc_uri):
+    True -> docs
+    False -> upsert_document_loop(doc_uri, text, docs)
+
+fn upsert_document_loop(
+  doc_uri: String,
+  text: String,
+  docs: List(Document)
+) -> List(Document):
+  case docs:
+    [] -> [Document(doc_uri, text)]
+    [Document(uri, existing), ..rest] ->
+      case string.equal(uri, doc_uri):
+        True -> [Document(doc_uri, text), ..rest]
+        False -> [Document(uri, existing), ..upsert_document_loop(doc_uri, text, rest)]
+
+fn remove_document(doc_uri: String, docs: List(Document)) -> List(Document):
+  case docs:
+    [] -> []
+    [Document(uri, text), ..rest] ->
+      case string.equal(uri, doc_uri):
+        True -> rest
+        False -> [Document(uri, text), ..remove_document(doc_uri, rest)]
+
+fn publish_all(diags: List(diagnostics.FileDiagnostic)) -> Nil:
+  publish_groups(group_diagnostics(diags, []))
+
+fn publish_groups(groups: List(DiagnosticGroup)) -> Nil:
+  case groups:
+    [] -> Nil
+    [DiagnosticGroup(uri, diags), ..rest] ->
+      let _ = rpc.write_message(
+        json.encode(lsp.publish_diagnostics(uri, list.reverse(diags)))
+      )
+      publish_groups(rest)
+
+fn group_diagnostics(
+  diags: List(diagnostics.FileDiagnostic),
+  groups: List(DiagnosticGroup)
+) -> List(DiagnosticGroup):
+  case diags:
+    [] -> groups
+    [diagnostics.FileDiagnostic(uri, diag), ..rest] ->
+      group_diagnostics(rest, insert_diag(uri, diag, groups))
+
+fn insert_diag(
+  uri: String,
+  diag: json.Json,
+  groups: List(DiagnosticGroup)
+) -> List(DiagnosticGroup):
+  case groups:
+    [] -> [DiagnosticGroup(uri, [diag])]
+    [DiagnosticGroup(group_uri, group_diags), ..rest] ->
+      case string.equal(uri, group_uri):
+        True -> [DiagnosticGroup(group_uri, [diag, ..group_diags]), ..rest]
+        False -> [DiagnosticGroup(group_uri, group_diags), ..insert_diag(uri, diag, rest)]
+
+fn clear_if_present(uri: String) -> Nil:
+  case string.is_empty(uri):
+    True -> Nil
+    False ->
+      rpc.write_message(json.encode(lsp.clear_diagnostics(uri)))
+
+fn handle_unknown(id: json.Json, state: State) -> #(State, Bool):
+  case id:
+    json.Null ->
+      #(state, False)
+    _ ->
+      let _ = rpc.write_message(json.encode(lsp.null_response(id)))
+      #(state, False)
+
+// JSON helpers
+
+fn get_field(obj: json.Json, key: String) -> json.Json:
+  case json.get(obj, key):
+    json.Err(_) -> json.Null
+    json.Ok(v) -> v
+
+fn get_str_or_empty(obj: json.Json, key: String) -> String:
+  case json.as_string(get_field(obj, key)):
+    json.Ok(s) -> s
+    json.Err(_) -> ""
+
+fn get_int_or_zero(obj: json.Json, key: String) -> Int:
+  case json.as_int(get_field(obj, key)):
+    json.Ok(n) -> n
+    json.Err(_) -> 0
+
+fn text_document_uri(params: json.Json) -> String:
+  get_str_or_empty(get_field(params, "textDocument"), "uri")
+
+fn get_root_uri(params: json.Json) -> String:
+  let root_uri = get_str_or_empty(params, "rootUri")
+  case string.is_empty(root_uri):
+    False -> root_uri
+    True -> get_workspace_root_uri(params)
+
+fn get_workspace_root_uri(params: json.Json) -> String:
+  case json.at(get_field(params, "workspaceFolders"), 0):
+    json.Err(_) -> ""
+    json.Ok(folder) -> get_str_or_empty(folder, "uri")
+
+fn project_path_for_uri(uri: String, fallback: String) -> String:
+  case string.is_empty(uri):
+    True -> fallback
+    False ->
+      let file_path = uri.uri_to_path(uri)
+      let dir = path.dirname(file_path)
+      nearest_project_dir(dir, fallback)
+
+fn nearest_project_dir(dir: String, fallback: String) -> String:
+  case string.is_empty(dir):
+    True -> fallback
+    False ->
+      case files.exists(path.join(dir, "donna.toml")):
+        True -> dir
+        False ->
+          let parent = path.dirname(dir)
+          case string.equal(parent, dir):
+            True -> fallback
+            False -> nearest_project_dir(parent, fallback)
+
+fn shell_quote(s: String) -> String:
+  "'" <> string.replace(s, "'", "'\\''") <> "'"

@@ -47,6 +47,7 @@ pub fn run(version: String, args: List(#(String, String))) -> String:
     "format" -> route_command(args, help.format_help(), cmd_format.run)
     "fmt" -> route_command(args, help.format_help(), cmd_format.run)
     "docs" -> route_command(args, help.docs_help(), cmd_docs.run)
+    "lsp" -> show(help.lsp_help())
     cmd ->
       let hint = colors.dim("  Run ") <> "donna help" <> colors.dim(" to see available commands")
       fail("unknown command " <> colors.path(cmd)) <> "\n" <> hint
@@ -78,6 +79,7 @@ fn help_for(version: String, command: String) -> String:
     "docs" -> help.docs_help()
     "format" -> help.format_help()
     "fmt" -> help.format_help()
+    "lsp" -> help.lsp_help()
     "new" -> help.new_help()
     "run" -> help.run_help()
     "test" -> help.test_help()
@@ -117,11 +119,20 @@ fn drop_command(args: List(#(String, String))) -> List(#(String, String)):
     [#("", _), ..rest] -> rest
     [x, ..rest] -> [x, ..drop_command(rest)]
 
-fn first_positional(args: List(#(String, String))) -> String:
+pub fn first_positional(args: List(#(String, String))) -> String:
   case args:
     [] -> ""
     [#("", v), .._] -> v
     [_, ..rest] -> first_positional(rest)
+
+/// Return True when the executable should enter LSP stdio mode.
+pub fn should_start_lsp(args: List(#(String, String))) -> Bool:
+  case string.equal(first_positional(args), "lsp"):
+    True ->
+      case has_help_flag(args):
+        True -> False
+        False -> string.is_empty(second_positional(args))
+    False -> False
 
 fn second_positional(args: List(#(String, String))) -> String:
   second_positional_loop(args, False)

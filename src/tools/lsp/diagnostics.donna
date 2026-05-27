@@ -1,0 +1,201 @@
+//// Parse `donna check` output into LSP diagnostics.
+////
+//// Compiler output format (after ANSI stripping):
+////
+////   error: invalid return type
+////    ┌─ src/file.donna:18:8
+////    │
+////   18 │   pub fn main() -> Nil:
+////    │         ^^^^
+////
+//// We scan line-by-line with a small state machine:
+////   Idle → error/warning line → GotHeader → location line → GotLoc → caret line → emit
+
+import donna/string
+import donna/list
+import donna/option
+import json
+import tools/lsp/lsp
+import tools/lsp/uri
+
+/// A diagnostic bound to a file URI.
+pub type FileDiagnostic:
+  FileDiagnostic(uri: String, diag: json.Json)
+
+/// Parse compiler output into a list of per-file diagnostics.
+/// root_uri should be the file:// URI of the project root (no trailing slash).
+pub fn parse(output: String, root_uri: String) -> List(FileDiagnostic):
+  let clean = strip_ansi(output)
+  let lines = string.split(clean, "\n")
+  scan(lines, root_uri, Idle, [])
+
+/// Internal parser state.
+type ScanState:
+  Idle
+  GotHeader(Int, String)
+  GotLoc(Int, String, String, Int, Int)
+
+fn scan(
+  lines: List(String),
+  root_uri: String,
+  state: ScanState,
+  acc: List(FileDiagnostic)
+) -> List(FileDiagnostic):
+  case lines:
+    [] ->
+      case state:
+        GotLoc(sev, msg, uri, ln, col) ->
+          let diag = make_diag(sev, ln, col, 1, msg)
+          list.reverse([FileDiagnostic(uri, diag), ..acc])
+        _ ->
+          list.reverse(acc)
+    [line, ..rest] ->
+      let t = string.trim(line)
+      case state:
+        Idle ->
+          case parse_severity(t):
+            option.Some(#(sev, msg)) ->
+              scan(rest, root_uri, GotHeader(sev, msg), acc)
+            option.None ->
+              scan(rest, root_uri, Idle, acc)
+        GotHeader(sev, msg) ->
+          case parse_location(t):
+            option.Some(#(path, ln, col)) ->
+              let uri = file_uri(root_uri, path)
+              scan(rest, root_uri, GotLoc(sev, msg, uri, ln, col), acc)
+            option.None ->
+              case parse_severity(t):
+                option.Some(#(sev2, msg2)) ->
+                  scan(rest, root_uri, GotHeader(sev2, msg2), acc)
+                option.None ->
+                  scan(rest, root_uri, GotHeader(sev, msg), acc)
+        GotLoc(sev, msg, uri, ln, col) ->
+          case parse_label(t):
+            option.Some(#(width, label)) ->
+              let message = case string.is_empty(label):
+                True -> msg
+                False -> label
+              let diag = make_diag(sev, ln, col, width, message)
+              scan(rest, root_uri, Idle, [FileDiagnostic(uri, diag), ..acc])
+            option.None ->
+              case parse_severity(t):
+                option.Some(#(sev2, msg2)) ->
+                  // New error block before we found a label — emit with title
+                  let diag = make_diag(sev, ln, col, 1, msg)
+                  let acc2 = [FileDiagnostic(uri, diag), ..acc]
+                  scan(rest, root_uri, GotHeader(sev2, msg2), acc2)
+                option.None ->
+                  scan(rest, root_uri, GotLoc(sev, msg, uri, ln, col), acc)
+
+fn make_diag(
+  sev: Int,
+  ln: Int,
+  col: Int,
+  width: Int,
+  message: String
+) -> json.Json:
+  let end_col = col - 1 + max_int(width, 1)
+  let rng = lsp.range(ln - 1, col - 1, ln - 1, end_col)
+  lsp.diagnostic(rng, sev, message)
+
+// Parse "error: title" or "warning: title" — returns Some(severity, title).
+fn parse_severity(line: String) -> option.Option(#(Int, String)):
+  case string.starts_with(line, "error:"):
+    True ->
+      let msg = string.trim(string.slice(line, 6, string.length(line) - 6))
+      option.Some(#(1, msg))
+    False ->
+      case string.starts_with(line, "warning:"):
+        True ->
+          let msg = string.trim(string.slice(line, 8, string.length(line) - 8))
+          option.Some(#(2, msg))
+        False ->
+          option.None
+
+// Parse " ┌─ src/file.donna:18:8" — returns Some(path, line, col).
+fn parse_location(line: String) -> option.Option(#(String, Int, Int)):
+  let box_char = "┌"
+  case string.contains(line, box_char):
+    False -> option.None
+    True ->
+      let dash = "─"
+      let i = string.index_of(line, dash)
+      case i == -1:
+        True -> option.None
+        False ->
+          // after "─ " is the file:line:col
+          let loc = string.trim(string.slice(line, i + 3, string.length(line) - i - 3))
+          parse_file_loc(loc)
+
+fn parse_file_loc(s: String) -> option.Option(#(String, Int, Int)):
+  let i1 = last_index_of(s, ":")
+  case i1 == -1:
+    True -> option.None
+    False ->
+      let col_str = string.slice(s, i1 + 1, string.length(s) - i1 - 1)
+      let col = string.to_int(col_str)
+      let prefix = string.slice(s, 0, i1)
+      let i2 = last_index_of(prefix, ":")
+      case i2 == -1:
+        True -> option.None
+        False ->
+          let line_str = string.slice(prefix, i2 + 1, string.length(prefix) - i2 - 1)
+          let ln = string.to_int(line_str)
+          let path = string.slice(prefix, 0, i2)
+          case ln <= 0:
+            True -> option.None
+            False -> option.Some(#(path, ln, col))
+
+// Parse a line containing "^^^^" — extract caret width and label text.
+fn parse_label(line: String) -> option.Option(#(Int, String)):
+  let i = string.index_of(line, "^")
+  case i == -1:
+    True -> option.None
+    False ->
+      let after = string.slice(line, i, string.length(line) - i)
+      let skipped = skip_carets(after)
+      let label = string.trim(skipped)
+      let width = string.length(after) - string.length(skipped)
+      option.Some(#(width, label))
+
+fn file_uri(root_uri: String, path: String) -> String:
+  uri.file_uri(root_uri, path)
+
+fn skip_carets(s: String) -> String:
+  case string.length(s) == 0:
+    True -> s
+    False ->
+      case string.equal(string.char_str(s, 0), "^"):
+        True -> skip_carets(string.slice(s, 1, string.length(s) - 1))
+        False -> s
+
+fn last_index_of(s: String, ch: String) -> Int:
+  scan_right(s, ch, string.length(s) - 1)
+
+fn scan_right(s: String, ch: String, i: Int) -> Int:
+  case i < 0:
+    True -> -1
+    False ->
+      case string.equal(string.char_str(s, i), ch):
+        True -> i
+        False -> scan_right(s, ch, i - 1)
+
+fn max_int(a: Int, b: Int) -> Int:
+  case a > b:
+    True -> a
+    False -> b
+
+// Strip ANSI escape sequences (ESC[...m) from a string.
+fn strip_ansi(text: String) -> String:
+  let esc = "\u{001b}["
+  case string.index_of(text, esc):
+    -1 -> text
+    i ->
+      let before = string.slice(text, 0, i)
+      let rest = string.slice(text, i + 2, string.length(text) - i - 2)
+      let m = string.index_of(rest, "m")
+      case m == -1:
+        True -> before
+        False ->
+          let after = string.slice(rest, m + 1, string.length(rest) - m - 1)
+          before <> strip_ansi(after)

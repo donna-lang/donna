@@ -1,0 +1,53 @@
+//// File URI helpers for the Donna LSP.
+
+import donna/string
+
+pub fn file_uri(root_uri: String, path: String) -> String:
+  case string.starts_with(path, "file://"):
+    True -> path
+    False ->
+      case string.starts_with(path, "/"):
+        True -> "file://" <> encode_path(path)
+        False ->
+          let sep = case string.ends_with(root_uri, "/"):
+            True -> ""
+            False -> "/"
+          root_uri <> sep <> encode_path(path)
+
+pub fn uri_to_path(value: String) -> String:
+  let path = case string.starts_with(value, "file://"):
+    True -> string.slice(value, 7, string.length(value) - 7)
+    False -> value
+  decode_path(path)
+
+fn encode_path(path: String) -> String:
+  encode_loop(path, 0, "")
+
+fn encode_loop(path: String, i: Int, acc: String) -> String:
+  case i >= string.length(path):
+    True -> acc
+    False ->
+      let ch = string.char_str(path, i)
+      let encoded = case string.equal(ch, " "):
+        True -> "%20"
+        False -> ch
+      encode_loop(path, i + 1, acc <> encoded)
+
+fn decode_path(path: String) -> String:
+  decode_loop(path, 0, "")
+
+fn decode_loop(path: String, i: Int, acc: String) -> String:
+  case i >= string.length(path):
+    True -> acc
+    False ->
+      case string.char_str(path, i):
+        "%" ->
+          case i + 2 < string.length(path):
+            True ->
+              let hex = string.slice(path, i + 1, 2)
+              let ch = case string.equal(hex, "20"):
+                True -> " "
+                False -> "%" <> hex
+              decode_loop(path, i + 3, acc <> ch)
+            False -> decode_loop(path, i + 1, acc <> "%")
+        ch -> decode_loop(path, i + 1, acc <> ch)

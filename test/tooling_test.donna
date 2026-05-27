@@ -1,5 +1,11 @@
 import donna/result
+import json
+import cli/cli
 import tools/fmt/formatter
+import tools/lsp/completions
+import tools/lsp/code_actions
+import tools/lsp/lsp
+import tools/lsp/symbols
 import unittest/should
 
 pub fn formatter_format_simple_test() -> String:
@@ -8,3 +14,52 @@ pub fn formatter_format_simple_test() -> String:
     result.Error(e) -> should.fail(e)
     result.Ok(formatted) ->
       should.equal_string(formatted, src)
+
+pub fn lsp_command_starts_only_for_bare_lsp_test() -> String:
+  let r1 = should.equal_bool(cli.should_start_lsp([#("", "lsp")]), True)
+  let r2 = should.equal_bool(cli.should_start_lsp([#("", "lsp"), #("help", "")]), False)
+  let r3 = should.equal_bool(cli.should_start_lsp([#("", "lsp"), #("", "--help")]), False)
+  let r4 = should.equal_bool(cli.should_start_lsp([]), False)
+  r1 <> r2 <> r3 <> r4
+
+pub fn lsp_completions_include_text_edit_test() -> String:
+  let items = completions.completions(".", "f", lsp.range(2, 4, 2, 5))
+  let encoded = json.encode(items)
+  let r1 = should.contains_string(encoded, "\"textEdit\"")
+  let r2 = should.contains_string(encoded, "\"newText\":\"fn\"")
+  let r3 = should.contains_string(encoded, "\"character\":4")
+  let r4 = should.contains_string(encoded, "\"character\":5")
+  r1 <> r2 <> r3 <> r4
+
+pub fn lsp_completions_include_imported_symbols_test() -> String:
+  let source = "import tools/lsp/lsp\n\npub fn main() -> Int:\n  lo\n"
+  let items = completions.completions_for_source(".", source, "lo", lsp.range(3, 2, 3, 4))
+  let encoded = json.encode(items)
+  should.contains_string(encoded, "\"label\":\"location\"")
+
+pub fn lsp_document_symbols_include_imported_symbols_test() -> String:
+  let found = symbols.document_symbols("src/tools/lsp/completions.donna", ".")
+  let encoded = json.encode(found)
+  should.contains_string(encoded, "\"name\":\"location\"")
+
+pub fn lsp_code_action_remove_unused_import_test() -> String:
+  let source = "import donna/list\n\npub fn main() -> Nil:\n  Nil\n"
+  let params = code_action_params(lsp.range(0, 13, 0, 17))
+  let encoded = json.encode(code_actions.actions("file:///test.donna", source, params))
+  let r1 = should.contains_string(encoded, "\"title\":\"Remove import\"")
+  let r2 = should.contains_string(encoded, "\"newText\":\"\"")
+  let r3 = should.contains_string(encoded, "\"line\":1")
+  r1 <> r2 <> r3
+
+pub fn lsp_code_action_prefix_unused_binding_test() -> String:
+  let params = code_action_params(lsp.range(2, 6, 2, 10))
+  let encoded = json.encode(code_actions.actions("file:///test.donna", "", params))
+  let r1 = should.contains_string(encoded, "\"title\":\"Prefix with _\"")
+  let r2 = should.contains_string(encoded, "\"newText\":\"_\"")
+  let r3 = should.contains_string(encoded, "\"character\":6")
+  r1 <> r2 <> r3
+
+fn code_action_params(rng: json.Json) -> json.Json:
+  json.Object([
+    #("range", rng)
+  ])

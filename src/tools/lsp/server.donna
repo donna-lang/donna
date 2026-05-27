@@ -1,0 +1,28 @@
+//// Donna Language Server Protocol server.
+////
+//// Communicates with editors (Zed, VS Code, etc.) over stdin/stdout using
+//// the JSON-RPC 2.0 framing defined by the LSP specification.
+////
+//// Usage: donna lsp
+////   The editor starts this process and connects via stdio.
+
+import donna/io
+import tools/lsp/rpc
+import tools/lsp/handler
+
+pub fn run() -> Nil:
+  let _ = io.eprintln("donna-lsp: starting")
+  serve(handler.initial_state())
+
+fn serve(state: handler.State) -> Nil:
+  let raw = rpc.read_message()
+  case raw:
+    "" ->
+      // EOF — editor closed the connection
+      let _ = io.eprintln("donna-lsp: stdin closed, exiting")
+      Nil
+    _ ->
+      let #(new_state, should_exit) = handler.handle(raw, state)
+      case should_exit:
+        True -> Nil
+        False -> serve(new_state)

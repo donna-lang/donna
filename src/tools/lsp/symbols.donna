@@ -1,0 +1,504 @@
+//// Lightweight source scanner for LSP symbols.
+////
+//// This intentionally avoids compiler integration for now. It scans Donna
+//// source text for top-level function and type declarations and turns them
+//// into LSP SymbolInformation values.
+
+import donna/string
+import donna/files
+import donna/shell
+import donna/int
+import donna/path
+import json
+import tools/lsp/lsp
+import tools/lsp/uri
+
+pub fn document_symbols(uri: String, root_path: String) -> json.Json:
+  let path = uri.uri_to_path(uri)
+  let source = files.read(path)
+  document_symbols_source(source, uri, root_path)
+
+pub fn document_symbols_source(
+  source: String,
+  uri: String,
+  root_path: String
+) -> json.Json:
+  let local = scan_source(source, uri, 0, [])
+  json.Array(imported_symbols(root_path, source, local))
+
+pub fn workspace_symbols(root_path: String, query: String) -> json.Json:
+  let output = shell.capture(
+    "find " <> shell_quote(root_path) <> " -name '*.donna' -type f 2>/dev/null"
+  )
+  let paths = string.split(output, "\n")
+  json.Array(scan_files(paths, query, []))
+
+pub fn hover(uri: String, line_no: Int, character: Int, root_path: String) -> json.Json:
+  let source = files.read(uri.uri_to_path(uri))
+  let line = line_at(string.split(source, "\n"), line_no)
+  let word = word_at(line, character)
+  case string.is_empty(word):
+    True -> json.Null
+    False ->
+      let decl = find_declaration(root_path, word)
+      case decl:
+        json.Null -> json.Null
+        _ ->
+          let i = identifier_index(line, character)
+          let rng = lsp.range(
+            line_no,
+            word_start(line, i),
+            line_no,
+            word_end(line, i)
+          )
+          lsp.hover(hover_markdown(decl), rng)
+
+pub fn definition(
+  uri: String,
+  line_no: Int,
+  character: Int,
+  root_path: String
+) -> json.Json:
+  let source = files.read(uri.uri_to_path(uri))
+  let line = line_at(string.split(source, "\n"), line_no)
+  let word = word_at(line, character)
+  case string.is_empty(word):
+    True -> json.Null
+    False ->
+      let decl = find_declaration(root_path, word)
+      case decl:
+        json.Null -> json.Null
+        _ ->
+          let decl_line = get_int(decl, "line")
+          let decl_uri = get_str(decl, "uri")
+          let signature = get_str(decl, "signature")
+          let name = get_str(decl, "name")
+          let start = string.index_of(signature, name)
+          let start_char = case start < 0:
+            True -> 0
+            False -> start
+          lsp.location(
+            decl_uri,
+            lsp.range(
+              decl_line,
+              start_char,
+              decl_line,
+              start_char + string.length(name)
+            )
+          )
+
+fn scan_files(
+  paths: List(String),
+  query: String,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case paths:
+    [] -> reverse_json(acc)
+    [p, ..rest] ->
+      let path = string.trim(p)
+      case string.is_empty(path):
+        True -> scan_files(rest, query, acc)
+        False ->
+          let uri = uri.file_uri("", path)
+          let found = scan_source(files.read(path), uri, 0, [])
+          scan_files(rest, query, append_matching(found, query, acc))
+
+fn imported_symbols(
+  root_path: String,
+  source: String,
+  acc: List(json.Json)
+) -> List(json.Json):
+  scan_imports(root_path, string.split(source, "\n"), acc)
+
+fn scan_imports(
+  root_path: String,
+  lines: List(String),
+  acc: List(json.Json)
+) -> List(json.Json):
+  case lines:
+    [] -> acc
+    [line, ..rest] ->
+      case parse_import(line):
+        json.Null -> scan_imports(root_path, rest, acc)
+        module_name ->
+          scan_imports(
+            root_path,
+            rest,
+            scan_import_paths(module_source_paths(root_path, module_name), acc)
+          )
+
+fn scan_import_paths(paths: List(String), acc: List(json.Json)) -> List(json.Json):
+  case paths:
+    [] -> acc
+    [p, ..rest] ->
+      let file_path = string.trim(p)
+      case string.is_empty(file_path):
+        True -> scan_import_paths(rest, acc)
+        False ->
+          case files.exists(file_path):
+            False -> scan_import_paths(rest, acc)
+            True ->
+              let file_uri = uri.file_uri("", file_path)
+              scan_import_paths(
+                rest,
+                append_public_symbols(
+                  scan_public_source(files.read(file_path), file_uri, 0, []),
+                  acc
+                )
+              )
+
+fn append_public_symbols(syms: List(json.Json), acc: List(json.Json)) -> List(json.Json):
+  case syms:
+    [] -> acc
+    [sym, ..rest] -> append_public_symbols(rest, [sym, ..acc])
+
+fn scan_public_source(
+  source: String,
+  uri: String,
+  line_no: Int,
+  acc: List(json.Json)
+) -> List(json.Json):
+  scan_public_lines(string.split(source, "\n"), uri, line_no, acc)
+
+fn scan_public_lines(
+  lines: List(String),
+  uri: String,
+  line_no: Int,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case lines:
+    [] -> reverse_json(acc)
+    [line, ..rest] ->
+      case parse_public_symbol(line, uri, line_no):
+        json.Null -> scan_public_lines(rest, uri, line_no + 1, acc)
+        sym -> scan_public_lines(rest, uri, line_no + 1, [sym, ..acc])
+
+fn parse_public_symbol(line: String, uri: String, line_no: Int) -> json.Json:
+  case is_top_level(line):
+    False -> json.Null
+    True ->
+      case parse_decl(line, "pub fn ", 12, uri, line_no):
+        json.Null -> parse_decl(line, "pub type ", 23, uri, line_no)
+        sym -> sym
+
+fn parse_import(line: String) -> String:
+  let trimmed = string.trim(line)
+  case string.starts_with(trimmed, "import "):
+    False -> ""
+    True ->
+      let rest = string.trim(string.slice(trimmed, 7, string.length(trimmed) - 7))
+      read_import_path(rest, 0, "")
+
+fn read_import_path(s: String, i: Int, acc: String) -> String:
+  case i >= string.length(s):
+    True -> acc
+    False ->
+      let ch = string.char_str(s, i)
+      case is_import_char(ch):
+        True -> read_import_path(s, i + 1, acc <> ch)
+        False -> acc
+
+fn module_source_paths(root_path: String, module_name: String) -> List(String):
+  let local_full = path.join(path.join(root_path, "src"), module_name <> ".donna")
+  let local_tail = path.join(path.join(root_path, "src"), module_tail(module_name) <> ".donna")
+  let found = shell.capture(
+    "find " <> shell_quote(workspace_root(root_path)) <>
+      " -path '*/src/" <> module_tail(module_name) <> ".donna' -type f 2>/dev/null"
+  )
+  [local_full, local_tail, ..string.split(found, "\n")]
+
+fn workspace_root(dir: String) -> String:
+  case files.exists(path.join(dir, "donna official packages")):
+    True -> dir
+    False ->
+      case files.exists(path.join(dir, "donna personal packages")):
+        True -> dir
+        False ->
+          let parent = path.dirname(dir)
+          case string.equal(parent, dir):
+            True -> dir
+            False -> workspace_root(parent)
+
+fn module_tail(module_name: String) -> String:
+  case string.index_of(module_name, "/") == -1:
+    True -> module_name
+    False -> drop_first_segment(module_name)
+
+fn drop_first_segment(s: String) -> String:
+  let i = string.index_of(s, "/")
+  case i == -1:
+    True -> s
+    False -> string.slice(s, i + 1, string.length(s) - i - 1)
+
+fn find_declaration(root_path: String, name: String) -> json.Json:
+  let output = shell.capture(
+    "find " <> shell_quote(root_path) <> " -name '*.donna' -type f 2>/dev/null"
+  )
+  find_declaration_in_files(string.split(output, "\n"), name)
+
+fn find_declaration_in_files(paths: List(String), name: String) -> json.Json:
+  case paths:
+    [] -> json.Null
+    [p, ..rest] ->
+      let path = string.trim(p)
+      case string.is_empty(path):
+        True -> find_declaration_in_files(rest, name)
+        False ->
+          let uri = uri.file_uri("", path)
+          case find_declaration_in_source(
+            string.split(files.read(path), "\n"),
+            uri,
+            name,
+            0
+          ):
+            json.Null -> find_declaration_in_files(rest, name)
+            decl -> decl
+
+fn find_declaration_in_source(
+  lines: List(String),
+  uri: String,
+  name: String,
+  line_no: Int
+) -> json.Json:
+  case lines:
+    [] -> json.Null
+    [line, ..rest] ->
+      case parse_decl_detail(line, uri, line_no):
+        json.Null -> find_declaration_in_source(rest, uri, name, line_no + 1)
+        decl ->
+          case string.equal(get_str(decl, "name"), name):
+            True -> decl
+            False -> find_declaration_in_source(rest, uri, name, line_no + 1)
+
+fn append_matching(
+  syms: List(json.Json),
+  query: String,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case syms:
+    [] -> acc
+    [sym, ..rest] ->
+      case symbol_matches(sym, query):
+        True -> append_matching(rest, query, [sym, ..acc])
+        False -> append_matching(rest, query, acc)
+
+fn symbol_matches(sym: json.Json, query: String) -> Bool:
+  case string.is_empty(query):
+    True -> True
+    False ->
+      case json.as_string(get_field(sym, "name")):
+        json.Ok(name) -> string.contains(string.lowercase(name), string.lowercase(query))
+        json.Err(_) -> False
+
+fn scan_source(
+  source: String,
+  uri: String,
+  line_no: Int,
+  acc: List(json.Json)
+) -> List(json.Json):
+  scan_lines(string.split(source, "\n"), uri, line_no, acc)
+
+fn scan_lines(
+  lines: List(String),
+  uri: String,
+  line_no: Int,
+  acc: List(json.Json)
+) -> List(json.Json):
+  case lines:
+    [] -> reverse_json(acc)
+    [line, ..rest] ->
+      case parse_symbol(line, uri, line_no):
+        json.Null -> scan_lines(rest, uri, line_no + 1, acc)
+        sym -> scan_lines(rest, uri, line_no + 1, [sym, ..acc])
+
+fn parse_symbol(line: String, uri: String, line_no: Int) -> json.Json:
+  case is_top_level(line):
+    False -> json.Null
+    True ->
+      case parse_decl(line, "pub fn ", 12, uri, line_no):
+        json.Null ->
+          case parse_decl(line, "fn ", 12, uri, line_no):
+            json.Null ->
+              case parse_decl(line, "pub type ", 23, uri, line_no):
+                json.Null -> parse_decl(line, "type ", 23, uri, line_no)
+                sym -> sym
+            sym -> sym
+        sym -> sym
+
+fn parse_decl_detail(line: String, uri: String, line_no: Int) -> json.Json:
+  case is_top_level(line):
+    False -> json.Null
+    True ->
+      case parse_decl_detail_with_prefix(line, "pub fn ", 12, uri, line_no):
+        json.Null ->
+          case parse_decl_detail_with_prefix(line, "fn ", 12, uri, line_no):
+            json.Null ->
+              case parse_decl_detail_with_prefix(line, "pub type ", 23, uri, line_no):
+                json.Null -> parse_decl_detail_with_prefix(line, "type ", 23, uri, line_no)
+                decl -> decl
+            decl -> decl
+        decl -> decl
+
+fn parse_decl_detail_with_prefix(
+  line: String,
+  prefix: String,
+  kind: Int,
+  uri: String,
+  line_no: Int
+) -> json.Json:
+  case string.starts_with(line, prefix):
+    False -> json.Null
+    True ->
+      let start = string.length(prefix)
+      let name = read_identifier(line, start, "")
+      case string.is_empty(name):
+        True -> json.Null
+        False ->
+          json.Object([
+            #("name", json.Str(name)),
+            #("kind", json.Int(kind)),
+            #("uri", json.Str(uri)),
+            #("line", json.Int(line_no)),
+            #("signature", json.Str(line))
+          ])
+
+fn parse_decl(
+  line: String,
+  prefix: String,
+  kind: Int,
+  uri: String,
+  line_no: Int
+) -> json.Json:
+  case string.starts_with(line, prefix):
+    False -> json.Null
+    True ->
+      let start = string.length(prefix)
+      let name = read_identifier(line, start, "")
+      case string.is_empty(name):
+        True -> json.Null
+        False ->
+          let end = start + string.length(name)
+          let rng = lsp.range(line_no, start, line_no, end)
+          lsp.symbol_information(name, kind, uri, rng)
+
+fn read_identifier(line: String, i: Int, acc: String) -> String:
+  case i >= string.length(line):
+    True -> acc
+    False ->
+      let ch = string.char_str(line, i)
+      case is_identifier_char(ch):
+        True -> read_identifier(line, i + 1, acc <> ch)
+        False -> acc
+
+fn line_at(lines: List(String), target: Int) -> String:
+  case lines:
+    [] -> ""
+    [line, ..rest] ->
+      case target <= 0:
+        True -> line
+        False -> line_at(rest, target - 1)
+
+fn word_at(line: String, character: Int) -> String:
+  case string.is_empty(line):
+    True -> ""
+    False ->
+      let i = identifier_index(line, character)
+      let start = word_start(line, i)
+      let end = word_end(line, i)
+      case end <= start:
+        True -> ""
+        False -> string.slice(line, start, end - start)
+
+fn identifier_index(line: String, character: Int) -> Int:
+  let i = clamp_character(line, character)
+  case is_identifier_char(string.char_str(line, i)):
+    True -> i
+    False ->
+      case i <= 0:
+        True -> i
+        False ->
+          case is_identifier_char(string.char_str(line, i - 1)):
+            True -> i - 1
+            False -> i
+
+fn clamp_character(line: String, character: Int) -> Int:
+  let len = string.length(line)
+  case len <= 0:
+    True -> 0
+    False ->
+      case character >= len:
+        True -> len - 1
+        False ->
+          case character < 0:
+            True -> 0
+            False -> character
+
+fn word_start(line: String, i: Int) -> Int:
+  case i <= 0:
+    True -> 0
+    False ->
+      case is_identifier_char(string.char_str(line, i - 1)):
+        True -> word_start(line, i - 1)
+        False -> i
+
+fn word_end(line: String, i: Int) -> Int:
+  case i >= string.length(line):
+    True -> i
+    False ->
+      case is_identifier_char(string.char_str(line, i)):
+        True -> word_end(line, i + 1)
+        False -> i
+
+fn hover_markdown(decl: json.Json) -> String:
+  let signature = "```donna\n" <> get_str(decl, "signature") <> "\n```"
+  let location = get_str(decl, "uri") <> ":" <> int.to_string(get_int(decl, "line") + 1)
+  signature <> "\n\nDeclared in " <> location
+
+fn is_top_level(line: String) -> Bool:
+  case string.is_empty(line):
+    True -> False
+    False ->
+      case string.starts_with(line, " "):
+        True -> False
+        False ->
+          case string.starts_with(line, "\t"):
+            True -> False
+            False -> True
+
+fn is_identifier_char(ch: String) -> Bool:
+  string.contains(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+    ch
+  )
+
+fn is_import_char(ch: String) -> Bool:
+  string.contains(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/-",
+    ch
+  )
+
+fn reverse_json(xs: List(json.Json)) -> List(json.Json):
+  reverse_json_acc(xs, [])
+
+fn reverse_json_acc(xs: List(json.Json), acc: List(json.Json)) -> List(json.Json):
+  case xs:
+    [] -> acc
+    [x, ..rest] -> reverse_json_acc(rest, [x, ..acc])
+
+fn get_field(obj: json.Json, key: String) -> json.Json:
+  case json.get(obj, key):
+    json.Err(_) -> json.Null
+    json.Ok(v) -> v
+
+fn get_str(obj: json.Json, key: String) -> String:
+  case json.as_string(get_field(obj, key)):
+    json.Ok(s) -> s
+    json.Err(_) -> ""
+
+fn get_int(obj: json.Json, key: String) -> Int:
+  case json.as_int(get_field(obj, key)):
+    json.Ok(n) -> n
+    json.Err(_) -> 0
+
+fn shell_quote(s: String) -> String:
+  "'" <> string.replace(s, "'", "'\\''") <> "'"

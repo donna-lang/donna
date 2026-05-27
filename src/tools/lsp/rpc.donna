@@ -1,0 +1,46 @@
+//// JSON-RPC 2.0 message framing over stdio.
+////
+//// LSP uses Content-Length headers followed by a blank line, then the
+//// JSON body.  Each call to `read_message` blocks until a full message
+//// arrives or stdin is closed (returns "").
+
+import donna/io
+import donna/string
+import donna/int
+
+/// Read one complete JSON-RPC message from stdin.
+/// Returns the raw JSON body string, or "" on EOF.
+pub fn read_message() -> String:
+  read_headers(False, 0)
+
+/// Write one JSON-RPC message to stdout, including the Content-Length framing.
+pub fn write_message(body: String) -> Nil:
+  let safe_body = string.replace(body, "%", "\\u0025")
+  let len = string.length(safe_body)
+  io.print("Content-Length: " <> int.to_string(len) <> "\r\n\r\n" <> safe_body)
+  io.flush_stdout()
+
+fn read_headers(seen_header: Bool, content_length: Int) -> String:
+  let line = io.read_line()
+  let trimmed = string.trim(line)
+  case string.is_empty(trimmed):
+    True ->
+      case seen_header:
+        False ->
+          // Empty line before any headers = EOF
+          ""
+        True ->
+          // Blank line = end of headers, read the body
+          case content_length <= 0:
+            True -> ""
+            False -> io.read_n(content_length)
+    False ->
+      let lower = string.lowercase(trimmed)
+      case string.starts_with(lower, "content-length:"):
+        True ->
+          let val = string.trim(string.slice(trimmed, 15, string.length(trimmed) - 15))
+          let n = string.to_int(val)
+          read_headers(True, n)
+        False ->
+          // Other header (e.g. Content-Type) — ignore, keep reading
+          read_headers(True, content_length)

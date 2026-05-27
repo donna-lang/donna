@@ -4,6 +4,7 @@ import argparse
 import cli/cli
 import version
 import donna/io
+import tools/lsp/server
 
 @external("c", "exit")
 fn process_exit(code: Int) -> Nil
@@ -11,6 +12,9 @@ fn process_exit(code: Int) -> Nil
 /// Run the Donna CLI process.
 pub fn main() -> Nil:
   let args = argparse.from_argv()
-  let text = cli.run(version.version, args)
-  io.println(text)
-  process_exit(cli.exit_code_for_output(text))
+  case cli.should_start_lsp(args):
+    True -> server.run()
+    False ->
+      let text = cli.run(version.version, args)
+      io.println(text)
+      process_exit(cli.exit_code_for_output(text))

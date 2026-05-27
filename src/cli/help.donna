@@ -35,12 +35,13 @@ fn commands_block() -> String:
   let r4 = command_row("deps", "Manage package dependencies")
   let r5 = command_row("docs", "Generate HTML documentation")
   let r6 = command_row("format", "Format source files (alias: fmt)")
-  let r7 = command_row("new", "Create a new project")
-  let r8 = command_row("run", "Build and run the project")
-  let r9 = command_row("test", "Run the project tests")
-  let r10 = command_row("version", "Print the compiler version")
-  let r11 = command_row("help", "Show help for Donna or a command")
-  string.join([r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11], "\n")
+  let r7 = command_row("lsp", "Start the language server")
+  let r8 = command_row("new", "Create a new project")
+  let r9 = command_row("run", "Build and run the project")
+  let r10 = command_row("test", "Run the project tests")
+  let r11 = command_row("version", "Print the compiler version")
+  let r12 = command_row("help", "Show help for Donna or a command")
+  string.join([r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12], "\n")
 
 /// Render help for `donna build`.
 pub fn build_help() -> String:
@@ -121,6 +122,17 @@ pub fn format_help() -> String:
     [
       #("DIR", "Format all .donna files in a project directory"),
       #("FILE", "Format one .donna file"),
+      #("-h, --help", "Show this help")
+    ]
+  )
+
+/// Render help for `donna lsp`.
+pub fn lsp_help() -> String:
+  command_help(
+    "lsp",
+    "Start the Donna language server over stdio",
+    "donna lsp",
+    [
       #("-h, --help", "Show this help")
     ]
   )

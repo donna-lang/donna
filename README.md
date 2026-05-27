@@ -83,6 +83,7 @@ donna check       # typecheck without linking
 donna test        # run the test suite
 donna build       # build development output
 donna build --release
+donna lsp         # start the language server over stdio
 ```
 
 Development binaries are written under `build/bin/`. Release binaries are written under `build/release/target/<target>/bin/`.

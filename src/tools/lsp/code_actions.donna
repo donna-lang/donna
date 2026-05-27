@@ -1,0 +1,114 @@
+//// Code action support for Donna LSP.
+////
+//// These first quick fixes avoid semantic guesses. They use the current line
+//// and requested range, which keeps them robust for editor diagnostics.
+
+import donna/string
+import json
+import tools/lsp/lsp
+
+pub fn actions(uri: String, source: String, params: json.Json) -> json.Json:
+  let rng = get_field(params, "range")
+  let line_no = range_start_line(rng)
+  let line = line_at(string.split(source, "\n"), line_no)
+  let trimmed = string.trim(line)
+  json.Array(actions_for_line(uri, source, rng, line_no, trimmed))
+
+fn actions_for_line(
+  uri: String,
+  source: String,
+  rng: json.Json,
+  line_no: Int,
+  trimmed: String
+) -> List(json.Json):
+  case string.starts_with(trimmed, "import "):
+    True -> [
+      code_action(
+        "Remove import",
+        uri,
+        lsp.range(line_no, 0, remove_end_line(source, line_no), remove_end_char(source, line_no)),
+        ""
+      )
+    ]
+    False ->
+      case string.starts_with(trimmed, "fn "):
+        True -> [
+          code_action("Make function public", uri, lsp.range(line_no, 0, line_no, 0), "pub ")
+        ]
+        False -> [
+          code_action(
+            "Prefix with _",
+            uri,
+            lsp.range(line_no, range_start_char(rng), line_no, range_start_char(rng)),
+            "_"
+          )
+        ]
+
+fn code_action(
+  title: String,
+  uri: String,
+  rng: json.Json,
+  new_text: String
+) -> json.Json:
+  json.Object([
+    #("title", json.Str(title)),
+    #("kind", json.Str("quickfix")),
+    #("edit", json.Object([
+      #("documentChanges", json.Array([
+        json.Object([
+          #("textDocument", json.Object([
+            #("uri", json.Str(uri)),
+            #("version", json.Null)
+          ])),
+          #("edits", json.Array([
+            json.Object([
+              #("range", rng),
+              #("newText", json.Str(new_text))
+            ])
+          ]))
+        ])
+      ]))
+    ]))
+  ])
+
+fn range_start_line(rng: json.Json) -> Int:
+  get_int(get_field(get_field(rng, "start"), "line"), 0)
+
+fn range_start_char(rng: json.Json) -> Int:
+  get_int(get_field(get_field(rng, "start"), "character"), 0)
+
+fn remove_end_line(source: String, line: Int) -> Int:
+  case line + 1 < line_count(source):
+    True -> line + 1
+    False -> line
+
+fn remove_end_char(source: String, line: Int) -> Int:
+  case line + 1 < line_count(source):
+    True -> 0
+    False -> string.length(line_at(string.split(source, "\n"), line))
+
+fn line_count(source: String) -> Int:
+  list_length(string.split(source, "\n"))
+
+fn line_at(lines: List(String), target: Int) -> String:
+  case lines:
+    [] -> ""
+    [line, ..rest] ->
+      case target <= 0:
+        True -> line
+        False -> line_at(rest, target - 1)
+
+fn get_field(obj: json.Json, key: String) -> json.Json:
+  case json.get(obj, key):
+    json.Err(_) -> json.Null
+    json.Ok(v) -> v
+
+fn get_int(obj: json.Json, fallback: Int) -> Int:
+  case json.as_int(obj):
+    json.Ok(n) -> n
+    json.Err(_) -> fallback
+
+fn list_length(xs: List(a)) -> Int:
+  case xs:
+    [] -> 0
+    [_, ..rest] -> 1 + list_length(rest)
