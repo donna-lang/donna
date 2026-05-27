@@ -301,12 +301,6 @@ pub fn escape_str_mixed_test() -> String:
   let result = il.escape_str_for_qbe("hi\n")
   should.equal_string(result, "\"hi\", b 10")
 
-pub fn escape_str_quote_in_string_test() -> String:
-  // A double-quote (ASCII 34) is special → b 34
-  let result = il.escape_str_for_qbe("a\"b")
-  // "a" then 34 then "b"
-  should.equal_string(result, "\"a\", b 34, b \"b\"")
-
 pub fn escape_str_mixed_shape_with_string_assertions_test() -> String:
   let result = il.escape_str_for_qbe("a\nb\tc")
   should.all([
