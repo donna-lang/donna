@@ -10,7 +10,8 @@ All notable changes to `donna` will be documented in this file.
 - Completion items now include explicit LSP `textEdit` ranges so editors replace the typed prefix instead of guessing the completion span.
 - LSP completions and document symbols now include public symbols from imported modules.
 - The LSP now keeps the latest opened/changed document text in memory, so completions use unsaved editor buffers. Qualified completions such as `string.` now return module members without falling back to keyword/global suggestions before the file is saved.
-- LSP code actions now provide quick fixes for common warnings: remove an import, prefix a binding with `_`, and make a private function public.
+- LSP code actions now provide quick fixes for common warnings: remove an import, prefix a binding with `_`, make a private function public, replace `echo` with `io.println`, and replace `todo` with `panic "TODO"`.
+- The `echo` replacement code action now inserts `import donna/io` below module comments, and LSP diagnostics clear previously published project diagnostics before publishing fresh results.
 - Lambda expressions now generate closure values with heap-allocated capture environments, allowing lambdas to reference values from their enclosing scope. Named functions used as values now get closure adapters so higher-order calls use the same closure ABI.
 
 ### Changed

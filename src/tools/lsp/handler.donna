@@ -21,7 +21,13 @@ import tools/lsp/uri
 
 /// Persistent server state threaded through the main loop.
 pub type State:
-  State(root_uri: String, root_path: String, initialized: Bool, docs: List(Document))
+  State(
+    root_uri: String,
+    root_path: String,
+    initialized: Bool,
+    docs: List(Document),
+    published_uris: List(String)
+  )
 
 type Document:
   Document(uri: String, text: String)
@@ -30,7 +36,7 @@ type DiagnosticGroup:
   DiagnosticGroup(uri: String, diags: List(json.Json))
 
 pub fn initial_state() -> State:
-  State("", "", False, [])
+  State("", "", False, [], [])
 
 /// Handle one raw JSON-RPC message.
 /// Returns #(new_state, should_exit).
@@ -94,26 +100,26 @@ fn handle_initialize(
   let root_path = uri.uri_to_path(root_uri)
   let result = lsp.initialize_result()
   let _ = rpc.write_message(json.encode(lsp.response(id, result)))
-  #(State(root_uri, root_path, True, []), False)
+  #(State(root_uri, root_path, True, [], []), False)
 
 fn handle_did_open(params: json.Json, state: State) -> #(State, Bool):
   case state:
-    State(root_uri, root_path, initialized, docs) ->
+    State(root_uri, root_path, initialized, docs, published_uris) ->
       let doc = get_field(params, "textDocument")
       let doc_uri = get_str_or_empty(doc, "uri")
       let text = get_str_or_empty(doc, "text")
-      let next = State(root_uri, root_path, initialized, upsert_document(doc_uri, text, docs))
+      let next = State(root_uri, root_path, initialized, upsert_document(doc_uri, text, docs), published_uris)
       run_diagnostics(doc_uri, next)
 
 fn handle_did_change(params: json.Json, state: State) -> #(State, Bool):
   case state:
-    State(root_uri, root_path, initialized, docs) ->
+    State(root_uri, root_path, initialized, docs, published_uris) ->
       let doc_uri = text_document_uri(params)
       let text = change_text(params)
       let next_docs = case string.is_empty(text):
         True -> docs
         False -> upsert_document(doc_uri, text, docs)
-      let next = State(root_uri, root_path, initialized, next_docs)
+      let next = State(root_uri, root_path, initialized, next_docs, published_uris)
       run_diagnostics(doc_uri, next)
 
 fn handle_did_save(params: json.Json, state: State) -> #(State, Bool):
@@ -122,10 +128,11 @@ fn handle_did_save(params: json.Json, state: State) -> #(State, Bool):
 
 fn run_diagnostics(doc_uri: String, state: State) -> #(State, Bool):
   case state:
-    State(_root_uri, root_path, _, _) ->
+    State(root_uri, root_path, initialized, docs, published_uris) ->
       case string.is_empty(root_path):
         True -> #(state, False)
         False ->
+          let _ = clear_published(published_uris)
           let _ = clear_if_present(doc_uri)
           let check_path = project_path_for_uri(doc_uri, root_path)
           let check_uri = uri.file_uri("", check_path)
@@ -134,17 +141,23 @@ fn run_diagnostics(doc_uri: String, state: State) -> #(State, Bool):
           )
           let diags = diagnostics.parse(output, check_uri)
           let _ = publish_all(diags)
-          #(state, False)
+          #(State(root_uri, root_path, initialized, docs, diagnostic_uris(diags, [])), False)
 
 fn handle_did_close(params: json.Json, state: State) -> #(State, Bool):
   case state:
-    State(root_uri, root_path, initialized, docs) ->
+    State(root_uri, root_path, initialized, docs, published_uris) ->
       let doc_uri = text_document_uri(params)
       case string.is_empty(doc_uri):
         True -> #(state, False)
         False ->
           let _ = rpc.write_message(json.encode(lsp.clear_diagnostics(doc_uri)))
-          #(State(root_uri, root_path, initialized, remove_document(doc_uri, docs)), False)
+          #(State(
+            root_uri,
+            root_path,
+            initialized,
+            remove_document(doc_uri, docs),
+            remove_string(doc_uri, published_uris)
+          ), False)
 
 fn handle_document_symbol(
   id: json.Json,
@@ -156,7 +169,7 @@ fn handle_document_symbol(
     True -> json.Array([])
     False ->
       case state:
-        State(_, root_path, _, docs) ->
+        State(_, root_path, _, docs, _) ->
           symbols.document_symbols_source(document_text(uri, docs), uri, root_path)
   let _ = rpc.write_message(json.encode(lsp.response(id, result)))
   #(state, False)
@@ -167,7 +180,7 @@ fn handle_workspace_symbol(
   state: State
 ) -> #(State, Bool):
   case state:
-    State(_, root_path, _, _) ->
+    State(_, root_path, _, _, _) ->
       let query = get_str_or_empty(params, "query")
       let result = case string.is_empty(root_path):
         True -> json.Array([])
@@ -181,7 +194,7 @@ fn handle_hover(
   state: State
 ) -> #(State, Bool):
   case state:
-    State(_, root_path, _, _) ->
+    State(_, root_path, _, _, _) ->
       let uri = text_document_uri(params)
       let pos = get_field(params, "position")
       let line = get_int_or_zero(pos, "line")
@@ -199,7 +212,7 @@ fn handle_definition(
   state: State
 ) -> #(State, Bool):
   case state:
-    State(_, root_path, _, _) ->
+    State(_, root_path, _, _, _) ->
       let uri = text_document_uri(params)
       let pos = get_field(params, "position")
       let line = get_int_or_zero(pos, "line")
@@ -217,7 +230,7 @@ fn handle_completion(
   state: State
 ) -> #(State, Bool):
   case state:
-    State(_, root_path, _, docs) ->
+    State(_, root_path, _, docs, _) ->
       let uri = text_document_uri(params)
       let pos = get_field(params, "position")
       let line = get_int_or_zero(pos, "line")
@@ -235,7 +248,7 @@ fn handle_code_action(
   state: State
 ) -> #(State, Bool):
   case state:
-    State(_, _, _, docs) ->
+    State(_, _, _, docs, _) ->
       let uri = text_document_uri(params)
       let result = case string.is_empty(uri):
         True -> json.Array([])
@@ -288,6 +301,22 @@ fn remove_document(doc_uri: String, docs: List(Document)) -> List(Document):
 fn publish_all(diags: List(diagnostics.FileDiagnostic)) -> Nil:
   publish_groups(group_diagnostics(diags, []))
 
+fn clear_published(uris: List(String)) -> Nil:
+  case uris:
+    [] -> Nil
+    [uri, ..rest] ->
+      let _ = clear_if_present(uri)
+      clear_published(rest)
+
+fn diagnostic_uris(
+  diags: List(diagnostics.FileDiagnostic),
+  acc: List(String)
+) -> List(String):
+  case diags:
+    [] -> acc
+    [diagnostics.FileDiagnostic(uri, _), ..rest] ->
+      diagnostic_uris(rest, insert_unique_string(uri, acc))
+
 fn publish_groups(groups: List(DiagnosticGroup)) -> Nil:
   case groups:
     [] -> Nil
@@ -323,6 +352,27 @@ fn clear_if_present(uri: String) -> Nil:
     True -> Nil
     False ->
       rpc.write_message(json.encode(lsp.clear_diagnostics(uri)))
+
+fn insert_unique_string(s: String, xs: List(String)) -> List(String):
+  case contains_string(s, xs):
+    True -> xs
+    False -> [s, ..xs]
+
+fn contains_string(s: String, xs: List(String)) -> Bool:
+  case xs:
+    [] -> False
+    [x, ..rest] ->
+      case string.equal(s, x):
+        True -> True
+        False -> contains_string(s, rest)
+
+fn remove_string(s: String, xs: List(String)) -> List(String):
+  case xs:
+    [] -> []
+    [x, ..rest] ->
+      case string.equal(s, x):
+        True -> remove_string(s, rest)
+        False -> [x, ..remove_string(s, rest)]
 
 fn handle_unknown(id: json.Json, state: State) -> #(State, Bool):
   case id:

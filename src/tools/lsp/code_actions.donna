@@ -1,7 +1,7 @@
 //// Code action support for Donna LSP.
 ////
-//// These first quick fixes avoid semantic guesses. They use the current line
-//// and requested range, which keeps them robust for editor diagnostics.
+//// These quick fixes avoid semantic guesses. They use the current source line
+//// and the requested range, so edits remain predictable.
 
 import donna/string
 import json
@@ -12,43 +12,91 @@ pub fn actions(uri: String, source: String, params: json.Json) -> json.Json:
   let line_no = range_start_line(rng)
   let line = line_at(string.split(source, "\n"), line_no)
   let trimmed = string.trim(line)
-  json.Array(actions_for_line(uri, source, rng, line_no, trimmed))
+  json.Array(actions_for_line(uri, source, rng, line_no, line, trimmed))
 
 fn actions_for_line(
   uri: String,
   source: String,
   rng: json.Json,
   line_no: Int,
+  line: String,
   trimmed: String
 ) -> List(json.Json):
   case string.starts_with(trimmed, "import "):
-    True -> [
-      code_action(
-        "Remove import",
-        uri,
-        lsp.range(line_no, 0, remove_end_line(source, line_no), remove_end_char(source, line_no)),
-        ""
-      )
-    ]
+    True -> [remove_import_action(uri, source, line_no)]
     False ->
       case string.starts_with(trimmed, "fn "):
-        True -> [
-          code_action("Make function public", uri, lsp.range(line_no, 0, line_no, 0), "pub ")
-        ]
-        False -> [
-          code_action(
-            "Prefix with _",
-            uri,
-            lsp.range(line_no, range_start_char(rng), line_no, range_start_char(rng)),
-            "_"
-          )
-        ]
+        True -> [make_public_action(uri, line_no)]
+        False ->
+          case string.starts_with(trimmed, "echo "):
+            True -> [replace_echo_action(uri, source, line_no, line, trimmed)]
+            False ->
+              case string.equal(trimmed, "todo"):
+                True -> [replace_todo_action(uri, line_no, line)]
+                False -> prefix_action(uri, line, rng, line_no)
+
+fn remove_import_action(uri: String, source: String, line_no: Int) -> json.Json:
+  code_action(
+    "Remove import",
+    uri,
+    [text_edit(
+      lsp.range(line_no, 0, remove_end_line(source, line_no), remove_end_char(source, line_no)),
+      ""
+    )]
+  )
+
+fn make_public_action(uri: String, line_no: Int) -> json.Json:
+  code_action(
+    "Make function public",
+    uri,
+    [text_edit(lsp.range(line_no, 0, line_no, 0), "pub ")]
+  )
+
+fn replace_echo_action(
+  uri: String,
+  source: String,
+  line_no: Int,
+  line: String,
+  trimmed: String
+) -> json.Json:
+  let expression = string.trim(string.slice(trimmed, 5, string.length(trimmed) - 5))
+  let replacement = indent_of_line(line) <> "io.println(" <> expression <> ")"
+  let edits = case has_io_import(source):
+    True -> [text_edit(line_range(line_no, line), replacement)]
+    False -> [
+      text_edit(import_insert_range(source), "import donna/io\n"),
+      text_edit(line_range(line_no, line), replacement)
+    ]
+  code_action("Replace echo with io.println", uri, edits)
+
+fn replace_todo_action(uri: String, line_no: Int, line: String) -> json.Json:
+  code_action(
+    "Replace todo with panic",
+    uri,
+    [text_edit(line_range(line_no, line), indent_of_line(line) <> "panic \"TODO\"")]
+  )
+
+fn prefix_action(
+  uri: String,
+  line: String,
+  rng: json.Json,
+  line_no: Int
+) -> List(json.Json):
+  let ch = range_start_char(rng)
+  case ch < string.length(line) && is_identifier_char(string.char_str(line, ch)):
+    True -> [
+      code_action(
+        "Prefix with _",
+        uri,
+        [text_edit(lsp.range(line_no, ch, line_no, ch), "_")]
+      )
+    ]
+    False -> []
 
 fn code_action(
   title: String,
   uri: String,
-  rng: json.Json,
-  new_text: String
+  edits: List(json.Json)
 ) -> json.Json:
   json.Object([
     #("title", json.Str(title)),
@@ -60,15 +108,16 @@ fn code_action(
             #("uri", json.Str(uri)),
             #("version", json.Null)
           ])),
-          #("edits", json.Array([
-            json.Object([
-              #("range", rng),
-              #("newText", json.Str(new_text))
-            ])
-          ]))
+          #("edits", json.Array(edits))
         ])
       ]))
     ]))
+  ])
+
+fn text_edit(rng: json.Json, new_text: String) -> json.Json:
+  json.Object([
+    #("range", rng),
+    #("newText", json.Str(new_text))
   ])
 
 fn range_start_line(rng: json.Json) -> Int:
@@ -86,6 +135,55 @@ fn remove_end_char(source: String, line: Int) -> Int:
   case line + 1 < line_count(source):
     True -> 0
     False -> string.length(line_at(string.split(source, "\n"), line))
+
+fn line_range(line_no: Int, line: String) -> json.Json:
+  lsp.range(line_no, 0, line_no, string.length(line))
+
+fn import_insert_range(source: String) -> json.Json:
+  let lines = string.split(source, "\n")
+  let after_header = module_header_end_line(lines, 0)
+  let line_no = import_insert_line(lines, 0, after_header)
+  lsp.range(line_no, 0, line_no, 0)
+
+fn import_insert_line(lines: List(String), line_no: Int, latest: Int) -> Int:
+  case lines:
+    [] -> latest
+    [line, ..rest] ->
+      case string.starts_with(string.trim(line), "import "):
+        True -> import_insert_line(rest, line_no + 1, line_no + 1)
+        False -> import_insert_line(rest, line_no + 1, latest)
+
+fn module_header_end_line(lines: List(String), line_no: Int) -> Int:
+  case lines:
+    [] -> line_no
+    [line, ..rest] ->
+      let trimmed = string.trim(line)
+      case string.is_empty(trimmed) || string.starts_with(trimmed, "////"):
+        True -> module_header_end_line(rest, line_no + 1)
+        False -> line_no
+
+fn has_io_import(source: String) -> Bool:
+  has_io_import_lines(string.split(source, "\n"))
+
+fn has_io_import_lines(lines: List(String)) -> Bool:
+  case lines:
+    [] -> False
+    [line, ..rest] ->
+      case string.equal(string.trim(line), "import donna/io"):
+        True -> True
+        False -> has_io_import_lines(rest)
+
+fn indent_of_line(line: String) -> String:
+  indent_loop(line, 0, "")
+
+fn indent_loop(line: String, i: Int, acc: String) -> String:
+  case i >= string.length(line):
+    True -> acc
+    False ->
+      let ch = string.char_str(line, i)
+      case string.equal(ch, " ") || string.equal(ch, "\t"):
+        True -> indent_loop(line, i + 1, acc <> ch)
+        False -> acc
 
 fn line_count(source: String) -> Int:
   list_length(string.split(source, "\n"))
@@ -107,6 +205,12 @@ fn get_int(obj: json.Json, fallback: Int) -> Int:
   case json.as_int(obj):
     json.Ok(n) -> n
     json.Err(_) -> fallback
+
+fn is_identifier_char(ch: String) -> Bool:
+  string.contains(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+    ch
+  )
 
 fn list_length(xs: List(a)) -> Int:
   case xs:

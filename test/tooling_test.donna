@@ -29,7 +29,8 @@ pub fn lsp_completions_include_text_edit_test() -> String:
   let r2 = should.contains_string(encoded, "\"newText\":\"fn\"")
   let r3 = should.contains_string(encoded, "\"character\":4")
   let r4 = should.contains_string(encoded, "\"character\":5")
-  r1 <> r2 <> r3 <> r4
+  let r5 = should.contains_string(encoded, "\"isIncomplete\":true")
+  r1 <> r2 <> r3 <> r4 <> r5
 
 pub fn lsp_completions_include_imported_symbols_test() -> String:
   let source = "import tools/lsp/lsp\n\npub fn main() -> Int:\n  lo\n"
@@ -52,12 +53,31 @@ pub fn lsp_code_action_remove_unused_import_test() -> String:
   r1 <> r2 <> r3
 
 pub fn lsp_code_action_prefix_unused_binding_test() -> String:
-  let params = code_action_params(lsp.range(2, 6, 2, 10))
-  let encoded = json.encode(code_actions.actions("file:///test.donna", "", params))
+  let source = "pub fn main() -> Nil:\n  let name = \"x\"\n  Nil\n"
+  let params = code_action_params(lsp.range(1, 6, 1, 10))
+  let encoded = json.encode(code_actions.actions("file:///test.donna", source, params))
   let r1 = should.contains_string(encoded, "\"title\":\"Prefix with _\"")
   let r2 = should.contains_string(encoded, "\"newText\":\"_\"")
   let r3 = should.contains_string(encoded, "\"character\":6")
   r1 <> r2 <> r3
+
+pub fn lsp_code_action_replace_echo_test() -> String:
+  let source = "//// My module.\n//// More docs.\n\npub fn main() -> Nil:\n  echo \"hello\"\n"
+  let params = code_action_params(lsp.range(4, 2, 4, 6))
+  let encoded = json.encode(code_actions.actions("file:///test.donna", source, params))
+  let r1 = should.contains_string(encoded, "\"title\":\"Replace echo with io.println\"")
+  let r2 = should.contains_string(encoded, "import donna/io\\n")
+  let r3 = should.contains_string(encoded, "io.println(\\\"hello\\\")")
+  let r4 = should.contains_string(encoded, "\"line\":3")
+  r1 <> r2 <> r3 <> r4
+
+pub fn lsp_code_action_replace_todo_test() -> String:
+  let source = "pub fn main() -> Nil:\n  todo\n"
+  let params = code_action_params(lsp.range(1, 2, 1, 6))
+  let encoded = json.encode(code_actions.actions("file:///test.donna", source, params))
+  let r1 = should.contains_string(encoded, "\"title\":\"Replace todo with panic\"")
+  let r2 = should.contains_string(encoded, "panic \\\"TODO\\\"")
+  r1 <> r2
 
 fn code_action_params(rng: json.Json) -> json.Json:
   json.Object([

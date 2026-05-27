@@ -43,7 +43,7 @@ pub fn completions_for_source(
   query: String,
   rng: json.Json
 ) -> json.Json:
-  json.Array(
+  lsp.completion_list(
     keyword_items(
       query,
       rng,
@@ -58,7 +58,7 @@ pub fn imported_completions(
   query: String,
   rng: json.Json
 ) -> json.Json:
-  json.Array(import_items(root_path, string.split(source, "\n"), qualifier, query, rng, []))
+  lsp.completion_list(import_items(root_path, string.split(source, "\n"), qualifier, query, rng, []))
 
 fn keyword_items(query: String, rng: json.Json, acc: List(json.Json)) -> List(json.Json):
   add_keywords([

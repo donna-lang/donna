@@ -128,6 +128,13 @@ pub fn completion_item(label: String, kind: Int, detail: String) -> json.Json:
         #("detail", json.Str(detail))
       ])
 
+/// Build a CompletionList.
+pub fn completion_list(items: List(json.Json)) -> json.Json:
+  json.Object([
+    #("isIncomplete", json.Bool(True)),
+    #("items", json.Array(items))
+  ])
+
 /// Build a CompletionItem with an explicit edit range.
 pub fn completion_item_edit(
   label: String,
