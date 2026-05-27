@@ -301,6 +301,17 @@ pub fn escape_str_mixed_test() -> String:
   let result = il.escape_str_for_qbe("hi\n")
   should.equal_string(result, "\"hi\", b 10")
 
+pub fn escape_str_quote_in_string_test() -> String:
+  // A double-quote (ASCII 34) is special and is emitted as a byte.
+  let quote = string.char_from_code(34)
+  let result = il.escape_str_for_qbe("a" <> quote <> "b")
+  should.all([
+    should.contains_string(result, quote <> "a" <> quote),
+    should.contains_string(result, "b 34"),
+    should.contains_string(result, quote <> "b" <> quote),
+    should.equal_int(string.length(result), 16)
+  ])
+
 pub fn escape_str_mixed_shape_with_string_assertions_test() -> String:
   let result = il.escape_str_for_qbe("a\nb\tc")
   should.all([
@@ -373,7 +384,9 @@ pub fn capturing_lambda_generates_closure_environment_test() -> String:
         should.contains_string(text, "function l $__lambda_"),
         should.contains_string(text, "l %__env, l %x"),
         should.contains_string(text, "loadl %__env"),
-        should.contains_string(text, "call %")
+        should.contains_string(text, "call %"),
+        should.contains_string(text, ", l 40)"),
+        should.not_contains_string(text, "l 40, l %")
       ])
 
 pub fn named_function_value_generates_closure_adapter_test() -> String:

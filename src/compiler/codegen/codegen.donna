@@ -2152,8 +2152,8 @@ fn gen_regular_call(
       let #(closure_val, block2, state2) = gen_expr(fn_expr, block, state)
       let #(fn_ptr, block3, state3) = load_closure_field(closure_val, 0, block2, state2)
       let #(env_ptr, block4, state4) = load_closure_field(closure_val, 8, block3, state3)
-      let #(arg_vals, block5, state5) = gen_args(args, block4, state4, [#(il.Long, env_ptr)])
-      emit_call(fn_ptr, arg_vals, ret_type, block5, state5)
+      let #(arg_vals, block5, state5) = gen_args(args, block4, state4, [])
+      emit_call(fn_ptr, [#(il.Long, env_ptr), ..arg_vals], ret_type, block5, state5)
 
 fn emit_call(
   fn_val: il.Value,

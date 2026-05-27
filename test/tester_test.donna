@@ -72,7 +72,10 @@ pub fn generate_unfiltered_runner_keeps_all_tests_test() -> String:
   let src = tester.generate_runner(mods)
   should.all([
     should.contains_string(src, "parser_test.parse_import_test"),
-    should.contains_string(src, "lexer_test.lex_name_test")
+    should.contains_string(src, "lexer_test.lex_name_test"),
+    should.contains_string(src, "let r = parser_test.parse_import_test()"),
+    should.contains_string(src, "run_case(s, failures, \"parser_test.parse_import_test\", r, us)"),
+    should.not_contains_string(src, "fn() ->")
   ])
 
 pub fn generate_runner_includes_timing_output_test() -> String:
