@@ -13,7 +13,7 @@ QBE_TARGETS=(
   "arm64_apple:aarch64-macos:donna"
 )
 
-PACKAGES=(donna argparse parsetoml markdown)
+PACKAGES=(donna argparse parsetoml markdown json)
 
 log() {
   printf '\033[38;5;208m  %s\033[0m %s\n' "$1" "${2:-}"

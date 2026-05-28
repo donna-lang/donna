@@ -14,7 +14,7 @@ for target in amd64_sysv amd64_apple amd64_win arm64 arm64_apple; do
   rsync -a "$ROOT/build/cross/$target/asm/" "$OUT/targets/$target/asm/"
 done
 
-for pkg in donna argparse markdown; do
+for pkg in donna argparse markdown json; do
   if [[ -d "$HOME/.donna/packages/$pkg/ffi" ]]; then
     mkdir -p "$OUT/ffi/$pkg"
     rsync -a "$HOME/.donna/packages/$pkg/ffi/" "$OUT/ffi/$pkg/"
