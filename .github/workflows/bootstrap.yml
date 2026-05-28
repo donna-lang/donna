@@ -55,7 +55,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Create bootstrap update pull request
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.SOURCES_REPO_TOKEN }}
           path: sources
