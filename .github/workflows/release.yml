@@ -14,10 +14,10 @@ jobs:
 
     steps:
       - name: Checkout compiler
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout bootstrap sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: donna-lang/sources
           path: sources

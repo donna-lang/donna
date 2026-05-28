@@ -4,9 +4,6 @@ on:
   push:
   pull_request:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   test:
     name: test (${{ matrix.os }})
@@ -18,10 +15,10 @@ jobs:
 
     steps:
       - name: Checkout compiler
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout bootstrap sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: donna-lang/sources
           path: sources
@@ -41,7 +38,7 @@ jobs:
         run: make build SOURCES_DIR=sources
 
       - name: Upload Donna main binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: donna-main-${{ runner.os }}-${{ runner.arch }}
           path: build/bin/donna
@@ -56,10 +53,10 @@ jobs:
 
     steps:
       - name: Checkout compiler
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout bootstrap sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: donna-lang/sources
           path: sources
