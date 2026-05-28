@@ -46,6 +46,14 @@ jobs:
       - name: Generate bootstrap sources
         run: ./scripts/generate-bootstrap.sh sources
 
+      - name: Upload cross-compilation logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cross-compile-logs
+          path: build/cross/**/zig-cc.log
+          if-no-files-found: ignore
+
       - name: Create bootstrap update pull request
         uses: peter-evans/create-pull-request@v6
         with:
