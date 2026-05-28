@@ -23,14 +23,16 @@ smoke:
 self-host: build
 	cp "$(DONNA)" "$(BOOTSTRAP_DONNA)"
 	rm -f "$(DONNA)"
+	rm -rf build/dev build/packages build/test
+	ulimit -s 32768 || true; PATH="$(CI_PATH)" "$(BOOTSTRAP_DONNA)" build
+	test -x "$(DONNA)"
+	cp "$(DONNA)" "$(BOOTSTRAP_DONNA)"
+	rm -f "$(DONNA)"
+	rm -rf build/dev build/packages build/test
 	ulimit -s 32768 || true; PATH="$(CI_PATH)" "$(BOOTSTRAP_DONNA)" build
 	test -x "$(DONNA)"
 
-ci: build
-	cp "$(DONNA)" "$(BOOTSTRAP_DONNA)"
-	rm -f "$(DONNA)"
-	ulimit -s unlimited || ulimit -s 32768 || true; PATH="$(CI_PATH)" "$(BOOTSTRAP_DONNA)" build
-	test -x "$(DONNA)"
+ci: self-host
 	ulimit -s unlimited || ulimit -s 32768 || true; PATH="$(CI_PATH)" DONNA="$(DONNA)" ./scripts/ci-test-modules.sh
 	PATH="$(CI_PATH)" DONNA="$(DONNA)" ./scripts/smoke-fresh-project.sh
 	"$(DONNA)" version

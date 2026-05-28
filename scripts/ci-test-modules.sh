@@ -5,10 +5,6 @@ DONNA_BIN="${DONNA:-build/bin/donna}"
 
 for file in test/*.donna; do
   module="$(basename "$file" .donna)"
-rm -f build/test/donna_test_runner \
-    build/test/test_runner.donna \
-    build/test/test_runner.iface \
-    build/test/test_runner.s \
-    build/test/test_runner.ssa
+  rm -rf build/test
   "$DONNA_BIN" test --only "$module"
 done
