@@ -33,7 +33,7 @@ self-host: build
 	test -x "$(DONNA)"
 
 ci: self-host
-	ulimit -s unlimited || ulimit -s 32768 || true; PATH="$(CI_PATH)" DONNA="$(DONNA)" ./scripts/ci-test-modules.sh
+	ulimit -s unlimited || ulimit -s 32768 || true; PATH="$(CI_PATH)" "$(DONNA)" test
 	PATH="$(CI_PATH)" DONNA="$(DONNA)" ./scripts/smoke-fresh-project.sh
 	"$(DONNA)" version
 

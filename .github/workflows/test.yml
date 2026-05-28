@@ -6,6 +6,49 @@ on:
 
 jobs:
   test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout compiler
+        uses: actions/checkout@v4
+
+      - name: Checkout bootstrap sources
+        uses: actions/checkout@v4
+        with:
+          repository: donna-lang/sources
+          path: sources
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git make
+          make install-qbe
+
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: make install-qbe
+
+      - name: Build Donna from bootstrap sources
+        run: make build SOURCES_DIR=sources
+
+      - name: Upload Donna main binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: donna-main-${{ runner.os }}-${{ runner.arch }}
+          path: build/bin/donna
+          if-no-files-found: error
+
+      - name: Self-host and test compiler
+        run: make ci SOURCES_DIR=sources
+
+  release-targets:
+    name: release targets
     runs-on: ubuntu-latest
 
     steps:
@@ -18,21 +61,17 @@ jobs:
           repository: donna-lang/sources
           path: sources
 
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+
       - name: Install build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential git make
           make install-qbe
 
-      - name: Build Donna from bootstrap sources
-        run: make build SOURCES_DIR=sources
+      - name: Self-host compiler
+        run: make self-host SOURCES_DIR=sources
 
-      - name: Upload Donna main binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: donna-main-linux-x86_64
-          path: build/bin/donna
-          if-no-files-found: error
-
-      - name: Self-host and test compiler
-        run: make ci SOURCES_DIR=sources
+      - name: Build all release targets
+        run: build/bin/donna build --release --target all
