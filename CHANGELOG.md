@@ -6,6 +6,23 @@ All notable changes to `donna` will be documented in this file.
 
 ### Added
 
+- **Arena allocator** — the compiler now emits a `donna_runtime.ssa` file alongside each build that provides a bump-pointer slab allocator (`donna_arena_alloc`). Memory is carved out of 8 MB slabs obtained from `malloc`; allocation is O(1) pointer arithmetic and a new slab is requested only when the current one is exhausted. All generated ADT constructors, list nodes, tuples, closures, closure environments, string concatenation buffers, and int-to-string buffers now use the arena instead of individual `malloc` calls.
+- **Tail-call optimisation (TCO)** — the codegen detects functions whose last statement is a tail-recursive self-call with the same arguments and rewrites them to a `jmp @loop` branch instead. QBE cannot jump to `@start`, so the original entry block is renamed `@loop` and a thin `@start` block that immediately jumps to it is prepended. This eliminates unbounded stack growth in recursive event loops such as web servers.
+
+### Changed
+
+- `substring` no longer calls `strndup`; it now allocates through the arena and copies the slice with `memcpy`, writing a null terminator at the end. This keeps substring results in arena memory, consistent with all other string allocations.
+
+### Fixed
+
+- Closure call argument order was wrong: the environment pointer was being prepended to the argument list before user arguments were generated, causing closures called with arguments to receive shifted values. The codegen now generates all user arguments first, then prepends the environment pointer when emitting the call.
+- Test runner generation no longer passes a `fn() -> String` lambda into `run_case`. Timing and the test result are now evaluated at the call site and passed as plain `String` and `Int` values, which also removes an unnecessary heap allocation per test.
+- Path dependencies no longer leave stale entries in the lockfile accumulator. Previously each path dependency was added to the lock but never removed, causing the lockfile to accumulate entries for local packages across builds.
+
+## [0.4.0] — 2026-05-28
+
+### Added
+
 - `donna lsp` starts the built-in Donna Language Server over stdio. The server currently provides diagnostics, hover, go-to-definition, document/workspace symbols, and completions.
 - Completion items now include explicit LSP `textEdit` ranges so editors replace the typed prefix instead of guessing the completion span.
 - LSP completions and document symbols now include public symbols from imported modules.

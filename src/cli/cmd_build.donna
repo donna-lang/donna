@@ -14,6 +14,7 @@ import builder/scanner
 import builder/pipeline
 import builder/dependencies
 import compiler/typesystem/typed_ast
+import compiler/codegen/codegen
 import donna/time
 
 /// Result of building a project and whether it produced an application binary.
@@ -122,6 +123,9 @@ fn build_project_target(
                   BuildOk(False)
                 True ->
                   let all_ssa = list.append(dep_ssa, src_ssa)
+                  let runtime_ssa = path.join(artifacts_dir, "donna_runtime.ssa")
+                  let _ = files.write(runtime_ssa, codegen.gen_runtime())
+                  let all_ssa = [runtime_ssa, ..all_ssa]
                   case pipeline.qbe_available():
                     False -> BuildFailed(qbe_missing_error())
                     True ->

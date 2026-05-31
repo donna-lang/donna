@@ -237,6 +237,102 @@ fn is_terminal_inst(inst: il.Inst) -> Bool:
     il.Jnz(_, _, _) -> True
     _ -> False
 
+// TCO: rewrite tail-recursive calls to the same function as jmp @loop.
+// QBE forbids jumping to the entry block @start, so when TCO applies we:
+//   1. rename the original @start block to @loop
+//   2. prepend a new @start that immediately jumps to @loop
+//   3. replace each tail call with jmp @loop
+// Only applies when call arguments are identical to the function parameters,
+// covering all recursive event loops (serve, serve_with, etc.).
+fn apply_tco(
+  blocks: List(il.Block),
+  fn_name: String,
+  params: List(#(il.ILType, il.Value))
+) -> List(il.Block):
+  case tco_scan(blocks, fn_name, params):
+    False -> blocks
+    True ->
+      let lbl = "loop"
+      let transformed = tco_transform_blocks(blocks, fn_name, params, lbl)
+      [il.Block("start", [il.Volatile(il.Jmp(lbl))]), ..transformed]
+
+fn tco_scan(
+  blocks: List(il.Block),
+  fn_name: String,
+  params: List(#(il.ILType, il.Value))
+) -> Bool:
+  case blocks:
+    [] -> False
+    [b, ..rest] ->
+      case tco_scan_block(b, fn_name, params):
+        True -> True
+        False -> tco_scan(rest, fn_name, params)
+
+fn tco_scan_block(
+  b: il.Block,
+  fn_name: String,
+  params: List(#(il.ILType, il.Value))
+) -> Bool:
+  case b:
+    il.Block(_, stmts) ->
+      case tco_match_tail(list.reverse(stmts), fn_name, params):
+        option.None -> False
+        option.Some(_) -> True
+
+fn tco_transform_blocks(
+  blocks: List(il.Block),
+  fn_name: String,
+  params: List(#(il.ILType, il.Value)),
+  lbl: String
+) -> List(il.Block):
+  case blocks:
+    [] -> []
+    [b, ..rest] ->
+      [tco_transform_one(b, fn_name, params, lbl), ..tco_transform_blocks(rest, fn_name, params, lbl)]
+
+fn tco_transform_one(
+  b: il.Block,
+  fn_name: String,
+  params: List(#(il.ILType, il.Value)),
+  lbl: String
+) -> il.Block:
+  case b:
+    il.Block(label, stmts) ->
+      let new_label = case string.equal(label, "start"):
+        True -> lbl
+        False -> label
+      case tco_match_tail(list.reverse(stmts), fn_name, params):
+        option.None -> il.Block(new_label, stmts)
+        option.Some(prefix_rev) ->
+          il.Block(new_label, list.reverse([il.Volatile(il.Jmp(lbl)), ..prefix_rev]))
+
+fn tco_match_tail(
+  rev_stmts: List(il.Statement),
+  fn_name: String,
+  params: List(#(il.ILType, il.Value))
+) -> option.Option(List(il.Statement)):
+  case rev_stmts:
+    [il.Volatile(il.Ret(_)), il.Volatile(il.Call(il.Global(name), args)), ..rest] ->
+      case string.equal(name, fn_name):
+        True ->
+          case tco_args_match(args, params):
+            True -> option.Some(rest)
+            False -> option.None
+        False -> option.None
+    _ -> option.None
+
+fn tco_args_match(
+  args: List(#(il.ILType, il.Value)),
+  params: List(#(il.ILType, il.Value))
+) -> Bool:
+  case #(args, params):
+    #([], []) -> True
+    #([#(_, il.Temporary(an)), ..ar], [#(_, il.Temporary(pn)), ..pr]) ->
+      case string.equal(an, pn):
+        True -> tco_args_match(ar, pr)
+        False -> False
+    _ -> False
+
 fn add_data_defs_list(datas: List(il.DataDef), s: CgState) -> CgState:
   case datas:
     [] -> s
@@ -287,12 +383,7 @@ fn ensure_string_concat_helper(s: CgState) -> CgState:
         il.Long,
         il.Add(il.Temporary("sca_sz"), il.Const(1))
       )
-      let b = il.assign_inst(
-        b,
-        il.Temporary("sca_buf"),
-        il.Long,
-        il.Call(il.Global("malloc"), [#(il.Long, il.Temporary("sca_sz1"))])
-      )
+      let b = arena_alloc(b, il.Temporary("sca_buf"), il.Temporary("sca_sz1"))
       let b = il.volatile_inst(
         b,
         il.Call(
@@ -329,12 +420,7 @@ fn ensure_int_to_string_helper(s: CgState) -> CgState:
         [#(il.Byte, il.Str("%ld")), #(il.Byte, il.Constant(0))]
       )
       let b = il.new_block("start")
-      let b = il.assign_inst(
-        b,
-        il.Temporary("its_buf"),
-        il.Long,
-        il.Call(il.Global("malloc"), [#(il.Long, il.Const(32))])
-      )
+      let b = arena_alloc(b, il.Temporary("its_buf"), il.Const(32))
       let b = il.volatile_inst(
         b,
         il.VaCall(
@@ -418,6 +504,36 @@ pub fn generate(m: typed_ast.TypedModule) -> String:
       let all_fn_fns = list.append(all_fn_fns, list.reverse(state_helper_fns(state3)))
       let il_mod = il.ILModule(all_fn_fns, all_data)
       il.display_module(il_mod)
+
+pub fn gen_runtime() -> String:
+  let nl = "\n"
+  let t = "\t"
+  let d1 = "export data $donna_slab_next = align 8 { l 0 }" <> nl
+  let d2 = "export data $donna_slab_end = align 8 { l 0 }" <> nl <> nl
+  let fn_header = "export function l $donna_arena_alloc(l %size) {" <> nl
+  let blk_start = "@start" <> nl
+  let i1 = t <> "%sz7 =l add %size, 7" <> nl
+  let i2 = t <> "%aligned =l and %sz7, -8" <> nl
+  let i3 = t <> "%next =l loadl $donna_slab_next" <> nl
+  let i4 = t <> "%end =l loadl $donna_slab_end" <> nl
+  let i5 = t <> "%newnext =l add %next, %aligned" <> nl
+  let i6 = t <> "%over =w csgtl %newnext, %end" <> nl
+  let i7 = t <> "jnz %over, @grow, @bump" <> nl
+  let blk_bump = "@bump" <> nl
+  let b1 = t <> "storel %newnext, $donna_slab_next" <> nl
+  let b2 = t <> "ret %next" <> nl
+  let blk_grow = "@grow" <> nl
+  let g1 = t <> "%slab =l call $malloc(l 8388608)" <> nl
+  let g2 = t <> "%slabend =l add %slab, 8388608" <> nl
+  let g3 = t <> "storel %slabend, $donna_slab_end" <> nl
+  let g4 = t <> "%aftera =l add %slab, %aligned" <> nl
+  let g5 = t <> "storel %aftera, $donna_slab_next" <> nl
+  let g6 = t <> "ret %slab" <> nl
+  let fn_footer = "}" <> nl
+  d1 <> d2 <> fn_header <> blk_start <> i1 <> i2 <> i3 <> i4 <> i5 <> i6 <> i7 <> blk_bump <> b1 <> b2 <> blk_grow <> g1 <> g2 <> g3 <> g4 <> g5 <> g6 <> fn_footer
+
+fn arena_alloc(b: il.Block, result: il.Value, size: il.Value) -> il.Block:
+  il.assign_inst(b, result, il.Long, il.Call(il.Global("donna_arena_alloc"), [#(il.Long, size)]))
 
 fn collect_ctor_names(
   type_defs: List(typed_ast.TypedTypeDef),
@@ -583,12 +699,7 @@ fn gen_constructor(
           let saved_blocks = state_finished_blocks(state)
           let state2 = set_finished_blocks(state, [])
           let #(ptr_t, state3) = fresh_temp(state2)
-          let entry = il.assign_inst(
-            entry,
-            il.Temporary(ptr_t),
-            il.Long,
-            il.Call(il.Global("malloc"), [#(il.Long, il.Const(struct_size))])
-          )
+          let entry = arena_alloc(entry, il.Temporary(ptr_t), il.Const(struct_size))
           let entry = il.volatile_inst(entry, il.Storel(il.Const(tag), il.Temporary(ptr_t)))
           let #(entry, state4) = gen_field_stores(fields, il.Temporary(ptr_t), 0, entry, state3)
           let entry = il.volatile_inst(entry, il.Ret(option.Some(il.Temporary(ptr_t))))
@@ -685,12 +796,7 @@ fn gen_constructor_call(
   let n_fields = list_length(args)
   let struct_size = n_fields * 8 + 8
   let #(ptr_t, state3) = fresh_temp(state2)
-  let block3 = il.assign_inst(
-    block2,
-    il.Temporary(ptr_t),
-    il.Long,
-    il.Call(il.Global("malloc"), [#(il.Long, il.Const(struct_size))])
-  )
+  let block3 = arena_alloc(block2, il.Temporary(ptr_t), il.Const(struct_size))
   let block4 = il.volatile_inst(block3, il.Storel(il.Const(tag), il.Temporary(ptr_t)))
   let #(block5, state4) = store_constructor_typed_fields(
     field_types,
@@ -962,6 +1068,7 @@ fn gen_function(
               il.volatile_inst(body_block, il.Ret(option.Some(il.Const(0))))
             _ -> il.volatile_inst(body_block, il.Ret(option.Some(ret_val)))
       let all_blocks = list.append(list.reverse(state_finished_blocks(state3)), [body_block2])
+      let all_blocks = apply_tco(all_blocks, qbe_name, arguments)
       let il_fn = il.Function(linkage, qbe_name, arguments, return_ty, all_blocks)
       let state4 = set_finished_blocks(state3, saved_blocks)
       #(il_fn, state4)
@@ -2233,12 +2340,7 @@ fn gen_closure_value(
   state: CgState
 ) -> #(il.Value, il.Block, CgState):
   let #(ptr, state2) = fresh_temp(state)
-  let block2 = il.assign_inst(
-    block,
-    il.Temporary(ptr),
-    il.Long,
-    il.Call(il.Global("malloc"), [#(il.Long, il.Const(16))])
-  )
+  let block2 = arena_alloc(block, il.Temporary(ptr), il.Const(16))
   let block3 = il.volatile_inst(block2, il.Storel(fn_val, il.Temporary(ptr)))
   let #(env_slot, state3) = fresh_temp(state2)
   let block4 = il.assign_inst(
@@ -2366,12 +2468,7 @@ fn gen_capture_env(
     _ ->
       let size = list_length(captures) * 8
       let #(env_t, state2) = fresh_temp(state)
-      let block2 = il.assign_inst(
-        block,
-        il.Temporary(env_t),
-        il.Long,
-        il.Call(il.Global("malloc"), [#(il.Long, il.Const(size))])
-      )
+      let block2 = arena_alloc(block, il.Temporary(env_t), il.Const(size))
       gen_capture_stores(captures, il.Temporary(env_t), 0, block2, state2)
 
 fn gen_capture_stores(
@@ -2624,12 +2721,7 @@ fn gen_list_elements(
     [elem, ..rest] ->
       let #(elem_val, block2, state2) = gen_expr(elem, block, state)
       let #(ptr, state3) = fresh_temp(state2)
-      let block3 = il.assign_inst(
-        block2,
-        il.Temporary(ptr),
-        il.Long,
-        il.Call(il.Global("malloc"), [#(il.Long, il.Const(24))])
-      )
+      let block3 = arena_alloc(block2, il.Temporary(ptr), il.Const(24))
       let block4 = il.volatile_inst(block3, il.Storel(il.Const(1), il.Temporary(ptr)))
       let #(head_ptr, state4) = fresh_temp(state3)
       let block5 = il.assign_inst(
@@ -2661,12 +2753,7 @@ fn gen_tuple(
       let size = n * 8
       let #(vals, block2, state2) = gen_exprs_list(elements, block, state, [])
       let #(ptr, state3) = fresh_temp(state2)
-      let block3 = il.assign_inst(
-        block2,
-        il.Temporary(ptr),
-        il.Long,
-        il.Call(il.Global("malloc"), [#(il.Long, il.Const(size))])
-      )
+      let block3 = arena_alloc(block2, il.Temporary(ptr), il.Const(size))
       let #(block4, state4) = store_tuple_fields(vals, il.Temporary(ptr), 0, block3, state3)
       #(il.Temporary(ptr), block4, state4)
 
@@ -2843,17 +2930,21 @@ fn gen_builtin_substring(
       let #(lenv, b3, s3) = gen_expr(len_e, b2, s2)
       let #(ptr_t, s4) = fresh_temp(s3)
       let b4 = il.assign_inst(b3, il.Temporary(ptr_t), il.Long, il.Add(sv, startv))
-      let #(res_t, s5) = fresh_temp(s4)
-      let b5 = il.assign_inst(
-        b4,
-        il.Temporary(res_t),
-        il.Long,
+      let #(sz1_t, s5) = fresh_temp(s4)
+      let b5 = il.assign_inst(b4, il.Temporary(sz1_t), il.Long, il.Add(lenv, il.Const(1)))
+      let #(buf_t, s6) = fresh_temp(s5)
+      let b6 = arena_alloc(b5, il.Temporary(buf_t), il.Temporary(sz1_t))
+      let b7 = il.volatile_inst(
+        b6,
         il.Call(
-          il.Global("strndup"),
-          [#(il.Long, il.Temporary(ptr_t)), #(il.Long, lenv)]
+          il.Global("memcpy"),
+          [#(il.Long, il.Temporary(buf_t)), #(il.Long, il.Temporary(ptr_t)), #(il.Long, lenv)]
         )
       )
-      #(il.Temporary(res_t), b5, s5)
+      let #(end_t, s7) = fresh_temp(s6)
+      let b8 = il.assign_inst(b7, il.Temporary(end_t), il.Long, il.Add(il.Temporary(buf_t), lenv))
+      let b9 = il.volatile_inst(b8, il.Storeb(il.Const(0), il.Temporary(end_t)))
+      #(il.Temporary(buf_t), b9, s7)
     _ -> #(il.Const(0), block, state)
 
 fn gen_builtin_int_to_string(

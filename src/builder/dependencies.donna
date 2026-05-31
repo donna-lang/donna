@@ -316,7 +316,7 @@ fn collect_deps(
             project_dir,
             locked,
             [Dep(name, abs), ..dep_acc],
-            lock_acc
+            lock.remove(lock_acc, name)
           )
         parsetoml.Err(_) ->
           case parsetoml.get_string(value, "git"):
