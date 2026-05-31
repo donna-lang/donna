@@ -16,6 +16,7 @@ import builder/scanner
 import builder/tester
 import builder/dependencies
 import builder/pipeline
+import compiler/codegen/codegen
 
 @external("c", "exit")
 fn process_exit(code: Int) -> Nil
@@ -140,8 +141,10 @@ fn build_and_run(
                           ):
                             result.Error(e) -> e
                             result.Ok(#(_, runner_ssa, _, _)) ->
+                              let runtime_ssa = path.join(artifacts_dir, "donna_runtime.ssa")
+                              let _ = files.write(runtime_ssa, codegen.gen_runtime())
                               let all_ssa = list.append(
-                                dep_ssa,
+                                [runtime_ssa, ..dep_ssa],
                                 list.append(
                                   scrubbed_ssa,
                                   list.append(
